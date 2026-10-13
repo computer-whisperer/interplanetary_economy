@@ -13,9 +13,25 @@ discount_rate = 0.04
 
 surfaces = ["moon-south-pole", "moon-mare", "mars-surface"]
 
-[propellant]
+# Two propellants share LOX; each ship burns one. Fuel boil-off applies to
+# stocks at every node and to cargo in transit.
+
+[propellant.methalox]
 isp_s = 375.0
 mixture = 3.6
+
+[propellant.hydrolox]
+# RL10C-1-1 453.8 s at O/F 5.5, RL10C-X 460.9 s (L3Harris); RL10A-3-3B
+# qualified at O/F 6.0; Metzger 2023 and Kleinhenz & Paz use 450 s and O/F 6
+# (NTRS 20205008303). At O/F 6, lunar water leaves 29% of its mass as spare
+# oxygen.
+isp_s = 450.0
+mixture = 6.0
+# LH2 boil-off: passive LEO depot with sunshield 0.04–0.16%/day for LH2+LOX
+# (NASA/ULA model, NTRS 20120010675); Centaur as flown ~2%/day. A 2040s
+# depot or tanker: 0.05%/day (0.01–0.2) [ext]. LOX and methane boil off
+# ~5× less and are taken as storable.
+fuel_boiloff_per_day = { median = 0.0005, sigma = 0.9 }
 
 [earth]
 # Reusable heavy launch, $/kg to LEO. 2040: Citi GPS 2022 ($100), Terzi &
@@ -53,6 +69,7 @@ dry_t = 120.0
 propellant_t = 1200.0
 cargo_t = 100.0
 price_musd = { median = 80.0, sigma = 0.6 }
+propellant = "methalox"
 aero = true
 interplanetary = true
 lands = ["mars-surface"]
@@ -66,25 +83,56 @@ dry_t = 40.0
 propellant_t = 400.0
 cargo_t = 100.0
 price_musd = { median = 40.0, sigma = 0.6 }
+propellant = "methalox"
 lands = ["moon-south-pole", "moon-mare"]
+turnaround_days = 3.0
+
+[[ship]]
+# Reusable hydrolox lander/tanker. Blue Moon Mk2: 16 t dry, ~29–40 t
+# propellant, 20 t reusable payload (crewed, heavy); Lockheed Martin 2018
+# lander 22 t dry, 40 t propellant; Metzger 2023 uses an inert mass
+# fraction of 0.10. Cargo version at dry/propellant 0.2, scaled up; price
+# at ~$1.5M per dry tonne against the methalox lander's $1M [ext].
+id = "lander-h"
+dry_t = 30.0
+propellant_t = 150.0
+cargo_t = 50.0
+price_musd = { median = 45.0, sigma = 0.6 }
+propellant = "hydrolox"
+lands = ["moon-south-pole", "moon-mare"]
+turnaround_days = 3.0
+
+[[ship]]
+# Reusable cislunar tug with an aerobrake for LEO returns. NASA JSC 1985
+# aerobraked OTV: 4.43 t dry (17% aerobrake), 38 t propellant, 13.5 t to
+# GEO (NTRS 19850012952); ULA ACES ~5.9 t dry, 68 t propellant. Scaled ×4
+# at dry/propellant 0.12 [ext].
+id = "tug-h"
+dry_t = 18.0
+propellant_t = 150.0
+cargo_t = 50.0
+price_musd = { median = 27.0, sigma = 0.6 }
+propellant = "hydrolox"
+aero = true
 turnaround_days = 3.0
 
 # Plants: equipment t per t/yr of output = plant + ore / grade, where ore is
 # equipment per t/yr of ore handled and grade is product per ore mass.
 
 [[facility]]
-# Polar ice to LOX (the hydrogen is not used: no carbon on the Moon).
-# Metzger 2023 baseline 0.05 t/(t/yr) (25 t for 500 t/yr); Kornuta et al.
-# 2019 ~0.014–0.018 at 1,000+ t/yr; Kleinhenz & Paz 2021 pilot plant ~1.2
-# with power. Excavation scales with 1/grade (Kleinhenz & Paz 2021; Sowers &
-# Dreyer 2019); split here 0.03 + 0.02 at 5 wt% [ext]. Grade: LCROSS
-# 5.6 ± 2.9 wt% (Colaprete et al. 2010); O2 is 8/9 of water, so 0.89 × water
-# wt%.
+# Polar ice to LOX and LH2 (water is 8:1 by mass; no carbon on the Moon).
+# Output counts all of the water. Studies quote LOX+LH2 propellant, ~1.3–1.5
+# t of water per t: Metzger 2023 baseline 0.05 t per t/yr of propellant (25 t
+# for 500 t/yr), ≈ 0.035 per t/yr of water; Kornuta et al. 2019 30 t for
+# 2,450 t/yr of water, ≈ 0.012; Kleinhenz & Paz 2021 pilot plant ~1.2 with
+# power. Excavation scales with 1/grade (Kleinhenz & Paz 2021; Sowers &
+# Dreyer 2019); split here 0.017 + 0.018 at 5.6 wt% [ext]. Grade: water,
+# LCROSS 5.6 ± 2.9 wt% (Colaprete et al. 2010).
 id = "lunar-ice"
 node = "moon-south-pole"
-output = { lox = 1.0 }
-equipment_t_per_tpy = { plant = { median = 0.03, sigma = 0.8 }, ore = { median = 0.001, sigma = 0.8 } }
-grade = { median = 0.05, sigma = 0.5 }
+output = { lox = 0.889, lh2 = 0.111 }
+equipment_t_per_tpy = { plant = { median = 0.017, sigma = 0.8 }, ore = { median = 0.001, sigma = 0.8 } }
+grade = { median = 0.056, sigma = 0.5 }
 build_months = 12.0
 technology = "lunar-ice"
 # Prospecting: VIPER ~$0.93B with its lander (cancelled 2024; Planetary
@@ -270,9 +318,13 @@ years = { median = 10.0, sigma = 0.3 }
 
 [[demand]]
 # Earth-departing traffic refuelling at the hub. ULA's 2016 offer: $1,000/kg
-# at EML1; Sercel 2016: ~400 t/yr at the top of the well.
+# at EML1; Sercel 2016: ~400 t/yr at the top of the well. ULA's offers were
+# for LOX/LH2 (Kutter 2016: $3,000/kg in LEO, $500/kg on the lunar surface);
+# Starship refuels with methalox. Split at L1 50/50 (hydrolox 30–80%)
+# [guess].
 id = "hub-propellant"
 what = "propellant"
+split = { methalox = 0.5, hydrolox = 0.5 }
 nodes = ["eml1"]
 ref_tpy = { median = 400.0, sigma = 0.7 }
 ref_usd_per_kg = 1000.0

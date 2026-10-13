@@ -78,11 +78,6 @@ struct Opts {
     /// Multiplies the launch price, after drawing.
     #[arg(long, default_value_t = 1.0)]
     launch_factor: f64,
-    /// Counts a plant's propellant output as complete propellant (oxidizer
-    /// and fuel at the mixture ratio): e.g. `lunar-ice`, standing in for
-    /// ships that burn the ice's hydrogen. Repeatable.
-    #[arg(long)]
-    fuel: Vec<String>,
 }
 
 fn parse_factor(s: &str) -> Result<(Source, f64), String> {
@@ -123,28 +118,7 @@ impl World {
         for p in sc.launch_usd_per_kg.iter_mut() {
             *p *= opts.launch_factor;
         }
-        for f in sc
-            .facilities
-            .iter_mut()
-            .filter(|f| opts.fuel.contains(&f.id))
-        {
-            let propellant = f.output.lox + f.output.ch4;
-            f.output.lox = propellant * sc.lox_share;
-            f.output.ch4 = propellant * (1.0 - sc.lox_share);
-        }
         sc
-    }
-
-    /// Rejects options that name no plant of the central draw.
-    fn check(&self, opts: &Opts) -> Result<()> {
-        let sc = self.scenario(None, opts);
-        for id in &opts.fuel {
-            anyhow::ensure!(
-                sc.facilities.iter().any(|f| &f.id == id),
-                "--fuel {id}: no such plant in the central draw"
-            );
-        }
-        Ok(())
     }
 
     /// The transport network is the same for every draw.
@@ -208,19 +182,13 @@ fn main() -> Result<()> {
         econ: EconomyFile::standard(),
     };
     match cli.cmd {
-        Cmd::Solve { seed, opts } => {
-            world.check(&opts)?;
-            solve(&world, seed, &opts)
-        }
+        Cmd::Solve { seed, opts } => solve(&world, seed, &opts),
         Cmd::Sweep {
             draws,
             jobs,
             csv,
             opts,
-        } => {
-            world.check(&opts)?;
-            sweep(&world, draws, jobs, csv, &opts)
-        }
+        } => sweep(&world, draws, jobs, csv, &opts),
     }
 }
 
@@ -288,6 +256,7 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
     for c in [
         Commodity::Lox,
         Commodity::Ch4,
+        Commodity::Lh2,
         Commodity::Equipment,
         Commodity::Payload,
     ] {
@@ -355,6 +324,7 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
         ("leo", Commodity::Lox),
         ("eml1", Commodity::Lox),
         ("eml1", Commodity::Ch4),
+        ("eml1", Commodity::Lh2),
         ("llo", Commodity::Lox),
         ("moon-south-pole", Commodity::Lox),
         ("moon-south-pole", Commodity::Payload),

@@ -114,30 +114,47 @@ choice along the Δv versus transit-time frontier.
 
 ## Physical economy
 
-### Propellant: methalox only
+### Propellant: methalox and hydrolox
 
-Methalox: Isp ≈ 375 s, mixture ≈ 3.6:1, so oxygen is ≈ 78% of propellant mass.
-Chosen because it differentiates the sources:
+Two propellants share liquid oxygen; each ship design burns one of them.
 
-- **Moon:** oxygen only. Polar ice is the cheapest source, regolith works
-  anywhere but costs more. Methane must come from elsewhere.
-- **Mars:** both oxygen and methane, from atmospheric CO2 plus ground ice.
-- **Carbonaceous NEAs:** both, from water plus organics. Grade is uncertain.
+- **Methalox** (LOX/methane): Isp ≈ 375 s, mixture ≈ 3.6:1. Dense and
+  storable for months, so it is the propellant of interplanetary haulers.
+- **Hydrolox** (LOX/hydrogen): Isp ≈ 450 s, mixture ≈ 5.5–6:1. More Δv per
+  tonne, but liquid hydrogen boils off in storage and needs bulky tanks, so
+  it suits short cislunar legs: landers, tankers and tugs.
+
+Sources:
+
+- **Moon:** polar ice gives oxygen and hydrogen (water is 8:1 by mass, so
+  some oxygen is left over); regolith gives oxygen only. No carbon, so no
+  methane.
+- **Mars:** oxygen and methane, from atmospheric CO2 plus ground ice.
+- **Carbonaceous NEAs:** oxygen and methane, from water plus organics.
+  Grade is uncertain. (Their water could also give hydrogen, but it would
+  boil off on the months-long trip home; MVP asteroid plants make methalox
+  only.)
 - **Earth:** everything, at launch price.
 
-A Moon-first strategy is therefore only half a solution, so the network has
-cross-dependencies by construction.
+The Moon fuels cislunar traffic, the asteroids and Mars fuel deep-space
+traffic, and the spare lunar oxygen and imported methane connect the two.
 
-Under review (M2, 2026-10-13): this rule decides which source leads. With
-it, asteroids lead in ~70% of draws; counting lunar ice as complete
-propellant, the Moon leads in 84%. See M2.md, "Propellant chemistry test".
+Decided 2026-10-13, replacing **methalox only**. That rule made the Moon
+an oxygen-only source so that a Moon-first strategy was half a solution
+and the network had cross-dependencies by construction. M2 showed it
+instead decided the winner: asteroids led in ~70% of draws, and counting
+lunar ice as complete propellant flipped that to the Moon in 84% (M2.md,
+"Propellant chemistry test"). Two propellants keep cross-dependencies (the
+lunar oxygen surplus, methane for deep space) without discarding the
+Moon's hydrogen.
 
 ### Commodities
 
 | Commodity | Source (MVP) | Role |
 |---|---|---|
-| LOX | Earth, Moon, Mars, C-type NEAs | Propellant (78%) |
-| Methane | Earth, Mars, C-type NEAs | Propellant (22%) |
+| LOX | Earth, Moon, Mars, C-type NEAs | Oxidizer for both propellants (78% of methalox, ~85% of hydrolox) |
+| Methane | Earth, Mars, C-type NEAs | Methalox fuel |
+| Hydrogen | Earth, Moon | Hydrolox fuel; boils off in storage |
 | Equipment | Earth only | What facilities and ships are built from |
 | Supplies | Earth only | Crew life support |
 | Precious metals | Metal-rich NEAs | Export to Earth. Price falls with cumulative volume, so flooding the market crashes it. |
@@ -150,7 +167,7 @@ Output scales with the Equipment delivered, so expansion is incremental.
 | Facility | Sites | Output |
 |---|---|---|
 | Depot | any orbital node | stores propellant, sells it to traffic |
-| Ice plant | Moon South Pole, Mars surface, C-type NEA, Phobos (if wet) | LOX (Moon); LOX + methane (elsewhere) |
+| Ice plant | Moon South Pole, Mars surface, C-type NEA, Phobos (if wet) | LOX + hydrogen (Moon); LOX + methane (elsewhere) |
 | Regolith oxygen plant | any lunar site, Mars surface | LOX; more equipment per t/yr than ice |
 | Metals mine | metal-rich NEA | Precious metals |
 | Outpost | any surface or orbital node | houses crew, consumes Supplies |
@@ -166,9 +183,12 @@ The MVP has a few predefined designs, bought on Earth and delivered to LEO. A
 design is defined by dry mass, propellant capacity, cargo capacity, crew
 capacity, whether it can aerocapture, and which surfaces it can land on.
 
-- **Heavy hauler** (Starship-class): ~120 t dry, ~1,200 t propellant, ~100 t
-  cargo, aero-capable at Earth and Mars.
-- **Lunar lander/tanker:** stays in cislunar space.
+- **Heavy hauler** (Starship-class, methalox): ~120 t dry, ~1,200 t
+  propellant, ~100 t cargo, aero-capable at Earth and Mars.
+- **Lunar lander/tanker:** stays in cislunar space; methalox and hydrolox
+  versions.
+- **Cislunar tug** (hydrolox, with an aerobrake): moves propellant and
+  cargo between LEO, L1 and lunar orbit.
 - **Crew transport:** habitat plus shielding. Crew legs have a maximum transit
   time, a stand-in for radiation dose.
 
@@ -342,9 +362,9 @@ Minimal and information-dense:
   technology and survey programs (sourced costs, lead times), asteroids are
   still the best source in ~70% of draws and the Moon in ~20–25%, though
   early decisions now differ across draws. The gate's path half still
-  fails. The methalox-only rule decides the winner: counting lunar ice as
-  complete propellant (hydrogen as fuel) makes the Moon lead in 84% of
-  draws instead.
+  fails. The methalox-only rule decided the winner, so the design now has
+  methalox and hydrolox; with both, the Moon leads in 88% of draws, so the
+  gate fails the other way.
   - Model: a time-expanded network with six-month steps (quarterly and
     monthly steps gave the same plans at 3× and 20× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to

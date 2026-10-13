@@ -93,7 +93,7 @@ pub struct EconomyFile {
     start: String,
     end: String,
     discount_rate: f64,
-    propellant: PropellantRow,
+    propellant: PropellantsRow,
     earth: EarthRow,
     budget: BudgetRow,
     metals: MetalsRow,
@@ -109,10 +109,19 @@ pub struct EconomyFile {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PropellantsRow {
+    methalox: PropellantRow,
+    hydrolox: PropellantRow,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PropellantRow {
     isp_s: f64,
     /// Oxidizer to fuel, by mass.
     mixture: f64,
+    /// Fraction of the stored fuel lost per day; none if absent.
+    fuel_boiloff_per_day: Option<Dist>,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +157,7 @@ struct ShipRow {
     propellant_t: f64,
     cargo_t: f64,
     price_musd: Dist,
+    propellant: Propellant,
     #[serde(default)]
     aero: bool,
     #[serde(default)]
@@ -164,6 +174,8 @@ struct OutputRow {
     lox: f64,
     #[serde(default)]
     ch4: f64,
+    #[serde(default)]
+    lh2: f64,
     #[serde(default)]
     metal: f64,
 }
@@ -244,20 +256,61 @@ struct TechnologyRow {
     years: Dist,
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+/// A propellant: liquid oxygen and one fuel.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+pub enum Propellant {
+    /// Oxygen and methane.
+    Methalox,
+    /// Oxygen and hydrogen.
+    Hydrolox,
+}
+
+pub const PROPELLANTS: [Propellant; 2] = [Propellant::Methalox, Propellant::Hydrolox];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Demanded {
     /// Third-party payload, launched from Earth.
     Payload,
-    /// Methalox sold to third-party ships, at the mixture ratio.
+    /// Propellant sold to third-party ships, at its mixture ratio.
+    Methalox,
+    Hydrolox,
+}
+
+impl Demanded {
+    pub fn propellant(self) -> Option<Propellant> {
+        match self {
+            Demanded::Payload => None,
+            Demanded::Methalox => Some(Propellant::Methalox),
+            Demanded::Hydrolox => Some(Propellant::Hydrolox),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum WhatRow {
+    Payload,
+    Methalox,
+    Hydrolox,
+    /// Either propellant, by the row's `split`.
     Propellant,
+}
+
+/// Shares of a propellant demand by propellant.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SplitRow {
+    methalox: f64,
+    hydrolox: f64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DemandRow {
     id: String,
-    what: Demanded,
+    what: WhatRow,
+    split: Option<SplitRow>,
     /// Delivered to any of these nodes.
     nodes: Vec<String>,
     /// Quantity demanded at the reference price in the start year.
@@ -280,6 +333,7 @@ pub struct ShipClass {
     pub tank: f64,
     pub cargo: f64,
     pub price_musd: f64,
+    pub propellant: Propellant,
     pub aero: bool,
     pub interplanetary: bool,
     pub lands: Vec<NodeId>,
@@ -290,7 +344,26 @@ pub struct ShipClass {
 pub struct Output {
     pub lox: f64,
     pub ch4: f64,
+    pub lh2: f64,
     pub metal: f64,
+}
+
+impl Output {
+    /// Oxygen and fuels, t per t/yr of rated output.
+    pub fn propellant(&self) -> f64 {
+        self.lox + self.ch4 + self.lh2
+    }
+}
+
+/// What one propellant does, as drawn.
+#[derive(Clone, Copy, Debug)]
+pub struct PropellantSpec {
+    /// Exhaust velocity, km/s.
+    pub ve: f64,
+    /// LOX share of propellant mass.
+    pub lox_share: f64,
+    /// Fraction of the stored fuel lost per day.
+    pub fuel_boiloff_per_day: f64,
 }
 
 /// A kind of plant at one site, as drawn.
@@ -359,10 +432,8 @@ pub struct AsteroidDraw {
 pub struct Scenario {
     pub cal: Calendar,
     pub discount_rate: f64,
-    /// Exhaust velocity, km/s.
-    pub ve: f64,
-    /// LOX share of propellant mass.
-    pub lox_share: f64,
+    /// By [`Propellant`].
+    pub propellants: [PropellantSpec; 2],
     /// $/kg to LEO, per period.
     pub launch_usd_per_kg: Vec<f64>,
     pub equipment_usd_per_kg: f64,
@@ -379,6 +450,10 @@ pub struct Scenario {
 }
 
 impl Scenario {
+    pub fn propellant(&self, p: Propellant) -> &PropellantSpec {
+        &self.propellants[p as usize]
+    }
+
     /// Discount factor of period `p`, at its middle.
     pub fn discount(&self, p: usize) -> f64 {
         (1.0 + self.discount_rate).powf(-self.cal.years_at(p))
@@ -424,6 +499,7 @@ impl EconomyFile {
                 tank: s.propellant_t,
                 cargo: s.cargo_t,
                 price_musd: s.price_musd.sample(draw),
+                propellant: s.propellant,
                 aero: s.aero,
                 interplanetary: s.interplanetary,
                 lands: s.lands.iter().map(|n| node(n)).collect(),
@@ -520,31 +596,57 @@ impl EconomyFile {
             });
         }
 
-        let demand = self
-            .demand
-            .iter()
-            .map(|d| {
-                let ref_tpy = d.ref_tpy.sample(draw);
-                let q = |p: f64| ref_tpy * (p / d.ref_usd_per_kg).powf(-d.elasticity);
-                let mut segments = Vec::new();
-                let mut hi = d.max_usd_per_kg;
-                while hi > d.min_usd_per_kg * 1.000_001 {
-                    let lo = hi / 2.0;
-                    segments.push(DemandSegment {
-                        usd_per_kg: (hi * lo).sqrt(),
-                        tpy: q(lo) - q(hi),
-                    });
-                    hi = lo;
-                }
-                DemandCategory {
-                    id: d.id.clone(),
-                    what: d.what,
+        let mut demand = Vec::new();
+        for d in &self.demand {
+            let ref_tpy = d.ref_tpy.sample(draw);
+            let q = |p: f64| ref_tpy * (p / d.ref_usd_per_kg).powf(-d.elasticity);
+            let mut segments = Vec::new();
+            let mut hi = d.max_usd_per_kg;
+            while hi > d.min_usd_per_kg * 1.000_001 {
+                let lo = hi / 2.0;
+                segments.push(DemandSegment {
+                    usd_per_kg: (hi * lo).sqrt(),
+                    tpy: q(lo) - q(hi),
+                });
+                hi = lo;
+            }
+            let parts = match (d.what, &d.split) {
+                (WhatRow::Payload, None) => vec![(d.id.clone(), Demanded::Payload, 1.0)],
+                (WhatRow::Methalox, None) => vec![(d.id.clone(), Demanded::Methalox, 1.0)],
+                (WhatRow::Hydrolox, None) => vec![(d.id.clone(), Demanded::Hydrolox, 1.0)],
+                (WhatRow::Propellant, Some(split)) => vec![
+                    (
+                        format!("{}:methalox", d.id),
+                        Demanded::Methalox,
+                        split.methalox,
+                    ),
+                    (
+                        format!("{}:hydrolox", d.id),
+                        Demanded::Hydrolox,
+                        split.hydrolox,
+                    ),
+                ],
+                _ => panic!(
+                    "economy.toml: demand {}: `split` goes with what = \"propellant\"",
+                    d.id
+                ),
+            };
+            for (id, what, share) in parts {
+                demand.push(DemandCategory {
+                    id,
+                    what,
                     nodes: d.nodes.iter().map(|n| node(n)).collect(),
-                    segments,
+                    segments: segments
+                        .iter()
+                        .map(|s| DemandSegment {
+                            usd_per_kg: s.usd_per_kg,
+                            tpy: s.tpy * share,
+                        })
+                        .collect(),
                     growth: d.growth,
-                }
-            })
-            .collect();
+                });
+            }
+        }
 
         let price_factor = self.metals.price_factor.sample(draw);
         let equipment_usd_per_kg = self.earth.equipment_usd_per_kg.sample(draw);
@@ -579,11 +681,21 @@ impl EconomyFile {
             }
         }
 
+        // Sampled last, after the programs, for the same reason.
+        let mut spec = |row: &PropellantRow| PropellantSpec {
+            ve: row.isp_s * G0,
+            lox_share: row.mixture / (1.0 + row.mixture),
+            fuel_boiloff_per_day: row.fuel_boiloff_per_day.map_or(0.0, |d| d.sample(draw)),
+        };
+        let propellants = [
+            spec(&self.propellant.methalox),
+            spec(&self.propellant.hydrolox),
+        ];
+
         Scenario {
             cal,
             discount_rate: self.discount_rate,
-            ve: self.propellant.isp_s * G0,
-            lox_share: self.propellant.mixture / (1.0 + self.propellant.mixture),
+            propellants,
             launch_usd_per_kg,
             equipment_usd_per_kg,
             propellant_usd_per_kg: self.earth.propellant_usd_per_kg,
@@ -609,6 +721,7 @@ impl From<OutputRow> for Output {
         Output {
             lox: o.lox,
             ch4: o.ch4,
+            lh2: o.lh2,
             metal: o.metal,
         }
     }

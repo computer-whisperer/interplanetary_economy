@@ -2,7 +2,7 @@
 //! foresight. See M2.md for the formulation.
 
 use crate::edges::{Edge, EdgeKind};
-use crate::params::{Demanded, Scenario, ShipClass};
+use crate::params::{PROPELLANTS, Propellant, Scenario, ShipClass};
 use highs::{Col, HighsModelStatus, Model, RowProblem, Sense, SolvedModel};
 use orbit::network::{Network, NodeId};
 use std::collections::HashMap;
@@ -11,14 +11,16 @@ use std::collections::HashMap;
 pub enum Commodity {
     Lox,
     Ch4,
+    Lh2,
     Equipment,
     Payload,
     Metal,
 }
 
-pub const COMMODITIES: [Commodity; 5] = [
+pub const COMMODITIES: [Commodity; 6] = [
     Commodity::Lox,
     Commodity::Ch4,
+    Commodity::Lh2,
     Commodity::Equipment,
     Commodity::Payload,
     Commodity::Metal,
@@ -29,9 +31,29 @@ impl Commodity {
         self as usize
     }
 
-    fn is_propellant(self) -> bool {
-        matches!(self, Commodity::Lox | Commodity::Ch4)
+    /// The fuel burned with LOX in `p`.
+    pub fn fuel(p: Propellant) -> Commodity {
+        match p {
+            Propellant::Methalox => Commodity::Ch4,
+            Propellant::Hydrolox => Commodity::Lh2,
+        }
     }
+
+    /// Whether a ship burning `p` carries this in its tanks rather than its
+    /// hold.
+    fn tanked(self, p: Propellant) -> bool {
+        self == Commodity::Lox || self == Commodity::fuel(p)
+    }
+}
+
+/// Fraction of a stock of `c` left after `days`.
+fn kept(sc: &Scenario, c: Commodity, days: f64) -> f64 {
+    PROPELLANTS
+        .iter()
+        .find(|&&p| Commodity::fuel(p) == c)
+        .map_or(1.0, |&p| {
+            (1.0 - sc.propellant(p).fuel_boiloff_per_day).powf(days)
+        })
 }
 
 /// $/kg × t → $M.
@@ -170,15 +192,16 @@ impl Lp {
             };
         }
 
-        // Stocks.
+        // Stocks, less boil-off over each period.
         for node_rows in balance.iter_mut() {
-            for c_rows in node_rows.iter_mut() {
+            for (c, c_rows) in COMMODITIES.iter().zip(node_rows.iter_mut()) {
+                let keep = kept(sc, *c, sc.cal.period_days);
                 let mut prev: Option<Col> = None;
                 for row in c_rows.iter_mut() {
                     let s = pb.add_column(0.0, 0.0..);
                     row.add(s, -1.0);
                     if let Some(prev) = prev {
-                        row.add(prev, 1.0);
+                        row.add(prev, keep);
                     }
                     prev = Some(s);
                 }
@@ -193,6 +216,7 @@ impl Lp {
             for (c, goods) in [
                 (Commodity::Lox, sc.propellant_usd_per_kg),
                 (Commodity::Ch4, sc.propellant_usd_per_kg),
+                (Commodity::Lh2, sc.propellant_usd_per_kg),
                 (Commodity::Equipment, sc.equipment_usd_per_kg),
                 (Commodity::Payload, 0.0),
             ] {
@@ -238,11 +262,12 @@ impl Lp {
                 let mut delivered = Vec::new();
                 for &n in &d.nodes {
                     let x = pb.add_column(0.0, 0.0..);
-                    match d.what {
-                        Demanded::Payload => bal!(n, Commodity::Payload, p).add(x, -1.0),
-                        Demanded::Propellant => {
-                            bal!(n, Commodity::Lox, p).add(x, -sc.lox_share);
-                            bal!(n, Commodity::Ch4, p).add(x, sc.lox_share - 1.0);
+                    match d.what.propellant() {
+                        None => bal!(n, Commodity::Payload, p).add(x, -1.0),
+                        Some(prop) => {
+                            let lox = sc.propellant(prop).lox_share;
+                            bal!(n, Commodity::Lox, p).add(x, -lox);
+                            bal!(n, Commodity::fuel(prop), p).add(x, lox - 1.0);
                         }
                     }
                     serve.add(x, -1.0);
@@ -281,6 +306,7 @@ impl Lp {
                 for (c, y) in [
                     (Commodity::Lox, f.output.lox),
                     (Commodity::Ch4, f.output.ch4),
+                    (Commodity::Lh2, f.output.lh2),
                     (Commodity::Metal, f.output.metal),
                 ] {
                     if y > 0.0 {
@@ -391,11 +417,12 @@ impl Lp {
                 net.node(e.from).system != earth_system && net.node(e.to).system == earth_system;
             let outbound =
                 net.node(e.from).system == earth_system && net.node(e.to).system != earth_system;
-            let r = (e.dv / sc.ve).exp() - 1.0;
             for (k, ship) in sc.ships.iter().enumerate() {
                 if !can_fly(ship, e) {
                     continue;
                 }
+                let prop = sc.propellant(ship.propellant);
+                let r = (e.dv / prop.ve).exp() - 1.0;
                 if !ship.interplanetary && net.node(e.from).system != earth_system {
                     continue;
                 }
@@ -406,7 +433,7 @@ impl Lp {
                 let mut cargo = Vec::new();
                 for c in COMMODITIES {
                     let allowed = match c {
-                        Commodity::Lox | Commodity::Ch4 => true,
+                        Commodity::Lox | Commodity::Ch4 | Commodity::Lh2 => true,
                         Commodity::Equipment | Commodity::Payload => !inbound,
                         Commodity::Metal => !outbound,
                     };
@@ -420,7 +447,7 @@ impl Lp {
                 let mut tank = Terms::default();
                 tank.add(trips, r * ship.dry - ship.tank);
                 for &(c, x) in &cargo {
-                    if c.is_propellant() {
+                    if c.tanked(ship.propellant) {
                         tank.add(x, 1.0 + r);
                     } else {
                         hold.add(x, 1.0);
@@ -434,8 +461,8 @@ impl Lp {
                 let burn =
                     |b: &mut Terms, share: f64, x: Col, mass: f64| b.add(x, -share * r * mass);
                 for (c, share) in [
-                    (Commodity::Lox, sc.lox_share),
-                    (Commodity::Ch4, 1.0 - sc.lox_share),
+                    (Commodity::Lox, prop.lox_share),
+                    (Commodity::fuel(ship.propellant), 1.0 - prop.lox_share),
                 ] {
                     burn(&mut bal!(e.from, c, e.leave), share, trips, ship.dry);
                     for &(_, x) in &cargo {
@@ -444,7 +471,7 @@ impl Lp {
                 }
                 for &(c, x) in &cargo {
                     bal!(e.from, c, e.leave).add(x, -1.0);
-                    bal!(e.to, c, e.arrive).add(x, 1.0);
+                    bal!(e.to, c, e.arrive).add(x, kept(sc, c, e.days));
                 }
                 // Ships.
                 fleet_bal[k][node_index[&e.from]][e.leave].add(trips, -1.0);
@@ -701,14 +728,39 @@ mod tests {
             price("leo", 4)
         );
         // One tonne at EML1 costs at least the propellant that pushed it
-        // there (the ship's dry mass and return add more).
-        let r = (3.77 / sc.ve).exp();
+        // there with the better propellant (the ship's dry mass and return
+        // add more), and not much more than with methalox.
+        let r = |p: Propellant| (3.77 / sc.propellant(p).ve).exp();
         let l1 = price("eml1", 4);
         assert!(
-            l1 > r * at_leo && l1 < 1.5 * r * at_leo,
-            "{l1} vs {}",
-            r * at_leo
+            l1 > r(Propellant::Hydrolox) * at_leo && l1 < 1.5 * r(Propellant::Methalox) * at_leo,
+            "{l1} vs {} and {}",
+            r(Propellant::Hydrolox) * at_leo,
+            r(Propellant::Methalox) * at_leo
         );
+    }
+
+    #[test]
+    fn hydrogen_boils_off_in_storage() {
+        let (net, mut sc, edges) = short(4);
+        sc.facilities.clear();
+        let closed = vec![ProgramSetup::Closed; sc.programs.len()];
+        // Launch gets 10× dearer halfway: worth stockpiling hydrogen, unless
+        // it boils off.
+        let half = sc.cal.periods / 2;
+        for p in &mut sc.launch_usd_per_kg[half..] {
+            *p *= 10.0;
+        }
+        let mut bought_late = |boiloff: f64| {
+            sc.propellants[Propellant::Hydrolox as usize].fuel_boiloff_per_day = boiloff;
+            let plan = Lp::new(&sc, &net, &edges, false).solve(&sc, &closed);
+            assert_eq!(plan.status, HighsModelStatus::Optimal);
+            plan.bought[&Commodity::Lh2][half..].iter().sum::<f64>()
+        };
+        let kept = bought_late(0.0);
+        let lost = bought_late(0.05);
+        assert!(kept < 1e-3, "without boil-off, all hydrogen is bought early: {kept}");
+        assert!(lost > 1.0, "with boil-off, some is bought late: {lost}");
     }
 
     #[test]

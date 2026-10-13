@@ -117,7 +117,7 @@ pub fn classify(
     let dt = sc.cal.period_years();
 
     let mut supply = [0.0; 4];
-    supply[Source::Earth as usize] = [Commodity::Lox, Commodity::Ch4]
+    supply[Source::Earth as usize] = [Commodity::Lox, Commodity::Ch4, Commodity::Lh2]
         .iter()
         .map(|c| plan.bought[c][..path_end].iter().sum::<f64>())
         .sum();
@@ -126,8 +126,8 @@ pub fn classify(
         .collect();
     let mut opening_musd = [0.0; 4];
     for (k, f) in sc.facilities.iter().enumerate() {
-        let propellant = f.output.lox + f.output.ch4;
-        supply[sources[k]] += plan.capacity[k][..path_end].iter().sum::<f64>() * dt * propellant;
+        supply[sources[k]] +=
+            plan.capacity[k][..path_end].iter().sum::<f64>() * dt * f.output.propellant();
         opening_musd[sources[k]] += plan.installed[k][..opening_end]
             .iter()
             .enumerate()
