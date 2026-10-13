@@ -1,0 +1,191 @@
+# The Δv network: places ships can be, and the fixed legs between places in
+# the same planetary system. Interplanetary legs are not listed; they are
+# computed from the ephemerides between nodes that have a gateway.
+# Every small body in data/neas.toml is also a node, with a rendezvous
+# gateway (Δv = v∞).
+#
+# Units: km, km/s, days. Δv values are approximate, from standard Δv maps
+# (Wikipedia "Delta-v budget"), cross-checked against Hohmann estimates in
+# crates/orbit/src/network.rs tests.
+#
+# Gateways connect a node to heliocentric space:
+#   orbit = { radius_km, speed_kms?, periapsis_radius_km? }
+#     A burn to or from hyperbolic excess speed v∞ happens at
+#     periapsis_radius_km (default: the node's radius) for the Oberth
+#     effect; a node above that periapsis first drops to it. speed_kms
+#     defaults to circular speed.
+#   aerocapture = true
+#     Arrivals may brake in the atmosphere (aero-capable ships only).
+#   entry_dv = X
+#     Surface node reachable by direct atmospheric entry from an
+#     interplanetary arrival, costing X for the propulsive terminal phase.
+
+# --- Earth system -----------------------------------------------------------
+
+[[node]]
+id = "earth-surface"
+name = "Earth surface"
+system = "earth"
+
+[[node]]
+id = "leo"
+name = "Low Earth orbit"
+system = "earth"
+orbit = { radius_km = 6778.137 }  # 400 km altitude
+aerocapture = true
+
+[[node]]
+id = "eml1"
+name = "Earth–Moon L1"
+system = "earth"
+# Co-rotating with the Moon (27.32-day period); burns drop to a 400 km
+# perigee and fire there.
+orbit = { radius_km = 326400.0, speed_kms = 0.869, periapsis_radius_km = 6778.137 }
+aerocapture = true
+
+[[node]]
+id = "llo"
+name = "Low lunar orbit"
+system = "earth"
+
+[[node]]
+id = "moon-south-pole"
+name = "Lunar south pole"
+system = "earth"
+
+[[node]]
+id = "moon-mare"
+name = "Lunar mare"
+system = "earth"
+
+# --- Mars system ------------------------------------------------------------
+
+[[node]]
+id = "lmo"
+name = "Low Mars orbit"
+system = "mars"
+orbit = { radius_km = 3689.5 }  # 300 km altitude
+aerocapture = true
+
+[[node]]
+id = "mars-surface"
+name = "Mars surface"
+system = "mars"
+entry_dv = 1.0
+
+[[node]]
+id = "phobos"
+name = "Phobos"
+system = "mars"
+orbit = { radius_km = 9376.0, periapsis_radius_km = 3689.5 }
+aerocapture = true
+
+# --- Fixed legs -------------------------------------------------------------
+# aero = true: the leg brakes in an atmosphere (aero-capable ships only).
+# launch = true: a purchased launch service, not a flown leg.
+
+[[leg]]
+from = "earth-surface"
+to = "leo"
+dv = 9.4
+days = 0.1
+launch = true
+
+[[leg]]
+from = "leo"
+to = "eml1"
+dv = 3.77
+days = 4.0
+
+[[leg]]
+from = "eml1"
+to = "leo"
+dv = 3.77
+days = 4.0
+
+[[leg]]
+from = "eml1"
+to = "leo"
+dv = 0.77
+days = 4.0
+aero = true
+
+[[leg]]
+from = "eml1"
+to = "llo"
+dv = 0.64
+days = 3.0
+
+[[leg]]
+from = "llo"
+to = "eml1"
+dv = 0.64
+days = 3.0
+
+[[leg]]
+from = "leo"
+to = "llo"
+dv = 4.04
+days = 4.5
+
+[[leg]]
+from = "llo"
+to = "leo"
+dv = 4.04
+days = 4.5
+
+[[leg]]
+from = "llo"
+to = "leo"
+dv = 0.9
+days = 4.5
+aero = true
+
+[[leg]]
+from = "llo"
+to = "moon-south-pole"
+dv = 1.87
+days = 0.1
+
+[[leg]]
+from = "moon-south-pole"
+to = "llo"
+dv = 1.87
+days = 0.1
+
+[[leg]]
+from = "llo"
+to = "moon-mare"
+dv = 1.87
+days = 0.1
+
+[[leg]]
+from = "moon-mare"
+to = "llo"
+dv = 1.87
+days = 0.1
+
+[[leg]]
+from = "mars-surface"
+to = "lmo"
+dv = 4.1
+days = 0.1
+
+[[leg]]
+from = "lmo"
+to = "mars-surface"
+dv = 1.0
+days = 0.1
+aero = true
+
+[[leg]]
+from = "lmo"
+to = "phobos"
+dv = 1.21
+days = 0.1
+
+[[leg]]
+from = "phobos"
+to = "lmo"
+dv = 1.21
+days = 0.1
