@@ -1,0 +1,255 @@
+# The economy for the M2 kill-test (crates/plan): prices, ships, plants,
+# resources and demand. Uncertain values are distributions, sampled once per
+# game: { median, sigma } is lognormal (sigma of the natural log), { low,
+# high } is uniform, a bare number is fixed.
+#
+# Units: tonnes (t), $M for money unless a key says otherwise, t/yr for
+# rates. Sources are cited inline; [ext] marks our own extrapolation from
+# them, and [guess] a value with no published anchor.
+
+start = "2040-01-01"
+end = "2076-01-01"
+discount_rate = 0.04
+
+surfaces = ["moon-south-pole", "moon-mare", "mars-surface"]
+
+[propellant]
+isp_s = 375.0
+mixture = 3.6
+
+[earth]
+# Reusable heavy launch, $/kg to LEO. 2040: Citi GPS 2022 ($100), Terzi &
+# Nicoli 2026 ($273), ~$600 if reuse disappoints [ext]. 2075: Metzger 2023
+# (arXiv:2303.09011) gives $119/kg at 44 kt/yr up-mass, $30 at 436 kt/yr,
+# $436 at 4.4 kt/yr. Interpolated geometrically between the two.
+launch_usd_per_kg_start = { median = 250.0, sigma = 0.6 }
+launch_usd_per_kg_end = { median = 100.0, sigma = 0.6 }
+# Recurring fabrication of space industrial hardware, $/kg: Hein et al. 2020
+# optimistic mass production $10k; Metzger 2023 range across studies
+# $23–61k; Starlink-class ~$1k [ext].
+equipment_usd_per_kg = { median = 10000.0, sigma = 0.8 }
+propellant_usd_per_kg = 0.5
+
+[budget]
+# Capital spending only (equipment and ships). NASA FY2026 is $27.5B, of
+# which human exploration ~$12–15B; an Apollo-peak share is ~$58B (2025$).
+# A "coherent, well-funded" Authority at $20–60B/yr, about half capital
+# [guess].
+musd_per_year = { low = 10000.0, high = 30000.0 }
+
+[metals]
+# Platinum-group metals sold on Earth. World PGM market ~550 t/yr, ~$55/g
+# basket (WPIC 2025, 2026 prices). Price elasticity of demand about −0.5
+# [ext from WPIC, USGS 2025]: steps follow P = P0 (1 + C/5500 t)^−2 for
+# cumulative sales C, assuming asteroid supply spread over ~10 years [ext].
+steps = [[500.0, 50000.0], [1500.0, 36000.0], [3000.0, 21000.0], [10000.0, 7000.0], [1e6, 2000.0]]
+price_factor = { median = 1.0, sigma = 0.5 }
+
+[[ship]]
+# Starship-class. Cost: no audited figure; $30M / $80M / $250M low /
+# central / high [ext from Musk 2019 and second-hand ~$100M reports].
+id = "hauler"
+dry_t = 120.0
+propellant_t = 1200.0
+cargo_t = 100.0
+price_musd = { median = 80.0, sigma = 0.6 }
+aero = true
+interplanetary = true
+lands = ["mars-surface"]
+turnaround_days = 5.0
+
+[[ship]]
+# Cislunar lander/tanker: no heat shield, no interplanetary capability
+# [guess, scaled from the hauler].
+id = "lander"
+dry_t = 40.0
+propellant_t = 400.0
+cargo_t = 100.0
+price_musd = { median = 40.0, sigma = 0.6 }
+lands = ["moon-south-pole", "moon-mare"]
+turnaround_days = 3.0
+
+# Plants: equipment t per t/yr of output = plant + ore / grade, where ore is
+# equipment per t/yr of ore handled and grade is product per ore mass.
+
+[[facility]]
+# Polar ice to LOX (the hydrogen is not used: no carbon on the Moon).
+# Metzger 2023 baseline 0.05 t/(t/yr) (25 t for 500 t/yr); Kornuta et al.
+# 2019 ~0.014–0.018 at 1,000+ t/yr; Kleinhenz & Paz 2021 pilot plant ~1.2
+# with power. Excavation scales with 1/grade (Kleinhenz & Paz 2021; Sowers &
+# Dreyer 2019); split here 0.03 + 0.02 at 5 wt% [ext]. Grade: LCROSS
+# 5.6 ± 2.9 wt% (Colaprete et al. 2010); O2 is 8/9 of water, so 0.89 × water
+# wt%.
+id = "lunar-ice"
+node = "moon-south-pole"
+output = { lox = 1.0 }
+equipment_t_per_tpy = { plant = { median = 0.03, sigma = 0.8 }, ore = { median = 0.001, sigma = 0.8 } }
+grade = { median = 0.05, sigma = 0.5 }
+build_months = 12.0
+
+[[facility]]
+# Oxygen from regolith at a sunlit polar site: carbothermal 0.39 t/(t/yr)
+# with power and margin (Linne et al. 2021); molten regolith electrolysis
+# 0.28 (Guerrero-Gonzalez & Zabel 2023).
+id = "regolith-oxygen-polar"
+node = "moon-south-pole"
+output = { lox = 1.0 }
+equipment_t_per_tpy = { plant = { median = 0.35, sigma = 0.4 }, ore = 0.0 }
+grade = 1.0
+build_months = 12.0
+
+[[facility]]
+# Same at a mare site, which adds the 14-day night: fission or storage
+# brings it to ~0.8–1.0 [ext from Linne et al. 2021 power figures].
+id = "regolith-oxygen-mare"
+node = "moon-mare"
+output = { lox = 1.0 }
+equipment_t_per_tpy = { plant = { median = 0.9, sigma = 0.4 }, ore = 0.0 }
+grade = 1.0
+build_months = 12.0
+
+[[facility]]
+# Methalox from ground ice and atmospheric CO2 (CO2 + 2H2O → CH4 + 2O2, so
+# O2:CH4 = 4:1). Kleinhenz & Paz 2017: 1.7 t, 52 kW for 22.6 t/yr; with
+# fission at 0.15 t/kWe 0.42 t/(t/yr), without power 0.075, solar with
+# storage ~0.8 [ext]. Mid-latitude ground ice is rich, so ore handling is
+# minor [guess].
+id = "mars-ice"
+node = "mars-surface"
+output = { lox = 0.8, ch4 = 0.2 }
+equipment_t_per_tpy = { plant = { median = 0.35, sigma = 0.6 }, ore = 0.0005 }
+grade = { median = 0.3, sigma = 0.5 }
+build_months = 12.0
+
+[[facility]]
+# Phobos may be carbonaceous (D-type spectrum) or not; if volatile-rich,
+# like a C-type asteroid plant with Mars-distance sunlight (×2.3 power
+# mass) [guess].
+id = "phobos-volatiles"
+node = "phobos"
+output = { lox = 0.7826, ch4 = 0.2174 }
+equipment_t_per_tpy = { plant = { median = 0.2, sigma = 0.8 }, ore = { median = 0.001, sigma = 0.8 } }
+grade = { median = 0.06, sigma = 0.5 }
+present = 0.4
+build_months = 12.0
+
+# Asteroid composition priors by spectral class; the weights are the
+# probability of each asteroid_plant's resource, the rest is barren.
+
+[[asteroid_class]]
+spectral = ["C", "B", "Cb", "Ch", "Cg", "Cgh", "D"]
+albedo = 0.06
+density_t_per_m3 = 1.3
+composition = { volatiles = 0.85 }
+
+[[asteroid_class]]
+spectral = ["S", "Sq", "S(IV)", "Sr", "Sk", "Q", "V"]
+albedo = 0.25
+density_t_per_m3 = 2.7
+composition = { pgm = 0.03 }
+
+[[asteroid_class]]
+spectral = ["X", "Xe", "Xc", "Xk", "M"]
+albedo = 0.2
+density_t_per_m3 = 3.5
+composition = { pgm = 0.4, volatiles = 0.1 }
+
+[[asteroid_class]]
+# NHATS small bodies with no spectrum [guess, roughly the NEA population].
+spectral = ["unknown"]
+albedo = 0.14
+density_t_per_m3 = 2.0
+composition = { volatiles = 0.3, pgm = 0.08 }
+
+[[asteroid_plant]]
+# Methalox from hydrated minerals and organics. Plant alone is light:
+# Sercel 2016 (APIS) claims <2 t for tens of t/week; whole systems
+# including transport run 0.14 (APIS) to 3.7 (Calla et al. 2018) t/(t/yr),
+# so plant-only 0.1 [ext]. Grade: CI ~12 wt% water, CM 6–13 (Garenne et al.
+# 2014); carbon 2–4.7 wt% limits methane, ~0.136 methalox per CI mass at
+# 63% carbon recovery [ext].
+id = "volatiles"
+output = { lox = 0.7826, ch4 = 0.2174 }
+equipment_t_per_tpy = { plant = { median = 0.1, sigma = 0.8 }, ore = { median = 0.001, sigma = 0.8 } }
+grade = { median = 0.10, sigma = 0.35 }
+minable_fraction = 0.5
+build_months = 12.0
+
+[[asteroid_plant]]
+# Platinum-group metals from metal-rich material: total PGM 7 / 27 / 75 ppm
+# (median / 70th / 90th percentile, Elvis 2014 after Kargel 1994), 50%
+# recovery. Metal ore is hard to process [guess: 0.003 t per t/yr ore].
+# Hein et al. 2020: returning platinum is viable only under unlikely
+# conditions.
+id = "pgm"
+output = { metal = 1.0 }
+equipment_t_per_tpy = { plant = 5.0, ore = { median = 0.003, sigma = 1.0 } }
+grade = { median = 10e-6, sigma = 0.8 }
+minable_fraction = 0.5
+build_months = 12.0
+
+# Third-party demand: Q = ref_tpy × (price / ref_usd_per_kg)^−elasticity,
+# growing each year. Launch-market elasticity is ~1.5–2.5 below a few
+# $k/kg (Metzger 2023 citing Ross et al.). Payload demand to Mars, the Moon
+# and asteroids has no published curve [guess].
+
+[[demand]]
+# Earth-departing traffic refuelling at the hub. ULA's 2016 offer: $1,000/kg
+# at EML1; Sercel 2016: ~400 t/yr at the top of the well.
+id = "hub-propellant"
+what = "propellant"
+nodes = ["eml1"]
+ref_tpy = { median = 400.0, sigma = 0.7 }
+ref_usd_per_kg = 1000.0
+elasticity = 1.5
+growth = 0.03
+max_usd_per_kg = 64000.0
+min_usd_per_kg = 125.0
+
+[[demand]]
+id = "lunar-bases"
+what = "payload"
+nodes = ["moon-south-pole", "moon-mare"]
+ref_tpy = { median = 200.0, sigma = 0.8 }
+ref_usd_per_kg = 5000.0
+elasticity = 1.5
+growth = 0.03
+max_usd_per_kg = 1024000.0
+min_usd_per_kg = 250.0
+
+[[demand]]
+id = "mars-programs"
+what = "payload"
+nodes = ["mars-surface"]
+ref_tpy = { median = 50.0, sigma = 0.8 }
+ref_usd_per_kg = 5000.0
+elasticity = 1.5
+growth = 0.03
+max_usd_per_kg = 1024000.0
+min_usd_per_kg = 250.0
+
+[[demand]]
+id = "asteroid-prospectors"
+what = "payload"
+nodes = [
+  "ryugu", "bennu", "2008-ev5", "nereus", "didymos", "1996-fg3", "itokawa", "apophis",
+  "2000-sg344", "2006-bz147", "2001-fr85", "2009-hc", "2024-ge6", "2012-uv136",
+  "2007-cs5", "2010-jk1", "2009-uy19", "2012-md7", "2017-sv19", "2026-ht",
+]
+ref_tpy = { median = 20.0, sigma = 0.8 }
+ref_usd_per_kg = 5000.0
+elasticity = 1.5
+growth = 0.03
+max_usd_per_kg = 1024000.0
+min_usd_per_kg = 250.0
+
+[[demand]]
+id = "cislunar-tourism"
+what = "payload"
+nodes = ["llo"]
+ref_tpy = { median = 30.0, sigma = 0.8 }
+ref_usd_per_kg = 5000.0
+elasticity = 1.5
+growth = 0.03
+max_usd_per_kg = 1024000.0
+min_usd_per_kg = 250.0
