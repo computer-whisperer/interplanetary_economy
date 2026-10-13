@@ -333,12 +333,14 @@ Minimal and information-dense:
     and standing routes.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.
   - Deterministic and seeded, with scenario scripts as tests.
-- **M2, kill-test optimizer.** First sweep done (2026-10-13), see M2.md:
-  asteroid-led plans win 83% of draws, so the gate fails as configured;
-  the LP flatters asteroids (no fixed costs, perfect knowledge of
-  composition).
-  - Model: a time-expanded network with quarterly steps (monthly gave the
-    same plan at 7× the solve time). Facility modules and
+- **M2, kill-test optimizer.** Two sweeps done (2026-10-13), see M2.md.
+  Without fixed costs, asteroid-led plans win 84% of draws. With
+  technology and survey programs (sourced costs, lead times), asteroids are
+  still the best source in ~70% of draws and the Moon in ~20–25%, though
+  early decisions now differ across draws. The gate's path half still
+  fails.
+  - Model: a time-expanded network with six-month steps (quarterly and
+    monthly steps gave the same plans at 3× and 20× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to
     classify strategies). For a fixed ship and leg, propellant per trip is
     linear in cargo. Interplanetary edges exist only at discretized
