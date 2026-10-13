@@ -90,7 +90,12 @@ impl FromStr for Epoch {
         if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
             return Err(bad());
         }
-        Ok(Epoch::from_ymd(y, m, d))
+        let e = Epoch::from_ymd(y, m, d);
+        // from_ymd rolls 02-31 over into March; reject dates that do.
+        if e.ymd() != (y, m, d as f64) {
+            return Err(format!("{s:?} is not a calendar date"));
+        }
+        Ok(e)
     }
 }
 
@@ -121,6 +126,9 @@ mod tests {
         let e: Epoch = "2033-04-28".parse().unwrap();
         assert_eq!(e.to_string(), "2033-04-28");
         assert!("2033-13-01".parse::<Epoch>().is_err());
+        assert!("2041-02-31".parse::<Epoch>().is_err());
+        assert!("2041-04-31".parse::<Epoch>().is_err());
+        assert!("2040-02-29".parse::<Epoch>().is_ok());
         assert!("2033-04".parse::<Epoch>().is_err());
     }
 }

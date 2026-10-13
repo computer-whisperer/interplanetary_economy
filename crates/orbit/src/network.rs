@@ -59,10 +59,15 @@ impl OrbitGateway {
     }
 
     /// Δv to arrive by aerocapture: an atmospheric pass leaves the ship on an
-    /// ellipse whose apoapsis is the node; it raises periapsis and matches the
-    /// node's speed there.
+    /// ellipse whose apoapsis is the node, and one burn there raises
+    /// periapsis out of the atmosphere and matches the node's speed. For a
+    /// node above its periapsis that burn is the periapsis transfer, which
+    /// covers the trim; for a low orbit it is the trim alone.
     pub fn aerocapture_dv(&self) -> f64 {
-        AEROCAPTURE_TRIM_DV + self.periapsis_transfer().map_or(0.0, |(drop, _)| drop)
+        self.periapsis_transfer()
+            .map_or(AEROCAPTURE_TRIM_DV, |(drop, _)| {
+                drop.max(AEROCAPTURE_TRIM_DV)
+            })
     }
 
     /// For a node above its burn periapsis: the Δv between the node and an

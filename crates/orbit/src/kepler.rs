@@ -91,8 +91,9 @@ pub fn solve_kepler(m: f64, e: f64) -> f64 {
 /// Propagates a two-body state by `dt` seconds with universal variables
 /// (Curtis, Algorithms 3.3–3.4), solved by Laguerre–Conway iteration, which
 /// converges for any conic where Newton's method can diverge. Elliptic orbits
-/// propagate by `dt` modulo the period.
-pub fn propagate(s: State, dt: f64, mu: f64) -> State {
+/// propagate by `dt` modulo the period; hyperbolic ones start from Vallado's
+/// initial guess. Returns `None` if the iteration does not converge.
+pub fn propagate(s: State, dt: f64, mu: f64) -> Option<State> {
     let sqrt_mu = mu.sqrt();
     let r0 = s.r.length();
     let vr0 = s.r.dot(s.v) / r0;
@@ -105,13 +106,24 @@ pub fn propagate(s: State, dt: f64, mu: f64) -> State {
 
     let k1 = r0 * vr0 / sqrt_mu;
     let k2 = 1.0 - alpha * r0;
-    let mut chi = if alpha > 0.0 {
+    let mut chi = if alpha > 1e-12 {
         sqrt_mu * alpha * dt
+    } else if alpha < -1e-12 {
+        // Vallado, Fundamentals of Astrodynamics, Algorithm 8.
+        let a = 1.0 / alpha;
+        let arg = -2.0 * mu * alpha * dt / (r0 * vr0 + dt.signum() * (-mu * a).sqrt() * k2);
+        let guess = dt.signum() * (-a).sqrt() * arg.ln();
+        if guess.is_finite() {
+            guess
+        } else {
+            sqrt_mu * dt / r0
+        }
     } else {
         sqrt_mu * dt / r0
     };
     const N: f64 = 5.0;
-    for _ in 0..100 {
+    let mut converged = false;
+    for _ in 0..200 {
         let z = alpha * chi * chi;
         let (c, sz) = (stumpff_c(z), stumpff_s(z));
         let f = k1 * chi * chi * c + k2 * chi.powi(3) * sz + r0 * chi - sqrt_mu * dt;
@@ -122,9 +134,16 @@ pub fn propagate(s: State, dt: f64, mu: f64) -> State {
             .sqrt();
         let step = N * f / (df + root.copysign(df));
         chi -= step;
+        if !chi.is_finite() {
+            return None;
+        }
         if step.abs() < 1e-13 * chi.abs().max(1.0) {
+            converged = true;
             break;
         }
+    }
+    if !converged {
+        return None;
     }
 
     let z = alpha * chi * chi;
@@ -135,10 +154,11 @@ pub fn propagate(s: State, dt: f64, mu: f64) -> State {
     let rn = r.length();
     let fdot = sqrt_mu / (rn * r0) * (z * sz - 1.0) * chi;
     let gdot = 1.0 - chi * chi / rn * c;
-    State {
+    let out = State {
         r,
         v: fdot * s.r + gdot * s.v,
-    }
+    };
+    (out.r.is_finite() && out.v.is_finite()).then_some(out)
 }
 
 fn stumpff_c(z: f64) -> f64 {
@@ -211,7 +231,7 @@ mod tests {
         let el = sample_orbit();
         let s0 = el.state();
         for &dt in &[60.0, 5_000.0, 20_000.0, 2.5 * el.period()] {
-            let a = propagate(s0, dt, MU_EARTH);
+            let a = propagate(s0, dt, MU_EARTH).unwrap();
             let b = el.advanced(dt).state();
             assert!(
                 (a.r - b.r).length() < 1e-5,
@@ -229,10 +249,29 @@ mod tests {
             v: DVec3::new(0.0, 12.0, 1.0),
         };
         let energy = |s: State| s.v.length_squared() / 2.0 - MU_EARTH / s.r.length();
-        let s1 = propagate(s0, 40_000.0, MU_EARTH);
+        let s1 = propagate(s0, 40_000.0, MU_EARTH).unwrap();
         assert!((energy(s1) - energy(s0)).abs() < 1e-9);
         // And back again.
-        let s2 = propagate(s1, -40_000.0, MU_EARTH);
+        let s2 = propagate(s1, -40_000.0, MU_EARTH).unwrap();
         assert!((s2.r - s0.r).length() < 1e-4);
+    }
+
+    /// Long hyperbolic propagations (once NaN from an overflowing initial
+    /// guess) agree with many short steps.
+    #[test]
+    fn propagate_long_hyperbolic() {
+        let s0 = State {
+            r: DVec3::new(7_000.0, 0.0, 0.0),
+            v: DVec3::new(0.0, 12.0, 1.0),
+        };
+        for dt in [1e6, -1e6, 1e7] {
+            let once = propagate(s0, dt, MU_EARTH).unwrap();
+            let mut stepped = s0;
+            for _ in 0..1000 {
+                stepped = propagate(stepped, dt / 1000.0, MU_EARTH).unwrap();
+            }
+            let rel = (once.r - stepped.r).length() / stepped.r.length();
+            assert!(rel < 1e-9, "dt={dt} rel={rel}");
+        }
     }
 }

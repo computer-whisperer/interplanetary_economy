@@ -20,9 +20,13 @@ pub struct LambertSolution {
 /// `tof` seconds about a body with gravitational parameter `mu`.
 ///
 /// Prograde means angular momentum along +z; a transfer angle beyond 180°
-/// (a Type II transfer) follows from the geometry. Returns `None` for
-/// degenerate geometry (collinear positions) or if iteration fails.
+/// (a Type II transfer) follows from the geometry. Returns `None` for a
+/// non-positive time of flight, degenerate geometry (collinear positions), or
+/// if iteration fails.
 pub fn solve(mu: f64, r1: DVec3, r2: DVec3, tof: f64) -> Option<LambertSolution> {
+    if tof.is_nan() || tof <= 0.0 {
+        return None;
+    }
     let c = r2 - r1;
     let (c_n, r1_n, r2_n) = (c.length(), r1.length(), r2.length());
     let s = (r1_n + r2_n + c_n) / 2.0;
@@ -192,7 +196,7 @@ mod tests {
             let Some(sol) = solve(MU_SUN, r1, r2, tof) else {
                 panic!("no solution for r1={r1:?} r2={r2:?} tof={tof}");
             };
-            let end = propagate(State { r: r1, v: sol.v1 }, tof, MU_SUN);
+            let end = propagate(State { r: r1, v: sol.v1 }, tof, MU_SUN).unwrap();
             let miss = (end.r - r2).length();
             assert!(
                 miss < 1e-6 * r2.length(),
@@ -204,6 +208,14 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 1500);
+    }
+
+    #[test]
+    fn non_positive_time_of_flight_has_no_solution() {
+        let (r1, r2) = (DVec3::new(1.5e8, 0.0, 0.0), DVec3::new(0.0, 2.2e8, 0.0));
+        assert!(solve(MU_SUN, r1, r2, -86_400.0).is_none());
+        assert!(solve(MU_SUN, r1, r2, 0.0).is_none());
+        assert!(solve(MU_SUN, r1, r2, f64::NAN).is_none());
     }
 
     struct SplitMix(u64);

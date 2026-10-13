@@ -299,7 +299,9 @@ Minimal and information-dense:
 - **M0, orbital engine.** Done (2026-10-12): `crates/orbit`, CLI `orbit`.
   - Planet ephemerides from JPL's approximate Keplerian elements. NEAs are
     piecewise two-body fits to JPL Horizons over 2040–2076 (`tools/neas/`),
-    good to ~0.002 au. Chose this over osculating elements propagated
+    good to ~0.002 au except in segments containing a close Earth flyby
+    (Bennu 0.016 au, 2000 SG344 0.010 au, 2017 SV19 0.006 au), where
+    positions also jump by that much at the segment boundary. Chose this over osculating elements propagated
     two-body, which drifted ~0.1 au over the span because they carry the
     Sun's wobble around the barycenter. Close Earth flybys appear as orbit
     changes.
