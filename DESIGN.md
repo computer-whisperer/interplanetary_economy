@@ -128,6 +128,10 @@ Chosen because it differentiates the sources:
 A Moon-first strategy is therefore only half a solution, so the network has
 cross-dependencies by construction.
 
+Under review (M2, 2026-10-13): this rule decides which source leads. With
+it, asteroids lead in ~70% of draws; counting lunar ice as complete
+propellant, the Moon leads in 84%. See M2.md, "Propellant chemistry test".
+
 ### Commodities
 
 | Commodity | Source (MVP) | Role |
@@ -338,7 +342,9 @@ Minimal and information-dense:
   technology and survey programs (sourced costs, lead times), asteroids are
   still the best source in ~70% of draws and the Moon in ~20–25%, though
   early decisions now differ across draws. The gate's path half still
-  fails.
+  fails. The methalox-only rule decides the winner: counting lunar ice as
+  complete propellant (hydrogen as fuel) makes the Moon lead in 84% of
+  draws instead.
   - Model: a time-expanded network with six-month steps (quarterly and
     monthly steps gave the same plans at 3× and 20× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to
