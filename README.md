@@ -1,7 +1,9 @@
 # Interplanetary economy
 
 A game about developing the solar system's economy under real orbital
-mechanics. Design: [DESIGN.md](DESIGN.md).
+mechanics. Design: [DESIGN.md](DESIGN.md). Next milestone: the n-body
+sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
+([M2.md](M2.md)).
 
 ## Layout
 
@@ -38,6 +40,6 @@ cargo run --release -p plan -- solve --free          # no program costs or lead 
 cargo run --release -p plan -- sweep --draws 100 --csv sweep.csv
 ```
 
-Choosing which programs to fund takes ~10 LP solves of ~9 s each at the
+Choosing which programs to fund takes ~10 LP solves of ~22 s each at the
 default six-month steps (`--months`); a sweep runs 12 draws at a time
 (`--jobs`).

@@ -1,6 +1,6 @@
 # Interplanetary Economy — MVP Design Sketch
 
-Status: draft, 2026-10-12. Working title TBD.
+Status: draft, 2026-10-12; n-body sandbox 2026-10-13. Working title TBD.
 
 ## Vision (full game, for context)
 
@@ -12,10 +12,11 @@ collecting tolls, granting concessions, issuing debt, governing settlements.
 **Institutional powers replace the tech tree as the progression spine.**
 Technology mostly arrives from Earth on its own schedule.
 
-The world is real orbital mechanics plus the rocket equation plus a fictional
-but plausible future economy. Decisions are mostly:
+The world is real n-body gravity plus the rocket equation plus a fictional
+but plausible future economy. Lagrange points and the orbits around them are
+not scripted; they are where the physics puts them. Decisions are mostly:
 
-- **where**: which sites to develop, which hubs to put depots at
+- **where**: which sites to develop, which orbits to put depots on
 - **when**: which window, how much lead time to buy
 - **how**: build it yourself or contract it out
 
@@ -64,9 +65,10 @@ and contracts are a separable layer (M4).
   important tuning knob: cheap launch makes in-space production pointless, and
   expensive launch makes it mandatory.
 - Single player. No combat.
-- Daily simulation tick, real time with pause, speeds from 1 day/s up to
-  about 1 month/s. Departures, arrivals, window openings and projected
-  stockouts can each auto-pause.
+- Daily economy tick, real time with pause, speeds from 1 day/s up to
+  about 1 month/s. Ships fly arcs integrated when their legs are planned,
+  so speed costs nothing extra. Departures, arrivals, window openings and
+  projected stockouts can each auto-pause.
 - Orbits are deterministic, so with perfect information the game would be a
   solved optimization problem. Uncertainty comes from:
   - hidden resource grades
@@ -77,43 +79,53 @@ and contracts are a separable layer (M4).
 
 ## Map
 
-The world uses patched conics. Heliocentric legs are Lambert solutions between
-bodies on Keplerian orbits. Legs within one body's sphere of influence use a
-fixed Δv table.
+The world is an n-body sandbox (M1a.md). Ships are integrated in the
+gravity of the real Sun, planets and Moon (JPL's DE440), and fly by flight
+rules that an autopilot sets.
 
-| Region | Nodes | Notes |
+Decided 2026-10-13, replacing **patched conics with a fixed Δv table**
+inside each planet's sphere of influence (M0). There, the Earth–Moon L1
+hub existed because the table listed it, and its cheap escape was a fit to
+two published numbers; that fit alone moved M2's results, and most of the
+economy's cost is the climb to L1. In the sandbox, Lagrange-point orbits,
+the natural pathways between them, cheap escapes and each orbit's
+station-keeping cost come from the physics, everywhere in the solar
+system, and where hubs go is for the economy and the player to find.
+Patched conics were cheaper and fully predictable; measured costs show
+integration is cheap enough (M1a.md, Measured costs), and the autopilot
+keeps the chaos away from the player.
+
+**Places:**
+
+| Region | Places | Notes |
 |---|---|---|
-| Earth | Surface, LEO, EML1 | Surface→LEO is a purchased launch service, not a flown leg. EML1 is the high-energy hub: cheap from the Moon, cheap to depart interplanetary. |
-| Moon | LLO, South Pole, Mare | South Pole: ice, near-continuous sunlight. Mare: regolith only, 14-day night. |
-| Mars | Low Mars orbit, Surface, Phobos | Surface site is mid-latitude ground ice. Phobos composition is uncertain, which makes it a prospecting gamble. |
+| Earth | Surface; low and high Earth orbits; orbits about Sun–Earth L1 and L2 | Surface→LEO is a purchased launch service, not a flown leg. |
+| Cislunar | Lyapunov and halo orbits about Earth–Moon L1 and L2; distant retrograde orbits (DROs) about the Moon | The near-rectilinear halo orbit (NRHO) is an L2 halo that spends most of its week high over the lunar south pole. |
+| Moon | Low lunar orbits, South Pole, Mare | South Pole: ice, near-continuous sunlight. Mare: regolith only, 14-day night. |
+| Mars | Low Mars orbits, Surface, Phobos | Surface site is mid-latitude ground ice. Phobos composition is uncertain, which makes it a prospecting gamble. |
 | NEAs | ~8 real asteroids from NASA's NHATS accessibility list | Composition class from spectral type where known (Ryugu and Bennu are carbonaceous). Grade stays hidden until surveyed. |
 
-Approximate local Δv in km/s (from standard Δv maps; M0 calibrates them):
+Stations and depots sit on a member of an orbit family, chosen freely
+within the family. Each has an upkeep, the station-keeping Δv per year:
+an L1 halo needs regular corrections, a DRO almost none.
 
-| Leg | Δv (km/s) |
-|---|---|
-| LEO → EML1 | ≈ 3.8 |
-| EML1 → LLO | ≈ 0.6 |
-| LLO ↔ lunar surface | ≈ 1.9 each way |
-| EML1 or LLO → LEO with aerobraking | ≈ 0.8–0.9 |
-| Mars surface → LMO | ≈ 4.1 |
-| Mars landing | mostly aerodynamic, ~1 propulsive |
+### Trajectories
 
-### Interplanetary legs
-
-The Lambert solution gives a hyperbolic excess speed v∞ at each end. It is
-converted into burns at the node like this:
-
-- **Departure from a low orbit:** an Oberth burn,
-  Δv = √(v∞² + v_esc²) − v_circ.
-- **Departure from EML1:** drop to a low perigee first, then burn there.
-- **Arrival:** either propulsive capture (same formula) or aerocapture at
-  Earth or Mars, at ≈ 0 Δv for aero-capable ships.
-- **NEA arrival:** a rendezvous, Δv = v∞, since there is no gravity well.
-
-Every origin–destination pair gets a precomputed porkchop over departure date ×
-time of flight. The game reads off a window calendar, and for each shipment a
-choice along the Δv versus transit-time frontier.
+- **Legs:** a leg goes from a start (a ship, or an orbit) to a goal (an
+  orbit, a rendezvous, a surface site, or an escape) within constraints
+  (departure window, longest time, most Δv). The autopilot offers options
+  along the Δv-versus-time frontier, each a reference trajectory plus the
+  flight rules to fly it. For an interplanetary leg the frontier is the
+  porkchop: departure date × time of flight.
+- **Autopilot:** a playbook of known transfer types gives starting
+  guesses (Lambert arcs, two-burn transfers between orbits, the natural
+  pathways into and out of Lagrange-point orbits, ballistic lunar
+  transfers, lunar flybys), and correction makes them fly in the sandbox.
+- **Flight rules** run at discrete events: burns, course corrections,
+  station-keeping, aerocapture and entry (aero-capable ships, at Earth and
+  Mars), and landings and ascents (Δv from a gravity-loss model per body).
+- **Costs:** the economy sees the legs that were flown: Δv, time, and
+  upkeep where ships wait.
 
 ## Physical economy
 
@@ -169,11 +181,11 @@ Output scales with the Equipment delivered, so expansion is incremental.
 
 | Facility | Sites | Output |
 |---|---|---|
-| Depot | any orbital node | stores propellant, sells it to traffic |
+| Depot | any station orbit | stores propellant, sells it to traffic |
 | Ice plant | Moon South Pole, Mars surface, C-type NEA, Phobos (if wet) | LOX + hydrogen (Moon); LOX + methane (elsewhere) |
 | Regolith oxygen plant | any lunar site, Mars surface | LOX; more equipment per t/yr than ice |
 | Metals mine | metal-rich NEA | Precious metals |
-| Outpost | any surface or orbital node | houses crew, consumes Supplies |
+| Outpost | any surface site or station orbit | houses crew, consumes Supplies |
 
 - Lunar ice comes in finite deposits of falling grade (rich, typical,
   lean), each drawn per game; leaner ice needs more equipment per t/yr.
@@ -193,13 +205,13 @@ capacity, whether it can aerocapture, and which surfaces it can land on.
 - **Lunar lander/tanker:** stays in cislunar space; methalox and hydrolox
   versions.
 - **Cislunar tug** (hydrolox, with an aerobrake): moves propellant and
-  cargo between LEO, L1 and lunar orbit.
+  cargo between LEO, high cislunar orbits and lunar orbit.
 - **Crew transport:** habitat plus shielding. Crew legs have a maximum transit
   time, a stand-in for radiation dose.
 
-Every leg is costed with the rocket equation, and ships refuel at depots. A
-route is feasible only if each depot along it holds enough propellant *when
-the ship arrives*. That is where lead time bites.
+Every burn is costed with the rocket equation, and ships refuel at depots.
+A route is feasible only if each depot along it holds enough propellant
+*when the ship arrives*. That is where lead time bites.
 
 ### Prospecting and failure
 
@@ -270,12 +282,16 @@ curve whose elasticity comes from the cost structure, not from a formula.
 
 ## Player actions
 
-- Buy launches and ships. Schedule missions: ship, cargo, legs, and a
-  departure picked from the porkchop.
+- Buy launches and ships. Plan missions: ship, cargo, and a chain of
+  legs (reach this orbit, meet that depot, land there, by this date); the
+  autopilot offers options along each leg's Δv-versus-time frontier and the
+  player picks.
 - **Standing routes**, modeled on the WOLF mod's logistics: "every Earth→Mars
   window, send a hauler with this manifest along this path, taking the
-  cheapest departure with time of flight ≤ N days." These run automatically
-  and are flagged when they become infeasible.
+  cheapest departure with time of flight ≤ N days." These run automatically,
+  the autopilot re-plans each departure from the previous one, and they are
+  flagged when they become infeasible.
+- Place stations and depots on orbits.
 - Build and expand facilities.
 - Survey sites.
 - Set depot prices (once granted).
@@ -285,8 +301,8 @@ curve whose elasticity comes from the cost structure, not from a formula.
 ## Contracts layer (M4, separable)
 
 Contract types:
-- **Fixed-price delivery:** a firm delivers X to node N by date D.
-- **Offtake / anchor tenancy:** the Authority commits to buy Y t/yr at node N
+- **Fixed-price delivery:** a firm delivers X to place N by date D.
+- **Offtake / anchor tenancy:** the Authority commits to buy Y t/yr at place N
   at price P for T years. The firm finances and builds the plant.
 - **Concession:** exclusive rights at a site in exchange for royalties.
 
@@ -315,11 +331,13 @@ strictly dominated, the layer gets cut or reworked.
 Minimal and information-dense:
 
 - **System map:** 2D heliocentric with real positions and a time scrubber,
-  plus a cislunar inset.
+  plus a cislunar inset drawn in the Earth–Moon rotating frame, where
+  Lagrange-point orbits are closed loops.
 - **Window calendar:** a Gantt chart of upcoming windows per route, shaded by
   Δv.
-- **Porkchop panel** when scheduling.
-- **Inventory projection** per node: stock over time with scheduled arrivals,
+- **Leg options panel** when planning: the Δv-versus-time frontier (a
+  porkchop for interplanetary legs).
+- **Inventory projection** per place: stock over time with scheduled arrivals,
   departures and consumption, with projected stockouts highlighted. This is
   the main lead-time instrument.
 - **Ledger:** appropriation, revenue, spending, debt, Standing, mandates, and
@@ -339,7 +357,7 @@ Minimal and information-dense:
   - Izzo Lambert solver, porkchop grids, Δv network (`data/network.toml`),
     window detection, and a window-calendar CLI. Porkchops are computed on
     demand (a full 36-year calendar takes ~4 s on 24 cores); caching is
-    deferred until M1 shows it is needed.
+    deferred until M1b shows it is needed.
   - Check: the Mars minimum-C3 values in NASA/TM-2010-216764 are reproduced
     to ≤0.25% (≤0.5% for one row). The handbook's 2035/2037/2039 dates are
     inconsistent with JPL's own ephemeris; its C3 values for those years are
@@ -354,19 +372,31 @@ Minimal and information-dense:
     L1, Mars orbit (with aerocapture) costs ~0.6 km/s and the best small
     NEAs 0.4–1.5 km/s, so the cost of the economy concentrates in reaching
     L1 (3.77 km/s from LEO, 2.5 from the lunar surface).
-  - Simplifications to revisit: zero-revolution Lambert only; the L1 flyby
-    phase is a fixed duration rather than computed; no aerocapture speed
-    limit.
-- **M1, headless sim core.**
-  - Nodes, commodities, facilities, ships, rocket-equation costing, missions
-    and standing routes.
+  - Simplifications to revisit: zero-revolution Lambert only; no
+    aerocapture speed limit.
+  - Superseded by M1a except for Lambert, porkchops, window detection and
+    time handling, which become the autopilot's first playbook entry. The
+    Δv network, the lunar-assist fit, the Kepler-element planets and the
+    NEA fits get deleted.
+- **M1a, n-body sandbox and autopilot.** See M1a.md. DE440 ephemerides,
+  ships integrated as particles, flight rules, and an autopilot that turns
+  legs into flown trajectories from a playbook of transfer types.
+  - **Gate.** Over departures every 5 days across 2040–2075, ≥ 99% of the
+    core cislunar and Mars-system legs design successfully, Δv lands within
+    10% of published values, and re-planning a standing route's departure
+    takes ≤ 0.1 s. Fail: fall back to tables computed once from the
+    physics, without per-trip flights in the sandbox.
+- **M1b, headless sim core** on the sandbox.
+  - Places, commodities, facilities, ships, rocket-equation costing,
+    missions and standing routes flown by the autopilot.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.
   - Deterministic and seeded, with scenario scripts as tests.
 - **M2, kill-test optimizer.** Done (2026-10-13), see M2.md. The gate
   fails as written and passes in intent. With methalox and hydrolox and
   finite lunar ice, the Moon leads 90% of draws; with methalox only,
   asteroids led ~75%. The rules, not the physics, decide the dominant
-  path, and the decisions after the first move differ by world.
+  path, and the decisions after the first move differ by world. Its
+  planner reads M0's Δv network; M1a rewires it to a graph of flown legs.
   - Model: a time-expanded network with six-month steps (quarterly and
     monthly steps gave the same plans at 3× and 20× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to
@@ -387,7 +417,8 @@ Minimal and information-dense:
 ## Deliberately out of the MVP
 
 - **Solar-electric tugs.** The first expansion. Spiraling out of LEO is slow,
-  so they also make EML1 more important.
+  so they also make high cislunar orbits more important. They need
+  continuous guidance, which the flight rules can take.
 - **Cyclers.** They only matter once there are real crew flows.
 - Tethers, mass drivers, ship design.
 - Local production of Supplies or Equipment.
@@ -407,5 +438,8 @@ Minimal and information-dense:
   decides whether contracting is a real choice.
 - **Clawback.** What fraction of net revenue Earth offsets against the
   appropriation.
-- **Stack.** Assumed: a headless Rust core for M0–M2. The UI technology gets
-  decided at M3.
+- **Presenting the option space.** The sandbox can fly anything its
+  physics allows; the MVP offers the autopilot's playbook options. How to
+  show more (natural pathways, frontiers, a burn editor) is open.
+- **Stack.** Assumed: a headless Rust core through M2. The UI technology
+  gets decided at M3.
