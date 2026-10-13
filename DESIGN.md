@@ -55,9 +55,11 @@ and contracts are a separable layer (M4).
 - 2040-01-01 to 2075-12-31: 36 years, about 17 Mars windows.
 - Real ephemerides and real Δv. Fictional economy: reusable heavy launch
   exists, and the Earth launch price per kg to LEO follows a falling, uncertain
-  curve drawn per game. The default runs from about $500/kg in 2040 to about
-  $150/kg in 2075. This is the single most important tuning knob: cheap launch
-  makes in-space production pointless, and expensive launch makes it mandatory.
+  curve drawn per game. The median runs from $250/kg in 2040 to $100/kg in
+  2075 (`data/economy.toml`, from Citi 2022, Terzi & Nicoli 2026 and Metzger
+  2023; this sketch first guessed $500 → $150). This is the single most
+  important tuning knob: cheap launch makes in-space production pointless, and
+  expensive launch makes it mandatory.
 - Single player. No combat.
 - Daily simulation tick, real time with pause, speeds from 1 day/s up to
   about 1 month/s. Departures, arrivals, window openings and projected
@@ -331,8 +333,12 @@ Minimal and information-dense:
     and standing routes.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.
   - Deterministic and seeded, with scenario scripts as tests.
-- **M2, kill-test optimizer.**
-  - Model: a time-expanded network with monthly steps. Facility modules and
+- **M2, kill-test optimizer.** First sweep done (2026-10-13), see M2.md:
+  asteroid-led plans win 83% of draws, so the gate fails as configured;
+  the LP flatters asteroids (no fixed costs, perfect knowledge of
+  composition).
+  - Model: a time-expanded network with quarterly steps (monthly gave the
+    same plan at 7× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to
     classify strategies). For a fixed ship and leg, propellant per trip is
     linear in cargo. Interplanetary edges exist only at discretized
