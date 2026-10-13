@@ -5,10 +5,9 @@ mod porkchop_png;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use orbit::consts::AU_KM;
-use orbit::ephem::{BodyKind, Ephemeris};
-use orbit::network::{Gateway, Network, NodeId};
+use orbit::ephem::{BodyId, BodyKind, Ephemeris};
 use orbit::time::Epoch;
-use orbit::transfer::{Grid, Porkchop, Route};
+use orbit::transfer::{Grid, Porkchop, default_tof_range};
 use orbit::windows::{Window, find_windows};
 use std::path::PathBuf;
 
@@ -30,44 +29,34 @@ enum Cmd {
         #[arg(long, default_value = "2040-01-01")]
         date: Epoch,
     },
-    /// List the network's nodes.
-    Nodes,
-    /// List the fixed legs between nodes of one system.
-    Legs,
-    /// Cheapest chain of fixed legs between two nodes of one system.
-    Path {
-        from: String,
-        to: String,
-        /// The ship can brake in atmospheres.
-        #[arg(long)]
-        aero: bool,
-    },
-    /// Transfer windows for one interplanetary route.
+    /// List the bodies: planets and candidate asteroids.
+    Bodies,
+    /// Transfer windows between two bodies.
     Windows {
         from: String,
         to: String,
         #[command(flatten)]
         search: Search,
     },
-    /// Windows from one node to every node in other systems, by date.
+    /// Windows from one body to every other body, by date.
     Calendar {
-        #[arg(long, default_value = "leo")]
+        #[arg(long, default_value = "earth")]
         from: String,
         #[command(flatten)]
         search: Search,
     },
-    /// Porkchop grid for one route: best transfer, optional PNG.
+    /// Porkchop grid between two bodies: best transfer, optional PNG.
     Porkchop {
         from: String,
         to: String,
         #[command(flatten)]
         search: Search,
+        /// Range of total excess speed shaded above the best transfer, km/s.
+        #[arg(long, default_value_t = 4.0)]
+        span: f64,
         /// Write the grid as a PNG heatmap (darker = cheaper).
         #[arg(long)]
         png: Option<PathBuf>,
-        /// Δv range shaded above the best transfer, km/s.
-        #[arg(long, default_value_t = 4.0)]
-        span: f64,
     },
 }
 
@@ -77,15 +66,14 @@ struct Search {
     start: Epoch,
     #[arg(long, default_value = "2076-01-01")]
     end: Epoch,
-    /// The ship can brake in atmospheres (aerocapture, direct entry).
-    #[arg(long)]
-    aero: bool,
-    /// A window spans departures within this many km/s of its best.
+    /// A window spans departures within this many km/s of its best total
+    /// excess speed.
     #[arg(long, default_value_t = 0.5)]
     margin: f64,
-    /// Omit windows whose best transfer costs more than this, km/s.
+    /// Omit windows whose best transfer needs more total excess speed than
+    /// this, km/s.
     #[arg(long)]
-    max_dv: Option<f64>,
+    max_v_inf: Option<f64>,
     /// Shortest time of flight, days (default: 0.3× Hohmann).
     #[arg(long)]
     tof_min: Option<f64>,
@@ -100,18 +88,26 @@ struct Search {
 
 struct World {
     eph: Ephemeris,
-    net: Network,
 }
 
 impl World {
-    fn node(&self, id: &str) -> Result<NodeId> {
-        self.net
+    fn body(&self, id: &str) -> Result<BodyId> {
+        self.eph
             .lookup(id)
-            .ok_or_else(|| anyhow!("unknown node {id:?} (see `orbit nodes`)"))
+            .ok_or_else(|| anyhow!("unknown body {id:?} (see `orbit bodies`)"))
     }
 
-    fn porkchop(&self, route: Route, s: &Search) -> Result<Porkchop> {
-        let (lo, hi) = route.default_tof_range(&self.eph, &self.net, s.start);
+    /// The two bodies of a transfer, which must differ.
+    fn pair(&self, from: &str, to: &str) -> Result<(BodyId, BodyId)> {
+        let (a, b) = (self.body(from)?, self.body(to)?);
+        if a == b {
+            bail!("a transfer needs two different bodies");
+        }
+        Ok((a, b))
+    }
+
+    fn porkchop(&self, from: BodyId, to: BodyId, s: &Search) -> Porkchop {
+        let (lo, hi) = default_tof_range(&self.eph, from, to, s.start);
         let grid = Grid::covering(
             s.start,
             s.end,
@@ -120,51 +116,37 @@ impl World {
             s.tof_max.unwrap_or(hi),
             s.tof_step,
         );
-        Porkchop::compute(&self.eph, &self.net, route, grid).map_err(|e| anyhow!(e))
+        Porkchop::compute(&self.eph, from, to, grid)
     }
 
-    fn windows(&self, route: Route, s: &Search) -> Result<Vec<Window>> {
-        let pc = self.porkchop(route, s)?;
-        let (a, b) = (
-            self.net.node(route.from).system,
-            self.net.node(route.to).system,
-        );
-        let mut windows = find_windows(&pc, self.eph.synodic_period_days(a, b, s.start), s.margin);
-        windows.retain(|w| s.max_dv.is_none_or(|max| w.best.dv() <= max));
-        Ok(windows)
+    fn windows(&self, from: BodyId, to: BodyId, s: &Search) -> Vec<Window> {
+        let pc = self.porkchop(from, to, s);
+        let synodic = self.eph.synodic_period_days(from, to, s.start);
+        let mut windows = find_windows(&pc, synodic, s.margin);
+        windows.retain(|w| s.max_v_inf.is_none_or(|max| w.best.v_inf_total() <= max));
+        windows
     }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let eph = Ephemeris::standard();
-    let net = Network::standard(&eph);
-    let world = World { eph, net };
+    let world = World {
+        eph: Ephemeris::standard(),
+    };
     match cli.cmd {
         Cmd::Ephem { body, date } => ephem(&world, &body, date),
-        Cmd::Nodes => {
-            nodes(&world);
+        Cmd::Bodies => {
+            bodies(&world);
             Ok(())
         }
-        Cmd::Legs => {
-            legs(&world);
-            Ok(())
-        }
-        Cmd::Path { from, to, aero } => path(&world, &from, &to, aero),
         Cmd::Windows { from, to, search } => {
-            let route = Route {
-                from: world.node(&from)?,
-                to: world.node(&to)?,
-                aero_capable: search.aero,
-            };
-            print_windows(
-                &world,
-                &world
-                    .windows(route, &search)?
-                    .iter()
-                    .map(|w| (route.to, *w))
-                    .collect::<Vec<_>>(),
-            );
+            let (from, to) = world.pair(&from, &to)?;
+            let windows: Vec<_> = world
+                .windows(from, to, &search)
+                .into_iter()
+                .map(|w| (to, w))
+                .collect();
+            print_windows(&world, &windows);
             Ok(())
         }
         Cmd::Calendar { from, search } => calendar(&world, &from, &search),
@@ -172,15 +154,11 @@ fn main() -> Result<()> {
             from,
             to,
             search,
-            png,
             span,
+            png,
         } => {
-            let route = Route {
-                from: world.node(&from)?,
-                to: world.node(&to)?,
-                aero_capable: search.aero,
-            };
-            porkchop(&world, route, &search, png, span)
+            let (from, to) = world.pair(&from, &to)?;
+            porkchop(&world, from, to, &search, png, span)
         }
     }
 }
@@ -227,103 +205,45 @@ fn ephem(w: &World, body: &str, date: Epoch) -> Result<()> {
     Ok(())
 }
 
-fn nodes(w: &World) {
-    println!("{:<16} {:<10} {:<34} gateway", "id", "system", "name");
-    for (_, n) in w.net.nodes() {
-        let gateway = match n.gateway {
-            None => "-".to_string(),
-            Some(Gateway::Orbit(o)) => format!(
-                "orbit r={:.0} km{}{}",
-                o.radius,
-                if o.periapsis < o.radius {
-                    format!(", burns at r={:.0} km", o.periapsis)
-                } else {
-                    String::new()
-                },
-                if o.aerocapture { ", aerocapture" } else { "" }
+fn bodies(w: &World) {
+    println!("{:<12} {:<22} kind", "id", "name");
+    for id in w.eph.ids() {
+        let b = w.eph.body(id);
+        let kind = match &b.kind {
+            BodyKind::Planet => "planet".to_string(),
+            BodyKind::SmallBody {
+                spectral,
+                diameter_km,
+                ..
+            } => format!(
+                "small body, class {spectral}, {}",
+                diameter_km.map_or("unknown size".to_string(), |d| format!("{d} km"))
             ),
-            Some(Gateway::Rendezvous) => "rendezvous".to_string(),
-            Some(Gateway::Entry { dv }) => format!("direct entry, {dv} km/s"),
         };
-        println!(
-            "{:<16} {:<10} {:<34} {gateway}",
-            n.id,
-            w.eph.body(n.system).id,
-            n.name
-        );
+        println!("{:<12} {:<22} {kind}", b.id, b.name);
     }
-}
-
-fn legs(w: &World) {
-    println!(
-        "{:<16} {:<16} {:>7} {:>6}  notes",
-        "from", "to", "Δv", "days"
-    );
-    for l in w.net.legs() {
-        let notes = [(l.aero, "aerobraking"), (l.launch, "launch service")]
-            .iter()
-            .filter(|(on, _)| *on)
-            .map(|(_, s)| *s)
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!(
-            "{:<16} {:<16} {:>7.2} {:>6.1}  {notes}",
-            w.net.node(l.from).id,
-            w.net.node(l.to).id,
-            l.dv,
-            l.days
-        );
-    }
-}
-
-fn path(w: &World, from: &str, to: &str, aero: bool) -> Result<()> {
-    let p = w
-        .net
-        .cheapest_local_path(w.node(from)?, w.node(to)?, aero)
-        .context(
-            "no chain of fixed legs connects them (different systems, or aerobraking needed)",
-        )?;
-    let ids: Vec<_> = p.nodes.iter().map(|&n| w.net.node(n).id.as_str()).collect();
-    println!("{}: {:.2} km/s, {:.1} days", ids.join(" → "), p.dv, p.days);
-    Ok(())
 }
 
 fn calendar(w: &World, from: &str, s: &Search) -> Result<()> {
-    let from = w.node(from)?;
+    let from = w.body(from)?;
     let mut all = Vec::new();
-    let mut skipped = Vec::new();
-    for (to, n) in w.net.nodes() {
-        if n.system == w.net.node(from).system || n.gateway.is_none() {
-            continue;
-        }
-        let route = Route {
-            from,
-            to,
-            aero_capable: s.aero,
-        };
-        if let Err(e) = route.validate(&w.net) {
-            skipped.push(e);
-            continue;
-        }
-        all.extend(w.windows(route, s)?.into_iter().map(|win| (to, win)));
+    for to in w.eph.ids().filter(|&to| to != from) {
+        all.extend(w.windows(from, to, s).into_iter().map(|win| (to, win)));
     }
     all.sort_by(|a, b| a.1.open.0.total_cmp(&b.1.open.0));
     print_windows(w, &all);
-    for e in skipped {
-        println!("skipped: {e}");
-    }
     Ok(())
 }
 
-fn print_windows(w: &World, windows: &[(NodeId, Window)]) {
+fn print_windows(w: &World, windows: &[(BodyId, Window)]) {
     if windows.is_empty() {
         println!("no windows in range");
         return;
     }
-    println!("dates are departures from the origin node; days are node to node");
+    println!("dates are heliocentric departures; v∞ is excess speed at each end, km/s");
     println!(
-        "{:<16} {:<10} {:<10}  {:<10} {:>5} {:>4}  {:>6} {:>6} {:>6}  {:>6}",
-        "to", "opens", "closes", "best", "days", "type", "Δv dep", "Δv arr", "total", "C3"
+        "{:<12} {:<10} {:<10}  {:<10} {:>5} {:>4}  {:>6} {:>6} {:>6}  {:>6}",
+        "to", "opens", "closes", "best", "days", "type", "v∞ dep", "v∞ arr", "total", "C3"
     );
     for (to, win) in windows {
         let b = &win.best;
@@ -337,32 +257,39 @@ fn print_windows(w: &World, windows: &[(NodeId, Window)]) {
         .collect::<Vec<_>>()
         .join("; ");
         println!(
-            "{:<16} {:<10} {:<10}  {:<10} {:>5.0} {:>4}  {:>6.2} {:>6.2} {:>6.2}  {:>6.2}  {notes}",
-            w.net.node(*to).id,
+            "{:<12} {:<10} {:<10}  {:<10} {:>5.0} {:>4}  {:>6.2} {:>6.2} {:>6.2}  {:>6.2}  {notes}",
+            w.eph.body(*to).id,
             win.open.to_string(),
             win.close.to_string(),
-            b.leave().to_string(),
-            b.trip_days(),
+            b.depart.to_string(),
+            b.tof_days,
             if b.is_type_ii() { "II" } else { "I" },
-            b.departure.dv,
-            b.arrival.dv,
-            b.dv(),
+            b.v_inf_depart,
+            b.v_inf_arrive,
+            b.v_inf_total(),
             b.c3(),
         );
     }
 }
 
-fn porkchop(w: &World, route: Route, s: &Search, png: Option<PathBuf>, span: f64) -> Result<()> {
-    let pc = w.porkchop(route, s)?;
+fn porkchop(
+    w: &World,
+    from: BodyId,
+    to: BodyId,
+    s: &Search,
+    png: Option<PathBuf>,
+    span: f64,
+) -> Result<()> {
+    let pc = w.porkchop(from, to, s);
     let g = pc.grid;
     let best = pc
         .best_by_departure()
         .into_iter()
         .flatten()
-        .min_by(|a, b| a.dv().total_cmp(&b.dv()))
+        .min_by(|a, b| a.v_inf_total().total_cmp(&b.v_inf_total()))
         .context("no transfer solutions in the grid")?;
     println!(
-        "grid: heliocentric departures {} to {} every {} d; time of flight {:.0}–{:.0} d every {} d",
+        "grid: departures {} to {} every {} d; time of flight {:.0}–{:.0} d every {} d",
         g.depart(0),
         g.depart(g.departs - 1),
         g.depart_step,
@@ -371,28 +298,21 @@ fn porkchop(w: &World, route: Route, s: &Search, png: Option<PathBuf>, span: f64
         g.tof_step
     );
     println!(
-        "best: leave {} arrive {} ({:.0} d), Δv {:.2} + {:.2} = {:.2} km/s",
-        best.leave(),
-        best.arrive(),
-        best.trip_days(),
-        best.departure.dv,
-        best.arrival.dv,
-        best.dv(),
-    );
-    println!(
-        "      heliocentric leg {} → {} ({:.0} d, Type {}), C3 {:.2} km²/s², arrival v∞ {:.2} km/s",
+        "best: depart {} arrive {} ({:.0} d, Type {}), v∞ {:.2} + {:.2} = {:.2} km/s, C3 {:.2} km²/s²",
         best.depart,
-        best.depart.plus_days(best.tof_days),
+        best.arrive(),
         best.tof_days,
         if best.is_type_ii() { "II" } else { "I" },
+        best.v_inf_depart,
+        best.v_inf_arrive,
+        best.v_inf_total(),
         best.c3(),
-        best.helio.v_inf_arrive,
     );
     if let Some(path) = png {
         if span <= 0.0 {
             bail!("--span must be positive");
         }
-        let (width, height) = porkchop_png::write(&pc, best.dv(), span, &path)?;
+        let (width, height) = porkchop_png::write(&pc, best.v_inf_total(), span, &path)?;
         println!(
             "wrote {} ({width}×{height}): x = departure (left→right), y = time of flight (bottom→top), \
              darker = cheaper, white = more than {span} km/s above best",

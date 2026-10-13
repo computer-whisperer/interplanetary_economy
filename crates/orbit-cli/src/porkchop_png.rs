@@ -6,9 +6,9 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-/// One-hue sequential ramp (light → dark), banded so equal-Δv contours read
-/// as edges. The encoded magnitude is how far below `best + span` a transfer
-/// is: the cheapest band is darkest.
+/// One-hue sequential ramp (light → dark), banded so contours of equal total
+/// excess speed read as edges. The encoded magnitude is how far below
+/// `best + span` a transfer is: the cheapest band is darkest.
 const RAMP: [[u8; 3]; 7] = [
     [0xcd, 0xe2, 0xfb],
     [0x9e, 0xc5, 0xf4],
@@ -22,7 +22,7 @@ const SURFACE: [u8; 3] = [0xff, 0xff, 0xff];
 
 /// Writes the porkchop to `path`, upscaled to roughly 1000 px wide. Returns
 /// the image size.
-pub fn write(pc: &Porkchop, best_dv: f64, span: f64, path: &Path) -> Result<(u32, u32)> {
+pub fn write(pc: &Porkchop, best: f64, span: f64, path: &Path) -> Result<(u32, u32)> {
     let g = pc.grid;
     let sx = (1000 / g.departs).max(1);
     let sy = (600 / g.tofs).max(1);
@@ -35,7 +35,7 @@ pub fn write(pc: &Porkchop, best_dv: f64, span: f64, path: &Path) -> Result<(u32
         for col in 0..g.departs * sx {
             let color = pc
                 .get(col / sx, j)
-                .map(|t| t.dv() - best_dv)
+                .map(|t| t.v_inf_total() - best)
                 .filter(|&excess| excess < span)
                 .map_or(SURFACE, |excess| {
                     RAMP[RAMP.len() - 1 - (excess / band) as usize]

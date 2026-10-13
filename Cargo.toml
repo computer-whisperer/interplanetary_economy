@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/orbit", "crates/orbit-cli", "crates/plan"]
+members = ["crates/orbit", "crates/orbit-cli"]
+# M2's planner reads the deleted Δv network; it rejoins at M1a step 11.
+exclude = ["crates/plan"]
 
 [workspace.package]
 edition = "2024"

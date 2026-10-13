@@ -376,8 +376,8 @@ Minimal and information-dense:
     aerocapture speed limit.
   - Superseded by M1a except for Lambert, porkchops, window detection and
     time handling, which become the autopilot's first playbook entry. The
-    Δv network, the lunar-assist fit, the Kepler-element planets and the
-    NEA fits get deleted.
+    Δv network and its lunar-assist fit were deleted in M1a step 1; the
+    Kepler-element planets and the NEA fits go in steps 2 and 4.
 - **M1a, n-body sandbox and autopilot.** See M1a.md. DE440 ephemerides,
   ships integrated as particles, flight rules, and an autopilot that turns
   legs into flown trajectories from a playbook of transfer types.
@@ -396,7 +396,8 @@ Minimal and information-dense:
   finite lunar ice, the Moon leads 90% of draws; with methalox only,
   asteroids led ~75%. The rules, not the physics, decide the dominant
   path, and the decisions after the first move differ by world. Its
-  planner reads M0's Δv network; M1a rewires it to a graph of flown legs.
+  planner read M0's Δv network and is out of the workspace until M1a
+  rewires it to a graph of flown legs.
   - Model: a time-expanded network with six-month steps (quarterly and
     monthly steps gave the same plans at 3× and 20× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to

@@ -19,7 +19,7 @@
 
 use orbit::ephem::Ephemeris;
 use orbit::time::Epoch;
-use orbit::transfer::helio_transfer;
+use orbit::transfer::Transfer;
 use std::f64::consts::PI;
 
 struct Minimum {
@@ -85,8 +85,8 @@ fn ymd((y, m, d): (i32, u32, u32)) -> Epoch {
 
 fn c3(eph: &Ephemeris, depart: Epoch, arrive: Epoch) -> Option<(f64, bool)> {
     let (earth, mars) = (eph.lookup("earth").unwrap(), eph.lookup("mars").unwrap());
-    let h = helio_transfer(eph, earth, mars, depart, arrive.0 - depart.0)?;
-    Some((h.v_inf_depart.powi(2), h.angle > PI))
+    let t = Transfer::compute(eph, earth, mars, depart, arrive.0 - depart.0)?;
+    Some((t.c3(), t.angle > PI))
 }
 
 /// Minimum C3 of one transfer type over a box of departure and arrival dates

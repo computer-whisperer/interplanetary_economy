@@ -1,6 +1,11 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: design; no code yet.
+Status, 2026-10-13: step 1 done. The Δv network and its gateways are
+deleted; `crates/orbit` keeps body-to-body Lambert arcs, porkchops and
+windows, ranked by total excess speed (v∞ at both ends), and the `orbit`
+command works on bodies. Earth–Mars windows land on the handbook's
+minimum-C3 departures for 2041 and 2043 (C3 9.82 and 8.97 against 9.818
+and 8.969).
 
 ## Why
 
