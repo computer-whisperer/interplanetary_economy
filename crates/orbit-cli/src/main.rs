@@ -320,6 +320,7 @@ fn print_windows(w: &World, windows: &[(NodeId, Window)]) {
         println!("no windows in range");
         return;
     }
+    println!("dates are departures from the origin node; days are node to node");
     println!(
         "{:<16} {:<10} {:<10}  {:<10} {:>5} {:>4}  {:>6} {:>6} {:>6}  {:>6}",
         "to", "opens", "closes", "best", "days", "type", "Δv dep", "Δv arr", "total", "C3"
@@ -340,11 +341,11 @@ fn print_windows(w: &World, windows: &[(NodeId, Window)]) {
             w.net.node(*to).id,
             win.open.to_string(),
             win.close.to_string(),
-            b.depart.to_string(),
-            b.tof_days,
+            b.leave().to_string(),
+            b.trip_days(),
             if b.is_type_ii() { "II" } else { "I" },
-            b.dv_depart,
-            b.dv_arrive,
+            b.departure.dv,
+            b.arrival.dv,
             b.dv(),
             b.c3(),
         );
@@ -361,7 +362,7 @@ fn porkchop(w: &World, route: Route, s: &Search, png: Option<PathBuf>, span: f64
         .min_by(|a, b| a.dv().total_cmp(&b.dv()))
         .context("no transfer solutions in the grid")?;
     println!(
-        "grid: departures {} to {} every {} d; time of flight {:.0}–{:.0} d every {} d",
+        "grid: heliocentric departures {} to {} every {} d; time of flight {:.0}–{:.0} d every {} d",
         g.depart(0),
         g.depart(g.departs - 1),
         g.depart_step,
@@ -370,15 +371,22 @@ fn porkchop(w: &World, route: Route, s: &Search, png: Option<PathBuf>, span: f64
         g.tof_step
     );
     println!(
-        "best: depart {} arrive {} ({:.0} d, Type {}), Δv {:.2} + {:.2} = {:.2} km/s, C3 {:.2} km²/s²",
-        best.depart,
+        "best: leave {} arrive {} ({:.0} d), Δv {:.2} + {:.2} = {:.2} km/s",
+        best.leave(),
         best.arrive(),
+        best.trip_days(),
+        best.departure.dv,
+        best.arrival.dv,
+        best.dv(),
+    );
+    println!(
+        "      heliocentric leg {} → {} ({:.0} d, Type {}), C3 {:.2} km²/s², arrival v∞ {:.2} km/s",
+        best.depart,
+        best.depart.plus_days(best.tof_days),
         best.tof_days,
         if best.is_type_ii() { "II" } else { "I" },
-        best.dv_depart,
-        best.dv_arrive,
-        best.dv(),
-        best.c3()
+        best.c3(),
+        best.helio.v_inf_arrive,
     );
     if let Some(path) = png {
         if span <= 0.0 {

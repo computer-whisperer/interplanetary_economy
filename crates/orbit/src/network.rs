@@ -5,6 +5,7 @@
 
 use crate::consts::{MU_EARTH, MU_MARS};
 use crate::ephem::{BodyId, BodyKind, Ephemeris};
+use crate::time::SECONDS_PER_DAY;
 use serde::Deserialize;
 
 /// Δv to raise periapsis out of the atmosphere after an aerocapture pass.
@@ -23,6 +24,21 @@ pub struct Node {
     pub gateway: Option<Gateway>,
 }
 
+/// How a ship gets between a node and a heliocentric leg: the Δv, and the
+/// days spent outside the heliocentric leg (falling to periapsis, lunar
+/// flybys).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Maneuver {
+    pub dv: f64,
+    pub days: f64,
+}
+
+impl Maneuver {
+    fn cheaper(self, other: Maneuver) -> Maneuver {
+        if other.dv < self.dv { other } else { self }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Gateway {
     /// An orbit about a planet; see [`OrbitGateway`].
@@ -33,9 +49,9 @@ pub enum Gateway {
     Entry { dv: f64 },
 }
 
-/// An orbit about a planet. Burns to or from v∞ fire at `periapsis` for the
-/// Oberth effect; a node above that periapsis first transfers down to it
-/// (or, if cheaper, burns where it is).
+/// An orbit about a planet. Two-body burns to or from v∞ fire at `periapsis`
+/// for the Oberth effect; a node above that periapsis first transfers down
+/// to it (or, if cheaper, burns where it is).
 #[derive(Clone, Copy, Debug)]
 pub struct OrbitGateway {
     pub mu: f64,
@@ -43,71 +59,123 @@ pub struct OrbitGateway {
     pub speed: f64,
     pub periapsis: f64,
     pub aerocapture: bool,
+    pub lunar_assist: Option<LunarAssist>,
+}
+
+/// Three-body departures and captures through lunar flybys, for nodes near
+/// the Moon. A small burn plus flybys reach a hyperbolic excess energy up to
+/// `c3` (km²/s²); a larger v∞ adds a periapsis burn that starts from `c3`.
+/// Either way the flybys take `days`.
+#[derive(Clone, Copy, Debug)]
+pub struct LunarAssist {
+    pub seed_dv: f64,
+    pub c3: f64,
+    pub days: f64,
+}
+
+/// The two-body transfer between a high node and its burn periapsis.
+#[derive(Clone, Copy, Debug)]
+pub struct PeriapsisTransfer {
+    /// Δv between the node and the transfer ellipse, at the node.
+    pub dv: f64,
+    /// Speed at periapsis on the ellipse.
+    pub v_peri: f64,
+    /// Half the ellipse's period.
+    pub days: f64,
 }
 
 impl OrbitGateway {
-    /// Δv between this node and hyperbolic excess speed `v_inf`. Two-body
-    /// burns are time-symmetric, so departure and propulsive capture cost the
-    /// same.
-    pub fn burn_dv(&self, v_inf: f64) -> f64 {
-        let at = |r: f64, v: f64| (v_inf * v_inf + 2.0 * self.mu / r).sqrt() - v;
-        let direct = at(self.radius, self.speed);
-        match self.periapsis_transfer() {
-            Some((drop, v_peri)) => direct.min(drop + at(self.periapsis, v_peri)),
-            None => direct,
+    /// The cheapest maneuver between this node and hyperbolic excess speed
+    /// `v_inf`. All options are time-symmetric, so departure and propulsive
+    /// capture cost the same.
+    pub fn burn(&self, v_inf: f64) -> Maneuver {
+        let oberth = |r: f64, v_from: f64| (v_inf * v_inf + 2.0 * self.mu / r).sqrt() - v_from;
+        let mut best = Maneuver {
+            dv: oberth(self.radius, self.speed),
+            days: 0.0,
+        };
+        if let Some(t) = self.periapsis_transfer() {
+            best = best.cheaper(Maneuver {
+                dv: t.dv + oberth(self.periapsis, t.v_peri),
+                days: t.days,
+            });
         }
+        if let Some(la) = self.lunar_assist {
+            let v_esc2 = 2.0 * self.mu / self.periapsis;
+            let boost = ((v_inf * v_inf + v_esc2).sqrt() - (la.c3 + v_esc2).sqrt()).max(0.0);
+            best = best.cheaper(Maneuver {
+                dv: la.seed_dv + boost,
+                days: la.days,
+            });
+        }
+        best
     }
 
-    /// Δv to arrive by aerocapture: an atmospheric pass leaves the ship on an
+    /// Arrival by aerocapture: an atmospheric pass leaves the ship on an
     /// ellipse whose apoapsis is the node, and one burn there raises
     /// periapsis out of the atmosphere and matches the node's speed. For a
     /// node above its periapsis that burn is the periapsis transfer, which
     /// covers the trim; for a low orbit it is the trim alone.
-    pub fn aerocapture_dv(&self) -> f64 {
-        self.periapsis_transfer()
-            .map_or(AEROCAPTURE_TRIM_DV, |(drop, _)| {
-                drop.max(AEROCAPTURE_TRIM_DV)
-            })
+    pub fn aerocapture(&self) -> Maneuver {
+        match self.periapsis_transfer() {
+            Some(t) => Maneuver {
+                dv: t.dv.max(AEROCAPTURE_TRIM_DV),
+                days: t.days,
+            },
+            None => Maneuver {
+                dv: AEROCAPTURE_TRIM_DV,
+                days: 0.0,
+            },
+        }
     }
 
-    /// For a node above its burn periapsis: the Δv between the node and an
-    /// ellipse from the node down to periapsis, and the speed at periapsis.
-    pub fn periapsis_transfer(&self) -> Option<(f64, f64)> {
+    /// For a node above its burn periapsis, the transfer down to it.
+    pub fn periapsis_transfer(&self) -> Option<PeriapsisTransfer> {
         let (ra, rp) = (self.radius, self.periapsis);
         if rp >= ra {
             return None;
         }
         let v_apo = (2.0 * self.mu * rp / (ra * (ra + rp))).sqrt();
-        let v_peri = (2.0 * self.mu * ra / (rp * (ra + rp))).sqrt();
-        Some(((self.speed - v_apo).abs(), v_peri))
+        let a = (ra + rp) / 2.0;
+        Some(PeriapsisTransfer {
+            dv: (self.speed - v_apo).abs(),
+            v_peri: (2.0 * self.mu * ra / (rp * (ra + rp))).sqrt(),
+            days: std::f64::consts::PI * (a.powi(3) / self.mu).sqrt() / SECONDS_PER_DAY,
+        })
     }
 }
 
 impl Gateway {
-    /// Δv to leave the node with excess speed `v_inf`, if departures are
-    /// possible from it.
-    pub fn departure_dv(&self, v_inf: f64) -> Option<f64> {
+    /// The cheapest maneuver to leave the node with excess speed `v_inf`, if
+    /// departures are possible from it.
+    pub fn departure(&self, v_inf: f64) -> Option<Maneuver> {
         match self {
-            Gateway::Orbit(o) => Some(o.burn_dv(v_inf)),
-            Gateway::Rendezvous => Some(v_inf),
+            Gateway::Orbit(o) => Some(o.burn(v_inf)),
+            Gateway::Rendezvous => Some(Maneuver {
+                dv: v_inf,
+                days: 0.0,
+            }),
             Gateway::Entry { .. } => None,
         }
     }
 
-    /// Cheapest Δv to arrive at the node with excess speed `v_inf`, for a ship
-    /// that can (`aero_capable`) or cannot brake in an atmosphere.
-    pub fn arrival_dv(&self, v_inf: f64, aero_capable: bool) -> Option<f64> {
+    /// The cheapest maneuver to arrive at the node with excess speed `v_inf`,
+    /// for a ship that can (`aero_capable`) or cannot brake in an atmosphere.
+    pub fn arrival(&self, v_inf: f64, aero_capable: bool) -> Option<Maneuver> {
         match self {
             Gateway::Orbit(o) => {
-                let propulsive = o.burn_dv(v_inf);
+                let propulsive = o.burn(v_inf);
                 Some(if aero_capable && o.aerocapture {
-                    propulsive.min(o.aerocapture_dv())
+                    propulsive.cheaper(o.aerocapture())
                 } else {
                     propulsive
                 })
             }
-            Gateway::Rendezvous => Some(v_inf),
-            Gateway::Entry { dv } => aero_capable.then_some(*dv),
+            Gateway::Rendezvous => Some(Maneuver {
+                dv: v_inf,
+                days: 0.0,
+            }),
+            Gateway::Entry { dv } => aero_capable.then_some(Maneuver { dv: *dv, days: 0.0 }),
         }
     }
 }
@@ -155,7 +223,16 @@ struct NodeRow {
     orbit: Option<OrbitRow>,
     #[serde(default)]
     aerocapture: bool,
+    lunar_assist: Option<LunarAssistRow>,
     entry_dv: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LunarAssistRow {
+    seed_dv: f64,
+    c3: f64,
+    days: f64,
 }
 
 #[derive(Deserialize)]
@@ -217,13 +294,23 @@ impl Network {
                         speed: o.speed_kms.unwrap_or_else(|| (mu / o.radius_km).sqrt()),
                         periapsis: o.periapsis_radius_km.unwrap_or(o.radius_km),
                         aerocapture: row.aerocapture,
+                        lunar_assist: row.lunar_assist.as_ref().map(|l| LunarAssist {
+                            seed_dv: l.seed_dv,
+                            c3: l.c3,
+                            days: l.days,
+                        }),
                     }))
                 }
                 (None, Some(dv)) => Some(Gateway::Entry { dv }),
                 (None, None) => None,
             };
-            if row.aerocapture && !matches!(gateway, Some(Gateway::Orbit(_))) {
-                return Err(format!("{}: aerocapture needs an orbit gateway", row.id));
+            if (row.aerocapture || row.lunar_assist.is_some())
+                && !matches!(gateway, Some(Gateway::Orbit(_)))
+            {
+                return Err(format!(
+                    "{}: aerocapture and lunar_assist need an orbit gateway",
+                    row.id
+                ));
             }
             nodes.push(Node {
                 id: row.id,
@@ -365,8 +452,8 @@ mod tests {
     fn table_matches_hohmann_estimates() {
         let (_, net) = standard();
         let hohmann = |low: OrbitGateway, high: OrbitGateway| {
-            let (drop, v_peri) = high.periapsis_transfer().unwrap();
-            (v_peri - low.speed) + drop
+            let t = high.periapsis_transfer().unwrap();
+            (t.v_peri - low.speed) + t.dv
         };
         let leo_eml1 = hohmann(orbit(&net, "leo"), orbit(&net, "eml1"));
         assert!(
@@ -384,14 +471,34 @@ mod tests {
     fn departure_burns() {
         let (_, net) = standard();
         // Trans-Mars injection from LEO at C3 = 9 km²/s²: ~3.6 km/s.
-        let leo = orbit(&net, "leo").burn_dv(3.0);
-        assert!((leo - 3.6).abs() < 0.05, "{leo}");
-        // From EML1 the perigee drop plus Oberth burn costs about a third.
-        let eml1 = orbit(&net, "eml1").burn_dv(3.0);
-        assert!((1.0..1.3).contains(&eml1), "{eml1}");
+        let leo = orbit(&net, "leo").burn(3.0);
+        assert!((leo.dv - 3.6).abs() < 0.05 && leo.days == 0.0, "{leo:?}");
         // Mars orbit insertion at v∞ = 2.65 km/s into a 300 km orbit: ~2.1.
-        let lmo = orbit(&net, "lmo").burn_dv(2.65);
-        assert!((lmo - 2.09).abs() < 0.03, "{lmo}");
+        let lmo = orbit(&net, "lmo").burn(2.65);
+        assert!((lmo.dv - 2.09).abs() < 0.03, "{lmo:?}");
+    }
+
+    /// Earth–Moon L1 departures against published three-body figures.
+    #[test]
+    fn eml1_lunar_assisted_departures() {
+        let (_, net) = standard();
+        let eml1 = orbit(&net, "eml1");
+        // Δv tables (after Farquhar 1972): EML1 to Earth escape, 0.14 km/s.
+        let escape = eml1.burn(0.0);
+        assert!((escape.dv - 0.14).abs() < 1e-9, "{escape:?}");
+        // McElrath et al. 2012: lunar flybys alone reach C3 ≈ 2 km²/s².
+        assert!((eml1.burn(2f64.sqrt()).dv - 0.14).abs() < 1e-9);
+        // Zegler & Kutter 2010: EML2 to a Mars transfer under 1.0 km/s, for
+        // Mars departure energies of C3 ≈ 8–17 km²/s².
+        for c3 in [8.0f64, 17.0] {
+            let m = eml1.burn(c3.sqrt());
+            assert!((0.3..1.0).contains(&m.dv), "C3 {c3}: {m:?}");
+        }
+        // The flybys take time: the two-body alternative is never cheaper.
+        assert!(escape.days > 30.0);
+        for v_inf in [0.0, 1.0, 2.0, 3.0, 4.0, 6.0] {
+            assert_eq!(eml1.burn(v_inf).days, escape.days, "v∞ {v_inf}");
+        }
     }
 
     #[test]

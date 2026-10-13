@@ -3,7 +3,7 @@
 use crate::consts::MU_SUN;
 use crate::ephem::{BodyId, Ephemeris};
 use crate::lambert;
-use crate::network::{Network, NodeId};
+use crate::network::{Maneuver, Network, NodeId};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use rayon::prelude::*;
 use std::f64::consts::PI;
@@ -36,23 +36,36 @@ pub fn helio_transfer(
     })
 }
 
-/// A node-to-node interplanetary transfer.
+/// A node-to-node interplanetary transfer: a heliocentric leg starting at
+/// `depart` and lasting `tof_days`, plus the gateway maneuvers at each end,
+/// which may add time before and after the leg.
 #[derive(Clone, Copy, Debug)]
 pub struct Transfer {
     pub depart: Epoch,
     pub tof_days: f64,
-    pub dv_depart: f64,
-    pub dv_arrive: f64,
+    pub departure: Maneuver,
+    pub arrival: Maneuver,
     pub helio: HelioTransfer,
 }
 
 impl Transfer {
     pub fn dv(&self) -> f64 {
-        self.dv_depart + self.dv_arrive
+        self.departure.dv + self.arrival.dv
     }
 
+    /// When the ship leaves the origin node.
+    pub fn leave(&self) -> Epoch {
+        self.depart.plus_days(-self.departure.days)
+    }
+
+    /// When the ship reaches the destination node.
     pub fn arrive(&self) -> Epoch {
-        self.depart.plus_days(self.tof_days)
+        self.depart.plus_days(self.tof_days + self.arrival.days)
+    }
+
+    /// Node to node.
+    pub fn trip_days(&self) -> f64 {
+        self.departure.days + self.tof_days + self.arrival.days
     }
 
     /// Departure energy, km²/s².
@@ -88,12 +101,12 @@ impl Route {
         let dep = a
             .gateway
             .ok_or_else(|| format!("{} has no interplanetary gateway", a.id))?;
-        dep.departure_dv(probe)
+        dep.departure(probe)
             .ok_or_else(|| format!("{} cannot be departed from directly", a.id))?;
         let arr = b
             .gateway
             .ok_or_else(|| format!("{} has no interplanetary gateway", b.id))?;
-        arr.arrival_dv(probe, self.aero_capable).ok_or_else(|| {
+        arr.arrival(probe, self.aero_capable).ok_or_else(|| {
             format!(
                 "{} cannot be reached directly without an aero-capable ship",
                 b.id
@@ -116,10 +129,8 @@ impl Route {
         Some(Transfer {
             depart,
             tof_days,
-            dv_depart: a.gateway?.departure_dv(helio.v_inf_depart)?,
-            dv_arrive: b
-                .gateway?
-                .arrival_dv(helio.v_inf_arrive, self.aero_capable)?,
+            departure: a.gateway?.departure(helio.v_inf_depart)?,
+            arrival: b.gateway?.arrival(helio.v_inf_arrive, self.aero_capable)?,
             helio,
         })
     }
@@ -238,7 +249,7 @@ mod tests {
             .unwrap();
         assert!(t.is_type_ii());
         assert!((7.0..8.6).contains(&t.c3()), "{}", t.c3());
-        assert!((3.4..3.8).contains(&t.dv_depart), "{}", t.dv_depart);
+        assert!((3.4..3.8).contains(&t.departure.dv), "{:?}", t.departure);
 
         let (lo, hi) = route.default_tof_range(&eph, &net, Epoch::from_ymd(2040, 1, 1));
         assert!(lo < 100.0 && hi > 450.0, "{lo} {hi}");

@@ -16,6 +16,11 @@
 #     defaults to circular speed.
 #   aerocapture = true
 #     Arrivals may brake in the atmosphere (aero-capable ships only).
+#   lunar_assist = { seed_dv, c3, days }
+#     Three-body departures and captures through lunar flybys: seed_dv plus
+#     flybys reach excess energy up to c3 (km²/s²); beyond that a burn at
+#     periapsis_radius_km adds the rest, starting from c3. The flybys take
+#     `days`, before departure or after arrival.
 #   entry_dv = X
 #     Surface node reachable by direct atmospheric entry from an
 #     interplanetary arrival, costing X for the propulsive terminal phase.
@@ -38,10 +43,14 @@ aerocapture = true
 id = "eml1"
 name = "Earth–Moon L1"
 system = "earth"
-# Co-rotating with the Moon (27.32-day period); burns drop to a 400 km
-# perigee and fire there.
+# Co-rotating with the Moon (27.32-day period); two-body burns drop to a
+# 400 km perigee and fire there.
 orbit = { radius_km = 326400.0, speed_kms = 0.869, periapsis_radius_km = 6778.137 }
 aerocapture = true
+# 0.14 km/s to Earth escape (Δv tables, after Farquhar 1972); lunar flybys
+# alone reach C3 ≈ 2 within about two months (McElrath et al. 2012, "Using
+# Gravity Assists in the Earth-Moon System as a Gateway to the Solar System").
+lunar_assist = { seed_dv = 0.14, c3 = 2.0, days = 60.0 }
 
 [[node]]
 id = "llo"

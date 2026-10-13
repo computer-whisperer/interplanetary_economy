@@ -5,7 +5,9 @@ use crate::transfer::{Porkchop, Transfer};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Window {
-    /// First and last departure dates within the margin of the best Δv.
+    /// First and last dates to leave the origin node within the margin of
+    /// the best Δv (heliocentric departures, less the best transfer's
+    /// departure maneuver time).
     pub open: Epoch,
     pub close: Epoch,
     /// The lowest-Δv transfer departing in the window.
@@ -73,9 +75,10 @@ pub fn find_windows(porkchop: &Porkchop, synodic_days: f64, margin: f64) -> Vec<
             close += 1;
         }
         let b = best[i].unwrap();
+        let lead = -b.departure.days;
         let window = Window {
-            open: grid.depart(open),
-            close: grid.depart(close),
+            open: grid.depart(open).plus_days(lead),
+            close: grid.depart(close).plus_days(lead),
             best: b,
             truncated: open == 0 || close == n - 1,
             tof_limited: b.tof_days <= grid.tof(0) || b.tof_days >= grid.tof(grid.tofs - 1),
@@ -136,7 +139,7 @@ mod tests {
         for (w, (y, m, d)) in windows.iter().zip(expected) {
             let offset = w.best.depart.0 - Epoch::from_ymd(y, m, d).0;
             assert!(offset.abs() < 45.0, "{} vs {y}-{m}-{d}", w.best.depart);
-            assert!(w.open.0 <= w.best.depart.0 && w.best.depart.0 <= w.close.0);
+            assert!(w.open.0 <= w.best.leave().0 && w.best.leave().0 <= w.close.0);
             assert!((5.0..6.5).contains(&w.best.dv()), "{}", w.best.dv());
             assert!(!w.truncated && !w.tof_limited);
         }
@@ -182,7 +185,7 @@ mod tests {
             assert!(!windows.is_empty());
             for w in &windows {
                 for (i, t) in best.iter().enumerate() {
-                    let d = pc.grid.depart(i);
+                    let d = pc.grid.depart(i).plus_days(-w.best.departure.days);
                     if d.0 >= w.open.0 && d.0 <= w.close.0 {
                         let dv = t.unwrap().dv();
                         assert!(

@@ -313,9 +313,19 @@ Minimal and information-dense:
     to ≤0.25% (≤0.5% for one row). The handbook's 2035/2037/2039 dates are
     inconsistent with JPL's own ephemeris; its C3 values for those years are
     reproduced at dates 63–81 days later.
-  - Simplifications to revisit: zero-revolution Lambert only; a scalar
-    model of the burns at Earth–Moon L1 (real three-body trajectories can
-    be cheaper); no aerocapture speed limit.
+  - Earth–Moon L1 uses a lunar-assist model (2026-10-13): 0.14 km/s plus
+    lunar flybys reach C3 = 2 km²/s², with a perigee burn on top for more,
+    at the cost of ~60 extra days per departure or capture. It is fitted to
+    the published 0.14 km/s to Earth escape, flyby-only C3 ≈ 2 (McElrath et
+    al. 2012), and EML2 → Mars under 1.0 km/s. It replaced a two-body model
+    that overcharged every L1 departure by ~0.55 km/s and would have biased
+    the M2 comparison against asteroid-first strategies. Consequence: from
+    L1, Mars orbit (with aerocapture) costs ~0.6 km/s and the best small
+    NEAs 0.4–1.5 km/s, so the cost of the economy concentrates in reaching
+    L1 (3.77 km/s from LEO, 2.5 from the lunar surface).
+  - Simplifications to revisit: zero-revolution Lambert only; the L1 flyby
+    phase is a fixed duration rather than computed; no aerocapture speed
+    limit.
 - **M1, headless sim core.**
   - Nodes, commodities, facilities, ships, rocket-equation costing, missions
     and standing routes.
