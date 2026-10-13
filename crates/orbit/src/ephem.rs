@@ -13,6 +13,10 @@ use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
 use serde::Deserialize;
 
+/// Obliquity of the ecliptic of J2000 (IAU 1976, as JPL Horizons uses): the
+/// angle between this module's frame and the ICRF equator.
+pub const OBLIQUITY_J2000: f64 = 84_381.448 / 3_600.0 * std::f64::consts::PI / 180.0;
+
 /// A body's identity in an [`Ephemeris`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BodyId(usize);
@@ -24,7 +28,19 @@ pub struct Body {
     pub kind: BodyKind,
     /// Gravitational parameter, km³/s²; zero for small bodies.
     pub gm: f64,
+    /// Oblateness, where the game models it.
+    pub figure: Option<Figure>,
     motion: Motion,
+}
+
+/// A body's oblateness: the J2 term of its gravity field.
+#[derive(Clone, Copy, Debug)]
+pub struct Figure {
+    pub j2: f64,
+    /// Reference radius of `j2`, km.
+    pub radius: f64,
+    /// Unit vector along the rotation axis.
+    pub pole: DVec3,
 }
 
 #[derive(Clone, Debug)]
@@ -81,7 +97,8 @@ struct Series {
 }
 
 impl Series {
-    fn state(&self, t: Epoch) -> State {
+    /// The record covering `t`, and `t` scaled to [-1, 1] within it.
+    fn record(&self, t: Epoch) -> (&[f64], f64) {
         let n = self.ncoef;
         let sec = t.seconds() - self.init;
         let k = (sec / self.intlen).floor();
@@ -91,7 +108,24 @@ impl Series {
         );
         let k = k as usize;
         let s = 2.0 * (sec - k as f64 * self.intlen) / self.intlen - 1.0;
-        let c = &self.coef[3 * n * k..3 * n * (k + 1)];
+        (&self.coef[3 * n * k..3 * n * (k + 1)], s)
+    }
+
+    /// Position by Clenshaw's recurrence, all three coordinates together.
+    fn position(&self, t: Epoch) -> DVec3 {
+        let n = self.ncoef;
+        let (c, s) = self.record(t);
+        let coef = |j: usize| DVec3::new(c[j], c[n + j], c[2 * n + j]);
+        let (mut b1, mut b2) = (DVec3::ZERO, DVec3::ZERO);
+        for j in (1..n).rev() {
+            (b1, b2) = (2.0 * s * b1 - b2 + coef(j), b1);
+        }
+        s * b1 - b2 + coef(0)
+    }
+
+    fn state(&self, t: Epoch) -> State {
+        let n = self.ncoef;
+        let (c, s) = self.record(t);
         let coef = |j: usize| DVec3::new(c[j], c[n + j], c[2 * n + j]);
         // Chebyshev polynomials T_j(s) and their derivatives.
         let mut r = coef(0);
@@ -243,6 +277,7 @@ impl Ephemeris {
                 name,
                 kind,
                 gm,
+                figure: None,
                 motion,
             });
         };
@@ -271,6 +306,14 @@ impl Ephemeris {
                 series(naif),
             );
         }
+        // Earth's mean pole of J2000 is the ICRF z axis; precession moves it
+        // ~0.7° over 2025–2080, which this ignores.
+        let earth = bodies.iter_mut().find(|b| b.id == "earth").unwrap();
+        earth.figure = Some(Figure {
+            j2: de.constant("J2E"),
+            radius: de.constant("RE"),
+            pole: DVec3::new(0.0, -OBLIQUITY_J2000.sin(), OBLIQUITY_J2000.cos()),
+        });
 
         let file: SmallBodyFile = toml::from_str(toml_src).map_err(|e| e.to_string())?;
         let epoch = Epoch::from_jd(file.epoch_jd_tdb);
@@ -307,6 +350,7 @@ impl Ephemeris {
                     h_mag: row.h_mag,
                 },
                 gm: 0.0,
+                figure: None,
                 motion: Motion::Segments { epoch, segments },
             });
         }
@@ -336,6 +380,23 @@ impl Ephemeris {
 
     pub fn sun(&self) -> BodyId {
         self.sun
+    }
+
+    /// Position relative to the solar-system barycenter: [`Self::barycentric`]
+    /// without the velocity, for evaluating forces.
+    pub fn barycentric_position(&self, id: BodyId, t: Epoch) -> DVec3 {
+        match &self.bodies[id.0].motion {
+            Motion::Series(k) => self.series[*k].position(t),
+            Motion::Earth | Motion::Moon => {
+                let emb = self.series[self.emb].position(t);
+                let off = self.series[self.moon_offset].position(t);
+                match self.bodies[id.0].motion {
+                    Motion::Earth => emb - off / self.emrat,
+                    _ => emb + off,
+                }
+            }
+            Motion::Segments { .. } => self.state(id, t).r + self.barycentric_position(self.sun, t),
+        }
     }
 
     /// State relative to the solar-system barycenter.

@@ -142,3 +142,18 @@ fn small_bodies_match_horizons() {
         );
     }
 }
+
+/// The position-only evaluation agrees with the full state's position, to
+/// rounding (the two sum the series in different orders).
+#[test]
+fn positions_match_states() {
+    let eph = Ephemeris::standard();
+    for id in eph.ids().filter(|&b| eph.body(b).gm > 0.0) {
+        for k in 0..200 {
+            let t = Epoch(Epoch::from_ymd(2025, 1, 1).0 + k as f64 * 100.37);
+            let r = eph.barycentric(id, t).r;
+            let d = (eph.barycentric_position(id, t) - r).length();
+            assert!(d < 1e-15 * r.length() + 1e-9, "{}: {d} km", eph.body(id).id);
+        }
+    }
+}

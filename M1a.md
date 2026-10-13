@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–2 done.
+Status, 2026-10-13: steps 1–3 done.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -13,6 +13,15 @@ Status, 2026-10-13: steps 1–2 done.
   be from the barycenter (M0 assumed Earth's center): from it every row
   matches to 0.08%; from Earth's center, which swings ~12 m/s around it,
   up to 0.9% off.
+- Step 3: `integrate` (DOP853, generated from scipy's coefficients; it takes
+  exactly scipy's steps), `gravity` (point masses at DE440 positions from a
+  chosen center, with indirect terms, plus Earth's J2) and `cr3bp`. Checks:
+  JPL's catalog NRHO, L1 halo and DRO close within 0.7 mm after a period;
+  the Moon flown as a particle stays within 1.0 km of DE440 after 30 days;
+  Earth's J2 regresses a LEO node within 0.5% of secular theory. Geocentric
+  and barycentric integrations differ by ~100 m over 10 days near Earth,
+  because DE440's Earth also feels relativity (~1.9e-13 km/s² beyond point
+  masses); the geocentric frame is the better model there.
 
 ## Why
 
@@ -143,8 +152,15 @@ Evaluations per simulated day, from scipy's DOP853 at relative tolerance
 1e-11 (under a millimeter of drift per day); cost per evaluation from a
 Rust benchmark with DE-style Chebyshev tables: ~90 ns for the Sun, Earth
 and Moon, ~310 ns for 11 bodies; with the state transition matrix ~160
-and ~470 ns. Both were throwaway measurements; M1a re-measures on the
-real engine.
+and ~470 ns. Both were throwaway measurements.
+
+On the real engine (step 3, `examples/field_cost.rs`): 239 ns per
+evaluation for the Sun, Earth and Moon, 537 ns for all ten bodies; LEO
+takes 6,960 evaluations per day, 3.8 ms per simulated day, and a cislunar
+coast 63, 0.04 ms. The evaluation is ~2.5× the benchmark's because Earth
+and the Moon each re-evaluate the Earth–Moon barycenter and the Moon's
+offset, and the center's position is looked up again; evaluating each
+series once per time would recover most of it.
 
 | Orbit | Evaluations per day | CPU per ship-day |
 |---|---|---|

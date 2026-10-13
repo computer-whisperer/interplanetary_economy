@@ -7,8 +7,9 @@ sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
 
 ## Layout
 
-- `crates/orbit` — ephemerides, Lambert transfers between bodies, porkchop
-  grids, transfer windows. M1a replaces most of it with the n-body sandbox.
+- `crates/orbit` — ephemerides (DE440), the n-body sandbox's integrator,
+  gravity field and Earth–Moon three-body model, and Lambert transfers
+  between bodies with their porkchop grids and windows.
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
