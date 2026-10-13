@@ -59,8 +59,9 @@ fn kept(sc: &Scenario, c: Commodity, days: f64) -> f64 {
 /// $/kg × t → $M.
 pub const MUSD_PER_USD_T: f64 = 1e-3;
 
-/// Deposits larger than this are treated as unlimited.
-const RESERVE_UNLIMITED_T: f64 = 1e7;
+/// Deposits larger than this are treated as unlimited: ~30× the largest
+/// plant over the whole scenario.
+const RESERVE_UNLIMITED_T: f64 = 1e9;
 
 /// How a solve treats one program (see [`Scenario::programs`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -700,7 +701,7 @@ impl Lp {
 mod tests {
     use super::*;
     use crate::params::ProgramKind;
-    use crate::testing::short;
+    use crate::testing::{richest_lunar_ice, short};
 
     fn free(sc: &Scenario) -> Vec<ProgramSetup> {
         vec![
@@ -769,11 +770,7 @@ mod tests {
     #[test]
     fn plants_produce_only_after_building_and_within_their_deposit() {
         let (net, mut sc, edges) = short(6);
-        let ice = sc
-            .facilities
-            .iter()
-            .position(|f| f.id == "lunar-ice")
-            .unwrap();
+        let ice = richest_lunar_ice(&sc);
         sc.facilities[ice].reserve = Some(5000.0);
         let plan = Lp::new(&sc, &net, &edges, false).solve(&sc, &free(&sc));
         assert_eq!(plan.status, HighsModelStatus::Optimal);
@@ -799,11 +796,7 @@ mod tests {
     #[test]
     fn funded_programs_are_paid_in_full_before_their_plants() {
         let (net, mut sc, edges) = short(8);
-        let ice = sc
-            .facilities
-            .iter()
-            .position(|f| f.id == "lunar-ice")
-            .unwrap();
+        let ice = richest_lunar_ice(&sc);
         let needs = sc.facilities[ice].programs.clone();
         assert_eq!(needs.len(), 2, "lunar ice needs a technology and a survey");
         for &j in &needs {
@@ -824,10 +817,13 @@ mod tests {
         assert_eq!(plan.status, HighsModelStatus::Optimal);
         for (k, installs) in plan.installed.iter().enumerate() {
             let first = installs.iter().position(|&x| x > 1e-6);
+            let f = &sc.facilities[k];
             if k == ice {
                 assert!(first.is_some_and(|p| p >= ready), "{first:?}");
+            } else if f.programs.iter().all(|j| needs.contains(j)) {
+                assert!(first.is_none_or(|p| p >= ready), "{} {first:?}", f.id);
             } else {
-                assert_eq!(first, None, "{}", sc.facilities[k].id);
+                assert_eq!(first, None, "{}", f.id);
             }
         }
         for (j, prog) in sc.programs.iter().enumerate() {

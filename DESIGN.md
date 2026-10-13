@@ -172,6 +172,8 @@ Output scales with the Equipment delivered, so expansion is incremental.
 | Metals mine | metal-rich NEA | Precious metals |
 | Outpost | any surface or orbital node | houses crew, consumes Supplies |
 
+- Lunar ice comes in finite deposits of falling grade (rich, typical,
+  lean), each drawn per game; leaner ice needs more equipment per t/yr.
 - Power is folded into equipment mass per unit of output, which varies by
   site: solar falls off as 1/r², lunar night costs extra mass, the polar sites
   get a bonus.
@@ -363,8 +365,9 @@ Minimal and information-dense:
   still the best source in ~70% of draws and the Moon in ~20–25%, though
   early decisions now differ across draws. The gate's path half still
   fails. The methalox-only rule decided the winner, so the design now has
-  methalox and hydrolox; with both, the Moon leads in 88% of draws, so the
-  gate fails the other way.
+  methalox and hydrolox; with both, the Moon leads in 88% of draws (90%
+  with finite, tiered lunar ice deposits), so the gate fails the other
+  way.
   - Model: a time-expanded network with six-month steps (quarterly and
     monthly steps gave the same plans at 3× and 20× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to

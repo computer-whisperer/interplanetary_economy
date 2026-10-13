@@ -23,3 +23,11 @@ pub fn short(years: usize) -> (Network, Scenario, Vec<Edge>) {
     ));
     (net, sc, all)
 }
+
+/// The richest lunar ice deposit's plant option.
+pub fn richest_lunar_ice(sc: &Scenario) -> usize {
+    (0..sc.facilities.len())
+        .filter(|&k| sc.facilities[k].id.starts_with("lunar-ice"))
+        .max_by(|&a, &b| sc.facilities[a].grade.total_cmp(&sc.facilities[b].grade))
+        .expect("the scenario has lunar ice")
+}

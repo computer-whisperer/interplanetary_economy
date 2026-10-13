@@ -204,12 +204,27 @@ struct FacilityRow {
     build_months: f64,
     /// The `technology` program the plant needs.
     technology: String,
-    /// The survey of the deposit the plant needs, if any.
+    /// The survey of the site the plant needs, if any; one survey covers
+    /// all of the site's deposits.
     survey: Option<ProgramRow>,
+    /// Finite deposits of the resource, each its own plant option; one
+    /// unlimited deposit if empty.
+    #[serde(default)]
+    deposits: Vec<DepositRow>,
 }
 
 fn certain() -> f64 {
     1.0
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DepositRow {
+    id: String,
+    /// The deposit's grade over the site's drawn grade.
+    grade_factor: f64,
+    /// Recoverable product, t.
+    reserve_t: Dist,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +252,13 @@ struct AsteroidPlantRow {
     technology: String,
     /// The survey of each body, before its plant.
     survey: ProgramRow,
+}
+
+/// What a plant option needs: its technology's id, and its site's survey
+/// (row, prior probability that the site has the resource, program id).
+struct Need<'a> {
+    technology: &'a str,
+    survey: Option<(&'a ProgramRow, f64, String)>,
 }
 
 /// A fixed cost paid before a plant: spent at no more than `cost_musd /
@@ -511,27 +533,45 @@ impl EconomyFile {
         let alpha = |e: &EquipmentRow, grade: f64, draw: &mut Draw| {
             e.plant.sample(draw) + e.ore.sample(draw) / grade
         };
-        // Each plant's technology and survey, sampled after everything else
-        // so that adding programs left the other parameters of each seed as
-        // they were.
-        let mut needs: Vec<(&str, Option<(&ProgramRow, f64)>)> = Vec::new();
+        // Each plant's technology and survey, and each deposit's size, are
+        // sampled after everything else so that adding them left the other
+        // parameters of each seed as they were.
+        let mut needs: Vec<Need> = Vec::new();
+        let mut reserves: Vec<(usize, &Dist)> = Vec::new();
         let mut facilities = Vec::new();
         for f in &self.facility {
             let present = draw.chance(f.present);
             let grade = f.grade.sample(draw);
-            let a = alpha(&f.equipment_t_per_tpy, grade, draw);
-            if present {
-                facilities.push(FacilityOption {
-                    id: f.id.clone(),
-                    node: node(&f.node),
-                    output: f.output.into(),
-                    alpha: a,
-                    grade,
-                    build_periods: build_periods(f.build_months),
-                    reserve: None,
-                    programs: Vec::new(),
-                });
-                needs.push((&f.technology, f.survey.as_ref().map(|s| (s, f.present))));
+            let plant = f.equipment_t_per_tpy.plant.sample(draw);
+            let ore = f.equipment_t_per_tpy.ore.sample(draw);
+            if !present {
+                continue;
+            }
+            let option = |id: String, grade: f64| FacilityOption {
+                id,
+                node: node(&f.node),
+                output: f.output.into(),
+                alpha: plant + ore / grade,
+                grade,
+                build_periods: build_periods(f.build_months),
+                reserve: None,
+                programs: Vec::new(),
+            };
+            let need = || Need {
+                technology: &f.technology,
+                survey: f
+                    .survey
+                    .as_ref()
+                    .map(|s| (s, f.present, format!("survey:{}", f.id))),
+            };
+            if f.deposits.is_empty() {
+                facilities.push(option(f.id.clone(), grade));
+                needs.push(need());
+            }
+            for d in &f.deposits {
+                reserves.push((facilities.len(), &d.reserve_t));
+                facilities.push(option(format!("{}:{}", f.id, d.id), grade * d.grade_factor));
+                needs.push(need());
             }
         }
 
@@ -586,7 +626,10 @@ impl EconomyFile {
                     reserve: Some(mass_t * p.minable_fraction * grade),
                     programs: Vec::new(),
                 });
-                needs.push((&p.technology, Some((&p.survey, weights[k]))));
+                needs.push(Need {
+                    technology: &p.technology,
+                    survey: Some((&p.survey, weights[k], format!("survey:{}@{}", p.id, n.id))),
+                });
                 p.id.clone()
             });
             asteroids.push(AsteroidDraw {
@@ -664,20 +707,26 @@ impl EconomyFile {
                 lead_periods: lead_periods(t.years.sample(draw)),
             })
             .collect();
-        for (f, (technology, survey)) in facilities.iter_mut().zip(needs) {
-            let tech = programs
-                .iter()
-                .position(|p| p.kind == ProgramKind::Technology && p.id == technology)
-                .unwrap_or_else(|| panic!("economy.toml: unknown technology {technology:?}"));
-            f.programs.push(tech);
-            if let Some((row, p)) = survey {
-                f.programs.push(programs.len());
-                programs.push(Program {
-                    id: format!("survey:{}", f.id),
-                    kind: ProgramKind::Survey,
-                    cost_musd: row.cost_musd.sample(draw) / p,
-                    lead_periods: lead_periods(row.years.sample(draw)),
+        for (f, need) in facilities.iter_mut().zip(needs) {
+            let find = |programs: &[Program], kind, id: &str| {
+                programs.iter().position(|p| p.kind == kind && p.id == id)
+            };
+            let tech =
+                find(&programs, ProgramKind::Technology, need.technology).unwrap_or_else(|| {
+                    panic!("economy.toml: unknown technology {:?}", need.technology)
                 });
+            f.programs.push(tech);
+            if let Some((row, p, id)) = need.survey {
+                let survey = find(&programs, ProgramKind::Survey, &id).unwrap_or_else(|| {
+                    programs.push(Program {
+                        id,
+                        kind: ProgramKind::Survey,
+                        cost_musd: row.cost_musd.sample(draw) / p,
+                        lead_periods: lead_periods(row.years.sample(draw)),
+                    });
+                    programs.len() - 1
+                });
+                f.programs.push(survey);
             }
         }
 
@@ -691,6 +740,9 @@ impl EconomyFile {
             spec(&self.propellant.methalox),
             spec(&self.propellant.hydrolox),
         ];
+        for (k, reserve) in reserves {
+            facilities[k].reserve = Some(reserve.sample(draw));
+        }
 
         Scenario {
             cal,
@@ -724,5 +776,36 @@ impl From<OutputRow> for Output {
             lh2: o.lh2,
             metal: o.metal,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deposits_share_one_survey_and_leaner_ones_need_more_equipment() {
+        let eph = Ephemeris::standard();
+        let net = Network::standard(&eph);
+        let sc = EconomyFile::standard().scenario(&eph, &net, &mut Draw::Central, 6);
+        let mut ice: Vec<&FacilityOption> = sc
+            .facilities
+            .iter()
+            .filter(|f| f.id.starts_with("lunar-ice:"))
+            .collect();
+        assert!(ice.len() >= 2, "the test needs lunar ice deposits");
+        ice.sort_by(|a, b| b.grade.total_cmp(&a.grade));
+        for pair in ice.windows(2) {
+            assert!(
+                pair[1].alpha > pair[0].alpha,
+                "{} {}",
+                pair[0].id,
+                pair[1].id
+            );
+        }
+        assert!(ice.iter().all(|f| f.programs == ice[0].programs));
+        assert!(ice.iter().all(|f| f.reserve.is_some()));
+        let surveys = sc.programs.iter().filter(|p| p.id == "survey:lunar-ice");
+        assert_eq!(surveys.count(), 1);
     }
 }

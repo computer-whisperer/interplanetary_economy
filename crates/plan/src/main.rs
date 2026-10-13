@@ -363,13 +363,18 @@ fn supply_shares(c: &Classification) -> String {
     s.trim_end().to_string()
 }
 
+/// Grade of the richest lunar ice deposit.
+fn best_lunar_ice(sc: &Scenario) -> f64 {
+    sc.facilities
+        .iter()
+        .filter(|f| f.id == "lunar-ice" || f.id.starts_with("lunar-ice:"))
+        .map(|f| f.grade)
+        .fold(0.0, f64::max)
+}
+
 /// The draw's headline hidden parameters.
 fn describe_draw(sc: &Scenario) -> String {
-    let ice = sc
-        .facilities
-        .iter()
-        .find(|f| f.id == "lunar-ice")
-        .map_or(0.0, |f| f.grade);
+    let ice = best_lunar_ice(sc);
     let wet = sc
         .asteroids
         .iter()
@@ -382,7 +387,7 @@ fn describe_draw(sc: &Scenario) -> String {
         .count();
     let phobos = sc.facilities.iter().any(|f| f.id == "phobos-volatiles");
     format!(
-        "launch ${:.0}→${:.0}/kg, equipment ${:.0}/kg, budget ${:.0}B/yr, lunar ice {:.1}%, \
+        "launch ${:.0}→${:.0}/kg, equipment ${:.0}/kg, budget ${:.0}B/yr, richest lunar ice {:.1}%, \
          {wet} wet and {metal} metal asteroids, Phobos {}",
         sc.launch_usd_per_kg[0],
         sc.launch_usd_per_kg[sc.cal.periods - 1],
@@ -454,7 +459,7 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
     if let Some(path) = csv {
         let mut csv_text = String::from(
             "seed,status,objective_musd,launch_start,launch_end,equipment_usd_per_kg,\
-             budget_musd,lunar_ice_grade,wet_asteroids,metal_asteroids,phobos_wet,\
+             budget_musd,lunar_ice_best_grade,wet_asteroids,metal_asteroids,phobos_wet,\
              supply_earth_t,supply_moon_t,supply_mars_t,supply_asteroids_t,\
              opening_moon_musd,opening_mars_musd,opening_asteroids_musd,path,opening,\
              solves,program_musd,programs,earth_only_musd,drops,\
@@ -478,11 +483,7 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
                 .filter(|(_, s)| matches!(s, ProgramSetup::Funded { .. }))
                 .map(|(p, _)| p.id.as_str())
                 .collect();
-            let ice = sc
-                .facilities
-                .iter()
-                .find(|f| f.id == "lunar-ice")
-                .map_or(0.0, |f| f.grade);
+            let ice = best_lunar_ice(sc);
             let count = |what: &str| {
                 sc.asteroids
                     .iter()

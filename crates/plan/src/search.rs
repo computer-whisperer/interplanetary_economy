@@ -242,17 +242,13 @@ fn better(a: &Plan, b: &Plan) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::short;
+    use crate::testing::{richest_lunar_ice, short};
 
     /// Lunar ice with its programs at `cost` each, everything else closed
     /// by a prohibitive cost; all programs take a year.
     fn lunar_ice_at(cost: f64) -> (Scenario, Outcome) {
         let (net, mut sc, edges) = short(8);
-        let ice = sc
-            .facilities
-            .iter()
-            .position(|f| f.id == "lunar-ice")
-            .unwrap();
+        let ice = richest_lunar_ice(&sc);
         let needs = sc.facilities[ice].programs.clone();
         for (j, prog) in sc.programs.iter_mut().enumerate() {
             prog.lead_periods = 4;
