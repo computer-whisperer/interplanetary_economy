@@ -5,11 +5,27 @@
 //! smaller body sits at x = 1 - mu. The Earth–Moon case is the model JPL's
 //! periodic-orbit catalog uses (M1a.md, Orbits).
 
+use crate::integrate::{Dop853, Tolerance};
+use crate::linalg;
+
 /// A CR3BP with mass ratio `mu` = m2 / (m1 + m2).
 #[derive(Clone, Copy, Debug)]
 pub struct Cr3bp {
     pub mu: f64,
 }
+
+/// Which starting coordinate stays put while a symmetric periodic orbit is
+/// corrected.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fix {
+    X,
+    Z,
+}
+
+const CORRECTION: Tolerance = Tolerance {
+    rtol: 1e-13,
+    atol: 1e-16,
+};
 
 impl Cr3bp {
     /// The equations of motion of `[x, y, z, vx, vy, vz]`.
@@ -70,6 +86,91 @@ impl Cr3bp {
             }
         }
         u
+    }
+
+    /// Corrects a guess at a periodic orbit symmetric about the x-z plane:
+    /// one starting on it, `(x, 0, z, 0, vy, 0)`, that crosses it again
+    /// perpendicularly half a period later. Holds the `fix` coordinate and
+    /// adjusts the others, `vy` and the half period by Newton's method,
+    /// halving a step while it makes the miss worse. Converged when the miss
+    /// is under 1e-12, or under 1e-9 once no step reduces it: integration
+    /// noise, amplified by an orbit's instability, sets a floor. Planar
+    /// orbits (z = 0) stay planar. Returns the start and the period.
+    pub fn correct_symmetric(
+        &self,
+        guess: [f64; 6],
+        period: f64,
+        fix: Fix,
+    ) -> Option<([f64; 6], f64)> {
+        let planar = guess[2].abs() < 1e-12;
+        // Unknowns as state indices (6 stands for the half period), and the
+        // constraints at the half period: y, vx, vz.
+        let free: Vec<usize> = match (planar, fix) {
+            (true, _) => vec![4, 6],
+            (false, Fix::X) => vec![2, 4, 6],
+            (false, Fix::Z) => vec![0, 4, 6],
+        };
+        let rows: &[usize] = if planar { &[1, 3] } else { &[1, 3, 5] };
+        let z = if planar { 0.0 } else { guess[2] };
+        let mut s0 = [guess[0], 0.0, z, 0.0, guess[4], 0.0];
+        let mut half = period / 2.0;
+        let mut at = self.half_period_state(s0, half)?;
+        let miss = |end: &[f64; 42]| rows.iter().map(|&r| end[r] * end[r]).sum::<f64>().sqrt();
+        for _ in 0..40 {
+            if miss(&at) < 1e-12 {
+                return Some((s0, 2.0 * half));
+            }
+            let end: [f64; 6] = at[..6].try_into().unwrap();
+            let f = self.ode()(half, &end);
+            let n = free.len();
+            let mut jac = vec![0.0; n * n];
+            for (i, &r) in rows.iter().enumerate() {
+                for (k, &u) in free.iter().enumerate() {
+                    jac[i * n + k] = if u == 6 { f[r] } else { at[6 + r * 6 + u] };
+                }
+            }
+            let mut step: Vec<f64> = rows.iter().map(|&r| -at[r]).collect();
+            linalg::solve(n, &mut jac, &mut step)?;
+            let mut scale = 1.0;
+            loop {
+                let (mut trial, mut trial_half) = (s0, half);
+                for (&u, d) in free.iter().zip(&step) {
+                    if u == 6 {
+                        trial_half += scale * d;
+                    } else {
+                        trial[u] += scale * d;
+                    }
+                }
+                if let Some(next) = self
+                    .half_period_state(trial, trial_half)
+                    .filter(|n| miss(n) < miss(&at))
+                {
+                    (s0, half, at) = (trial, trial_half, next);
+                    break;
+                }
+                scale /= 2.0;
+                if scale < 1e-3 {
+                    return (miss(&at) < 1e-9).then_some((s0, 2.0 * half));
+                }
+            }
+        }
+        None
+    }
+
+    /// The state and state transition matrix `half` after `s0`.
+    fn half_period_state(&self, s0: [f64; 6], half: f64) -> Option<[f64; 42]> {
+        if half <= 0.0 {
+            return None;
+        }
+        let stm = self.ode_stm();
+        let mut y = [0.0; 42];
+        y[..6].copy_from_slice(&s0);
+        for i in 0..6 {
+            y[6 + i * 7] = 1.0;
+        }
+        let mut run = Dop853::new(&stm, 0.0, y, CORRECTION);
+        run.advance_to(&stm, half).ok()?;
+        Some(run.y)
     }
 
     /// The Jacobi constant, conserved along any trajectory.

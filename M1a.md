@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–4 done.
+Status, 2026-10-13: steps 1–4 done; step 5 under way.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -33,6 +33,17 @@ Status, 2026-10-13: steps 1–4 done.
   grids now sit on whole multiples of their steps, so overlapping searches
   share points (osculating elements set the default time-of-flight range,
   and they wander).
+- Step 5, so far: state transition matrices for the CR3BP and the full
+  field (matching finite differences; the catalog's stability indices to
+  four decimals), and the orbit families (`data/orbits.toml`, `families`):
+  seven Earth–Moon families from JPL's catalog, ~60–90 samples each, with a
+  symmetric corrector that makes any position between two samples a
+  periodic orbit (continuation where a family bends). JPL lists families by
+  Jacobi constant, which folds back on itself (the L2 halos interleave the
+  NRHO and large-halo branches), so the build orders members by period or
+  Jacobi constant, whichever is smoother, and splits families into runs at
+  gaps (members that hit the Moon are left out). 1 of 490 midpoints has no
+  orbit: the smallest DROs branch there.
 
 ## Why
 

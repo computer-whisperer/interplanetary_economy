@@ -6,6 +6,7 @@ pub mod consts;
 pub mod cr3bp;
 mod dop853;
 pub mod ephem;
+pub mod families;
 pub mod gravity;
 pub mod integrate;
 pub mod kepler;
