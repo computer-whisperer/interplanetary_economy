@@ -7,3 +7,8 @@ exclude = ["crates/plan"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+
+# The tests integrate orbits for months; unoptimized they take minutes.
+# Debug assertions and overflow checks stay on.
+[profile.test]
+opt-level = 2

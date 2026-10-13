@@ -342,11 +342,12 @@ impl<const N: usize> Trajectory<N> {
         (self.steps[0].t0, last.t0 + last.h)
     }
 
-    /// The state at `t`. Panics outside the span.
+    /// The state at `t`. Panics outside the span, give or take rounding.
     pub fn at(&self, t: f64) -> [f64; N] {
         let (t0, t1) = self.span();
+        let slack = 1e-12 * t0.abs().max(t1.abs()).max(1.0);
         assert!(
-            t >= t0 && t <= t1,
+            t >= t0 - slack && t <= t1 + slack,
             "{t} is outside the trajectory's span {t0}..{t1}"
         );
         let k = self.steps.partition_point(|s| s.t0 <= t).saturating_sub(1);

@@ -44,6 +44,18 @@ Status, 2026-10-13: steps 1–4 done; step 5 under way.
   Jacobi constant, whichever is smoother, and splits families into runs at
   gaps (members that hit the Moon are left out). 1 of 490 midpoints has no
   orbit: the smallest DROs branch there.
+- Step 5c: catalog orbits carried into the full model (`reference`):
+  patch points from the CR3BP orbit, each in the real Earth–Moon geometry
+  of its moment, made continuous by variable-time multiple shooting (patch
+  states and epochs both free; minimum-norm Newton steps halved while they
+  make things worse). The NRHO, an L1 halo and a DRO hold their shapes for
+  six revolutions (distances from the Moon within ~10% of the CR3BP
+  orbit's). Three things mattered, found by measurement: the guess must
+  come from one period of the CR3BP orbit taken modulo the period
+  (integrated straight on, an unstable orbit leaves itself within ~40
+  days); CR3BP time must follow the real Earth–Moon line's turning (JPL's
+  fixed time unit is ~2% off the Moon's real rate); and patch epochs must
+  be free (with fixed epochs the NRHO's perilune timing stalls Newton).
 
 ## Why
 
