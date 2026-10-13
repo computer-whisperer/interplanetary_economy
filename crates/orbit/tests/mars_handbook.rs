@@ -31,11 +31,28 @@ struct Minimum {
 }
 
 const fn row(type_ii: bool, depart: (i32, u32, u32), arrive: (i32, u32, u32), c3: f64) -> Minimum {
-    Minimum { type_ii, depart, arrive, c3, dates_consistent: true }
+    Minimum {
+        type_ii,
+        depart,
+        arrive,
+        c3,
+        dates_consistent: true,
+    }
 }
 
-const fn value_only(type_ii: bool, depart: (i32, u32, u32), arrive: (i32, u32, u32), c3: f64) -> Minimum {
-    Minimum { type_ii, depart, arrive, c3, dates_consistent: false }
+const fn value_only(
+    type_ii: bool,
+    depart: (i32, u32, u32),
+    arrive: (i32, u32, u32),
+    c3: f64,
+) -> Minimum {
+    Minimum {
+        type_ii,
+        depart,
+        arrive,
+        c3,
+        dates_consistent: false,
+    }
 }
 
 #[rustfmt::skip]
@@ -74,7 +91,14 @@ fn c3(eph: &Ephemeris, depart: Epoch, arrive: Epoch) -> Option<(f64, bool)> {
 
 /// Minimum C3 of one transfer type over a box of departure and arrival dates
 /// (days relative to the centers): (C3, departure).
-fn search(eph: &Ephemeris, type_ii: bool, dep0: Epoch, arr0: Epoch, dep_days: i32, arr_days: i32) -> (f64, Epoch) {
+fn search(
+    eph: &Ephemeris,
+    type_ii: bool,
+    dep0: Epoch,
+    arr0: Epoch,
+    dep_days: i32,
+    arr_days: i32,
+) -> (f64, Epoch) {
     let mut best = (f64::INFINITY, dep0);
     for di in -dep_days..=dep_days {
         let dep = dep0.plus_days(di as f64);
@@ -83,10 +107,11 @@ fn search(eph: &Ephemeris, type_ii: bool, dep0: Epoch, arr0: Epoch, dep_days: i3
             if arr.0 - dep.0 < 60.0 {
                 continue;
             }
-            if let Some((c3, ii)) = c3(eph, dep, arr) {
-                if ii == type_ii && c3 < best.0 {
-                    best = (c3, dep);
-                }
+            if let Some((c3, ii)) = c3(eph, dep, arr)
+                && ii == type_ii
+                && c3 < best.0
+            {
+                best = (c3, dep);
             }
         }
     }
@@ -107,15 +132,36 @@ fn c3_matches_handbook() {
             // The best transfer nearby is at least as good, at about the same time.
             let (best, best_dep) = search(&eph, m.type_ii, dep, arr, 40, 80);
             let shift = best_dep.0 - dep.0;
-            println!("{label}: handbook {:6.3}  at its dates {at_dates:6.3} ({:+.2}%)  best {best:6.3} on {best_dep} ({shift:+.0} d)", m.c3, rel * 100.0);
-            assert!(rel.abs() < 0.015, "{label}: C3 at handbook dates off by {rel}");
+            println!(
+                "{label}: handbook {:6.3}  at its dates {at_dates:6.3} ({:+.2}%)  best {best:6.3} on {best_dep} ({shift:+.0} d)",
+                m.c3,
+                rel * 100.0
+            );
+            assert!(
+                rel.abs() < 0.015,
+                "{label}: C3 at handbook dates off by {rel}"
+            );
             assert!(best <= m.c3 * 1.01, "{label}: best {best}");
-            assert!(shift.abs() <= 5.0, "{label}: best departure shifted {shift} d");
+            assert!(
+                shift.abs() <= 5.0,
+                "{label}: best departure shifted {shift} d"
+            );
         } else {
             let mid = Epoch((dep.0 + arr.0) / 2.0);
-            let (best, best_dep) = search(&eph, m.type_ii, dep.plus_days(70.0), mid.plus_days(140.0), 150, 260);
+            let (best, best_dep) = search(
+                &eph,
+                m.type_ii,
+                dep.plus_days(70.0),
+                mid.plus_days(140.0),
+                150,
+                260,
+            );
             let rel = best / m.c3 - 1.0;
-            println!("{label}: handbook {:6.3}  (dates inconsistent)        best {best:6.3} on {best_dep} ({:+.2}%)", m.c3, rel * 100.0);
+            println!(
+                "{label}: handbook {:6.3}  (dates inconsistent)        best {best:6.3} on {best_dep} ({:+.2}%)",
+                m.c3,
+                rel * 100.0
+            );
             assert!(rel.abs() < 0.01, "{label}: minimum C3 off by {rel}");
         }
     }

@@ -19,7 +19,13 @@ pub struct HelioTransfer {
 
 /// The zero-revolution prograde Lambert transfer between two heliocentric
 /// bodies.
-pub fn helio_transfer(eph: &Ephemeris, from: BodyId, to: BodyId, depart: Epoch, tof_days: f64) -> Option<HelioTransfer> {
+pub fn helio_transfer(
+    eph: &Ephemeris,
+    from: BodyId,
+    to: BodyId,
+    depart: Epoch,
+    tof_days: f64,
+) -> Option<HelioTransfer> {
     let s1 = eph.state(from, depart);
     let s2 = eph.state(to, depart.plus_days(tof_days));
     let sol = lambert::solve(MU_SUN, s1.r, s2.r, tof_days * SECONDS_PER_DAY)?;
@@ -73,38 +79,59 @@ impl Route {
     pub fn validate(&self, net: &Network) -> Result<(), String> {
         let (a, b) = (net.node(self.from), net.node(self.to));
         if a.system == b.system {
-            return Err(format!("{} and {} are in the same system; use fixed legs", a.id, b.id));
+            return Err(format!(
+                "{} and {} are in the same system; use fixed legs",
+                a.id, b.id
+            ));
         }
         let probe = 3.0;
-        let dep = a.gateway.ok_or_else(|| format!("{} has no interplanetary gateway", a.id))?;
-        dep.departure_dv(probe).ok_or_else(|| format!("{} cannot be departed from directly", a.id))?;
-        let arr = b.gateway.ok_or_else(|| format!("{} has no interplanetary gateway", b.id))?;
-        arr.arrival_dv(probe, self.aero_capable)
-            .ok_or_else(|| format!("{} cannot be reached directly without an aero-capable ship", b.id))?;
+        let dep = a
+            .gateway
+            .ok_or_else(|| format!("{} has no interplanetary gateway", a.id))?;
+        dep.departure_dv(probe)
+            .ok_or_else(|| format!("{} cannot be departed from directly", a.id))?;
+        let arr = b
+            .gateway
+            .ok_or_else(|| format!("{} has no interplanetary gateway", b.id))?;
+        arr.arrival_dv(probe, self.aero_capable).ok_or_else(|| {
+            format!(
+                "{} cannot be reached directly without an aero-capable ship",
+                b.id
+            )
+        })?;
         Ok(())
     }
 
     /// The transfer departing at `depart` and taking `tof_days`, if the
     /// Lambert problem has a solution. The route must be valid.
-    pub fn transfer(&self, eph: &Ephemeris, net: &Network, depart: Epoch, tof_days: f64) -> Option<Transfer> {
+    pub fn transfer(
+        &self,
+        eph: &Ephemeris,
+        net: &Network,
+        depart: Epoch,
+        tof_days: f64,
+    ) -> Option<Transfer> {
         let (a, b) = (net.node(self.from), net.node(self.to));
         let helio = helio_transfer(eph, a.system, b.system, depart, tof_days)?;
         Some(Transfer {
             depart,
             tof_days,
             dv_depart: a.gateway?.departure_dv(helio.v_inf_depart)?,
-            dv_arrive: b.gateway?.arrival_dv(helio.v_inf_arrive, self.aero_capable)?,
+            dv_arrive: b
+                .gateway?
+                .arrival_dv(helio.v_inf_arrive, self.aero_capable)?,
             helio,
         })
     }
 
-    /// A time-of-flight range bracketing the useful transfers: 0.3–2× the
-    /// Hohmann time between the two systems' mean orbits at `t`.
+    /// A time-of-flight range bracketing the useful transfers: 0.3–3× the
+    /// Hohmann time between the two systems' mean orbits at `t`. Long Type II
+    /// transfers to eccentric small bodies need the upper end.
     pub fn default_tof_range(&self, eph: &Ephemeris, net: &Network, t: Epoch) -> (f64, f64) {
         let a = |n: NodeId| eph.body(net.node(n).system).elements(t).a;
         let semi = (a(self.from) + a(self.to)) / 2.0;
         let hohmann_days = PI * (semi.powi(3) / MU_SUN).sqrt() / SECONDS_PER_DAY;
-        (0.3 * hohmann_days, 2.0 * hohmann_days)
+        (0.3 * hohmann_days, 3.0 * hohmann_days)
     }
 }
 
@@ -121,7 +148,14 @@ pub struct Grid {
 
 impl Grid {
     /// A grid covering `[start, end]` departures and `[tof_min, tof_max]`.
-    pub fn covering(start: Epoch, end: Epoch, depart_step: f64, tof_min: f64, tof_max: f64, tof_step: f64) -> Self {
+    pub fn covering(
+        start: Epoch,
+        end: Epoch,
+        depart_step: f64,
+        tof_min: f64,
+        tof_max: f64,
+        tof_step: f64,
+    ) -> Self {
         Grid {
             depart_start: start,
             depart_step,
@@ -148,7 +182,12 @@ pub struct Porkchop {
 }
 
 impl Porkchop {
-    pub fn compute(eph: &Ephemeris, net: &Network, route: Route, grid: Grid) -> Result<Self, String> {
+    pub fn compute(
+        eph: &Ephemeris,
+        net: &Network,
+        route: Route,
+        grid: Grid,
+    ) -> Result<Self, String> {
         route.validate(net)?;
         let cells = (0..grid.departs)
             .into_par_iter()
@@ -168,7 +207,12 @@ impl Porkchop {
     pub fn best_by_departure(&self) -> Vec<Option<Transfer>> {
         self.cells
             .chunks(self.grid.tofs)
-            .map(|row| row.iter().flatten().copied().min_by(|a, b| a.dv().total_cmp(&b.dv())))
+            .map(|row| {
+                row.iter()
+                    .flatten()
+                    .copied()
+                    .min_by(|a, b| a.dv().total_cmp(&b.dv()))
+            })
             .collect()
     }
 }
@@ -181,11 +225,17 @@ mod tests {
     fn earth_mars_transfer_is_plausible() {
         let eph = Ephemeris::standard();
         let net = Network::standard(&eph);
-        let route = Route { from: net.lookup("leo").unwrap(), to: net.lookup("lmo").unwrap(), aero_capable: false };
+        let route = Route {
+            from: net.lookup("leo").unwrap(),
+            to: net.lookup("lmo").unwrap(),
+            aero_capable: false,
+        };
         route.validate(&net).unwrap();
         // Near the handbook's 2033 Type II minimum (C3 7.78 on 2033-04-28,
         // arriving 2034-01-27).
-        let t = route.transfer(&eph, &net, Epoch::from_ymd(2033, 4, 28), 274.0).unwrap();
+        let t = route
+            .transfer(&eph, &net, Epoch::from_ymd(2033, 4, 28), 274.0)
+            .unwrap();
         assert!(t.is_type_ii());
         assert!((7.0..8.6).contains(&t.c3()), "{}", t.c3());
         assert!((3.4..3.8).contains(&t.dv_depart), "{}", t.dv_depart);
@@ -199,7 +249,11 @@ mod tests {
         let eph = Ephemeris::standard();
         let net = Network::standard(&eph);
         let id = |s: &str| net.lookup(s).unwrap();
-        let route = |from, to, aero_capable| Route { from: id(from), to: id(to), aero_capable };
+        let route = |from, to, aero_capable| Route {
+            from: id(from),
+            to: id(to),
+            aero_capable,
+        };
         assert!(route("leo", "eml1", false).validate(&net).is_err());
         assert!(route("llo", "lmo", false).validate(&net).is_err());
         assert!(route("leo", "mars-surface", false).validate(&net).is_err());

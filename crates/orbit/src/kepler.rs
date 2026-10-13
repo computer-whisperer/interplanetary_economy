@@ -29,7 +29,15 @@ pub struct Elements {
 
 impl Elements {
     pub fn state(&self) -> State {
-        let Elements { a, e, i, raan, argp, mean_anomaly, mean_motion: n } = *self;
+        let Elements {
+            a,
+            e,
+            i,
+            raan,
+            argp,
+            mean_anomaly,
+            mean_motion: n,
+        } = *self;
         let ecc_anomaly = solve_kepler(mean_anomaly, e);
         let (sin_e, cos_e) = ecc_anomaly.sin_cos();
         let b = a * (1.0 - e * e).sqrt();
@@ -37,12 +45,18 @@ impl Elements {
         let edot = n / (1.0 - e * cos_e);
         let v_pf = DVec3::new(-a * sin_e * edot, b * cos_e * edot, 0.0);
         let rot = perifocal_rotation(i, raan, argp);
-        State { r: rot(r_pf), v: rot(v_pf) }
+        State {
+            r: rot(r_pf),
+            v: rot(v_pf),
+        }
     }
 
     /// The same orbit `dt` seconds later.
     pub fn advanced(&self, dt: f64) -> Elements {
-        Elements { mean_anomaly: self.mean_anomaly + self.mean_motion * dt, ..*self }
+        Elements {
+            mean_anomaly: self.mean_anomaly + self.mean_motion * dt,
+            ..*self
+        }
     }
 
     pub fn period(&self) -> f64 {
@@ -83,11 +97,19 @@ pub fn propagate(s: State, dt: f64, mu: f64) -> State {
     let r0 = s.r.length();
     let vr0 = s.r.dot(s.v) / r0;
     let alpha = 2.0 / r0 - s.v.length_squared() / mu;
-    let dt = if alpha > 0.0 { dt.rem_euclid(TAU / (mu * alpha.powi(3)).sqrt()) } else { dt };
+    let dt = if alpha > 0.0 {
+        dt.rem_euclid(TAU / (mu * alpha.powi(3)).sqrt())
+    } else {
+        dt
+    };
 
     let k1 = r0 * vr0 / sqrt_mu;
     let k2 = 1.0 - alpha * r0;
-    let mut chi = if alpha > 0.0 { sqrt_mu * alpha * dt } else { sqrt_mu * dt / r0 };
+    let mut chi = if alpha > 0.0 {
+        sqrt_mu * alpha * dt
+    } else {
+        sqrt_mu * dt / r0
+    };
     const N: f64 = 5.0;
     for _ in 0..100 {
         let z = alpha * chi * chi;
@@ -95,7 +117,9 @@ pub fn propagate(s: State, dt: f64, mu: f64) -> State {
         let f = k1 * chi * chi * c + k2 * chi.powi(3) * sz + r0 * chi - sqrt_mu * dt;
         let df = k1 * chi * (1.0 - z * sz) + k2 * chi * chi * c + r0;
         let ddf = k1 * (1.0 - z * c) + k2 * chi * (1.0 - z * sz);
-        let root = ((N - 1.0).powi(2) * df * df - N * (N - 1.0) * f * ddf).abs().sqrt();
+        let root = ((N - 1.0).powi(2) * df * df - N * (N - 1.0) * f * ddf)
+            .abs()
+            .sqrt();
         let step = N * f / (df + root.copysign(df));
         chi -= step;
         if step.abs() < 1e-13 * chi.abs().max(1.0) {
@@ -111,7 +135,10 @@ pub fn propagate(s: State, dt: f64, mu: f64) -> State {
     let rn = r.length();
     let fdot = sqrt_mu / (rn * r0) * (z * sz - 1.0) * chi;
     let gdot = 1.0 - chi * chi / rn * c;
-    State { r, v: fdot * s.r + gdot * s.v }
+    State {
+        r,
+        v: fdot * s.r + gdot * s.v,
+    }
 }
 
 fn stumpff_c(z: f64) -> f64 {
@@ -186,14 +213,21 @@ mod tests {
         for &dt in &[60.0, 5_000.0, 20_000.0, 2.5 * el.period()] {
             let a = propagate(s0, dt, MU_EARTH);
             let b = el.advanced(dt).state();
-            assert!((a.r - b.r).length() < 1e-5, "dt={dt} dr={}", (a.r - b.r).length());
+            assert!(
+                (a.r - b.r).length() < 1e-5,
+                "dt={dt} dr={}",
+                (a.r - b.r).length()
+            );
             assert!((a.v - b.v).length() < 1e-8, "dt={dt}");
         }
     }
 
     #[test]
     fn propagate_hyperbolic_conserves_energy() {
-        let s0 = State { r: DVec3::new(7_000.0, 0.0, 0.0), v: DVec3::new(0.0, 12.0, 1.0) };
+        let s0 = State {
+            r: DVec3::new(7_000.0, 0.0, 0.0),
+            v: DVec3::new(0.0, 12.0, 1.0),
+        };
         let energy = |s: State| s.v.length_squared() / 2.0 - MU_EARTH / s.r.length();
         let s1 = propagate(s0, 40_000.0, MU_EARTH);
         assert!((energy(s1) - energy(s0)).abs() < 1e-9);

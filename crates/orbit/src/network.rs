@@ -95,7 +95,11 @@ impl Gateway {
         match self {
             Gateway::Orbit(o) => {
                 let propulsive = o.burn_dv(v_inf);
-                Some(if aero_capable && o.aerocapture { propulsive.min(o.aerocapture_dv()) } else { propulsive })
+                Some(if aero_capable && o.aerocapture {
+                    propulsive.min(o.aerocapture_dv())
+                } else {
+                    propulsive
+                })
             }
             Gateway::Rendezvous => Some(v_inf),
             Gateway::Entry { dv } => aero_capable.then_some(*dv),
@@ -182,19 +186,26 @@ fn planet_mu(system: &str) -> Option<f64> {
 impl Network {
     /// `data/network.toml`, plus a rendezvous node for every small body.
     pub fn standard(eph: &Ephemeris) -> Self {
-        Self::from_toml(include_str!("../../../data/network.toml"), eph).expect("data/network.toml is valid")
+        Self::from_toml(include_str!("../../../data/network.toml"), eph)
+            .expect("data/network.toml is valid")
     }
 
     pub fn from_toml(src: &str, eph: &Ephemeris) -> Result<Self, String> {
         let file: NetworkFile = toml::from_str(src).map_err(|e| e.to_string())?;
         let mut nodes = Vec::new();
         for row in file.node {
-            let system = eph.lookup(&row.system).ok_or_else(|| format!("{}: unknown system {:?}", row.id, row.system))?;
+            let system = eph
+                .lookup(&row.system)
+                .ok_or_else(|| format!("{}: unknown system {:?}", row.id, row.system))?;
             let gateway = match (row.orbit, row.entry_dv) {
                 (Some(_), Some(_)) => return Err(format!("{}: both orbit and entry_dv", row.id)),
                 (Some(o), None) => {
-                    let mu = planet_mu(&row.system)
-                        .ok_or_else(|| format!("{}: no gravitational parameter for {:?}", row.id, row.system))?;
+                    let mu = planet_mu(&row.system).ok_or_else(|| {
+                        format!(
+                            "{}: no gravitational parameter for {:?}",
+                            row.id, row.system
+                        )
+                    })?;
                     Some(Gateway::Orbit(OrbitGateway {
                         mu,
                         radius: o.radius_km,
@@ -209,7 +220,12 @@ impl Network {
             if row.aerocapture && !matches!(gateway, Some(Gateway::Orbit(_))) {
                 return Err(format!("{}: aerocapture needs an orbit gateway", row.id));
             }
-            nodes.push(Node { id: row.id, name: row.name, system, gateway });
+            nodes.push(Node {
+                id: row.id,
+                name: row.name,
+                system,
+                gateway,
+            });
         }
         for id in eph.ids() {
             let body = eph.body(id);
@@ -228,14 +244,27 @@ impl Network {
             }
         }
 
-        let mut net = Network { nodes, legs: Vec::new() };
+        let mut net = Network {
+            nodes,
+            legs: Vec::new(),
+        };
         for row in file.leg {
-            let find = |id: &str| net.lookup(id).ok_or_else(|| format!("leg references unknown node {id:?}"));
+            let find = |id: &str| {
+                net.lookup(id)
+                    .ok_or_else(|| format!("leg references unknown node {id:?}"))
+            };
             let (from, to) = (find(&row.from)?, find(&row.to)?);
             if net.node(from).system != net.node(to).system {
                 return Err(format!("leg {} -> {} crosses systems", row.from, row.to));
             }
-            net.legs.push(Leg { from, to, dv: row.dv, days: row.days, aero: row.aero, launch: row.launch });
+            net.legs.push(Leg {
+                from,
+                to,
+                dv: row.dv,
+                days: row.days,
+                aero: row.aero,
+                launch: row.launch,
+            });
         }
         Ok(net)
     }
@@ -258,21 +287,31 @@ impl Network {
 
     /// The lowest-Δv chain of fixed legs from `from` to `to`, excluding launch
     /// services, and aero legs unless `aero_capable`.
-    pub fn cheapest_local_path(&self, from: NodeId, to: NodeId, aero_capable: bool) -> Option<LocalPath> {
+    pub fn cheapest_local_path(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        aero_capable: bool,
+    ) -> Option<LocalPath> {
         // Dijkstra over a graph of a few dozen nodes; a linear scan is plenty.
         let n = self.nodes.len();
         let mut best: Vec<Option<(f64, f64, Option<NodeId>)>> = vec![None; n];
         let mut done = vec![false; n];
         best[from.0] = Some((0.0, 0.0, None));
-        while let Some(u) = (0..n).filter(|&k| !done[k] && best[k].is_some()).min_by(|&a, &b| {
-            best[a].unwrap().0.total_cmp(&best[b].unwrap().0)
-        }) {
+        while let Some(u) = (0..n)
+            .filter(|&k| !done[k] && best[k].is_some())
+            .min_by(|&a, &b| best[a].unwrap().0.total_cmp(&best[b].unwrap().0))
+        {
             done[u] = true;
             if u == to.0 {
                 break;
             }
             let (dv_u, days_u, _) = best[u].unwrap();
-            for leg in self.legs.iter().filter(|l| l.from.0 == u && !l.launch && (aero_capable || !l.aero)) {
+            for leg in self
+                .legs
+                .iter()
+                .filter(|l| l.from.0 == u && !l.launch && (aero_capable || !l.aero))
+            {
                 let dv = dv_u + leg.dv;
                 if best[leg.to.0].is_none_or(|(d, _, _)| dv < d) {
                     best[leg.to.0] = Some((dv, days_u + leg.days, Some(NodeId(u))));
@@ -308,7 +347,11 @@ mod tests {
 
     fn leg_dv(net: &Network, from: &str, to: &str) -> f64 {
         let (f, t) = (net.lookup(from).unwrap(), net.lookup(to).unwrap());
-        net.legs().iter().find(|l| l.from == f && l.to == t && !l.aero).unwrap().dv
+        net.legs()
+            .iter()
+            .find(|l| l.from == f && l.to == t && !l.aero)
+            .unwrap()
+            .dv
     }
 
     /// The tabulated Δv values agree with two-impulse Hohmann estimates
@@ -321,9 +364,15 @@ mod tests {
             (v_peri - low.speed) + drop
         };
         let leo_eml1 = hohmann(orbit(&net, "leo"), orbit(&net, "eml1"));
-        assert!((leo_eml1 - leg_dv(&net, "leo", "eml1")).abs() < 0.1, "{leo_eml1}");
+        assert!(
+            (leo_eml1 - leg_dv(&net, "leo", "eml1")).abs() < 0.1,
+            "{leo_eml1}"
+        );
         let lmo_phobos = hohmann(orbit(&net, "lmo"), orbit(&net, "phobos"));
-        assert!((lmo_phobos - leg_dv(&net, "lmo", "phobos")).abs() < 0.02, "{lmo_phobos}");
+        assert!(
+            (lmo_phobos - leg_dv(&net, "lmo", "phobos")).abs() < 0.02,
+            "{lmo_phobos}"
+        );
     }
 
     #[test]
@@ -344,17 +393,29 @@ mod tests {
     fn cheapest_paths() {
         let (_, net) = standard();
         let id = |s: &str| net.lookup(s).unwrap();
-        let out = net.cheapest_local_path(id("leo"), id("moon-south-pole"), false).unwrap();
+        let out = net
+            .cheapest_local_path(id("leo"), id("moon-south-pole"), false)
+            .unwrap();
         assert_eq!(out.nodes, vec![id("leo"), id("llo"), id("moon-south-pole")]);
         assert!((out.dv - 5.91).abs() < 1e-9);
-        let back = net.cheapest_local_path(id("moon-south-pole"), id("leo"), true).unwrap();
+        let back = net
+            .cheapest_local_path(id("moon-south-pole"), id("leo"), true)
+            .unwrap();
         assert!((back.dv - 2.77).abs() < 1e-9, "{}", back.dv);
-        let back_no_aero = net.cheapest_local_path(id("moon-south-pole"), id("leo"), false).unwrap();
+        let back_no_aero = net
+            .cheapest_local_path(id("moon-south-pole"), id("leo"), false)
+            .unwrap();
         assert!((back_no_aero.dv - 5.91).abs() < 1e-9, "{}", back_no_aero.dv);
         // The launch service is not a flown leg.
-        assert!(net.cheapest_local_path(id("earth-surface"), id("leo"), true).is_none());
+        assert!(
+            net.cheapest_local_path(id("earth-surface"), id("leo"), true)
+                .is_none()
+        );
         // Systems are not connected by fixed legs.
-        assert!(net.cheapest_local_path(id("leo"), id("lmo"), true).is_none());
+        assert!(
+            net.cheapest_local_path(id("leo"), id("lmo"), true)
+                .is_none()
+        );
     }
 
     #[test]

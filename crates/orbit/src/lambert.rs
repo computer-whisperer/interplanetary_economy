@@ -49,14 +49,23 @@ pub fn solve(mu: f64, r1: DVec3, r2: DVec3, tof: f64) -> Option<LambertSolution>
     let vr2 = -gamma * ((lambda * y - x) + rho * (lambda * y + x)) / r2_n;
     let vt1 = gamma * sigma * (y + lambda * x) / r1_n;
     let vt2 = gamma * sigma * (y + lambda * x) / r2_n;
-    Some(LambertSolution { v1: vr1 * ir1 + vt1 * it1, v2: vr2 * ir2 + vt2 * it2 })
+    Some(LambertSolution {
+        v1: vr1 * ir1 + vt1 * it1,
+        v2: vr2 * ir2 + vt2 * it2,
+    })
 }
 
 /// The transfer angle swept prograde (about +z) from `r1` to `r2`, radians in
 /// [0, 2π). Below π is a Type I transfer, above is Type II.
 pub fn prograde_angle(r1: DVec3, r2: DVec3) -> f64 {
-    let angle = (r1.dot(r2) / (r1.length() * r2.length())).clamp(-1.0, 1.0).acos();
-    if r1.cross(r2).z < 0.0 { 2.0 * PI - angle } else { angle }
+    let angle = (r1.dot(r2) / (r1.length() * r2.length()))
+        .clamp(-1.0, 1.0)
+        .acos();
+    if r1.cross(r2).z < 0.0 {
+        2.0 * PI - angle
+    } else {
+        angle
+    }
 }
 
 fn compute_y(x: f64, lambda: f64) -> f64 {
@@ -122,8 +131,10 @@ fn householder(mut x: f64, t0: f64, lambda: f64) -> Option<f64> {
         let omx2 = 1.0 - x * x;
         let d1 = (3.0 * t * x - 2.0 + 2.0 * lambda.powi(3) * x / y) / omx2;
         let d2 = (3.0 * t + 5.0 * x * d1 + 2.0 * (1.0 - l2) * lambda.powi(3) / y.powi(3)) / omx2;
-        let d3 = (7.0 * x * d2 + 8.0 * d1 - 6.0 * (1.0 - l2) * lambda.powi(5) * x / y.powi(5)) / omx2;
-        let next = x - f * ((d1 * d1 - f * d2 / 2.0) / (d1 * (d1 * d1 - f * d2) + d3 * f * f / 6.0));
+        let d3 =
+            (7.0 * x * d2 + 8.0 * d1 - 6.0 * (1.0 - l2) * lambda.powi(5) * x / y.powi(5)) / omx2;
+        let next =
+            x - f * ((d1 * d1 - f * d2 / 2.0) / (d1 * (d1 * d1 - f * d2) + d3 * f * f / 6.0));
         if !next.is_finite() {
             return None;
         }
@@ -164,8 +175,16 @@ mod tests {
         let au = crate::consts::AU_KM;
         let mut checked = 0;
         for _ in 0..2000 {
-            let r1 = DVec3::new(rng.range(-1.6, 1.6), rng.range(-1.6, 1.6), rng.range(-0.1, 0.1)) * au;
-            let r2 = DVec3::new(rng.range(-1.6, 1.6), rng.range(-1.6, 1.6), rng.range(-0.1, 0.1)) * au;
+            let r1 = DVec3::new(
+                rng.range(-1.6, 1.6),
+                rng.range(-1.6, 1.6),
+                rng.range(-0.1, 0.1),
+            ) * au;
+            let r2 = DVec3::new(
+                rng.range(-1.6, 1.6),
+                rng.range(-1.6, 1.6),
+                rng.range(-0.1, 0.1),
+            ) * au;
             if r1.length() < 0.3 * au || r2.length() < 0.3 * au {
                 continue;
             }
@@ -175,7 +194,10 @@ mod tests {
             };
             let end = propagate(State { r: r1, v: sol.v1 }, tof, MU_SUN);
             let miss = (end.r - r2).length();
-            assert!(miss < 1e-6 * r2.length(), "miss {miss} km for r1={r1:?} r2={r2:?} tof={tof}");
+            assert!(
+                miss < 1e-6 * r2.length(),
+                "miss {miss} km for r1={r1:?} r2={r2:?} tof={tof}"
+            );
             assert!((end.v - sol.v2).length() < 1e-6 * sol.v2.length());
             // Prograde: angular momentum along +z.
             assert!(r1.cross(sol.v1).z > 0.0);

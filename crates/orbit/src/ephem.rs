@@ -97,7 +97,10 @@ impl Planet {
         let at = |x: [f64; 2]| x[0] + x[1] * tc;
         let [b, c, s, f] = p.bcsf;
         let (l, varpi, node) = (at(p.l), at(p.varpi), at(p.node));
-        let m = l - varpi + b * tc * tc + c * (f * tc).to_radians().cos() + s * (f * tc).to_radians().sin();
+        let m = l - varpi
+            + b * tc * tc
+            + c * (f * tc).to_radians().cos()
+            + s * (f * tc).to_radians().sin();
         Elements {
             a: at(p.a) * AU_KM,
             e: at(p.e),
@@ -140,7 +143,10 @@ enum Motion {
     Planet(Planet),
     /// Consecutive two-body orbits, sorted by start; the first and last
     /// extend before and after the fitted span.
-    Segments { epoch: Epoch, segments: Vec<Segment> },
+    Segments {
+        epoch: Epoch,
+        segments: Vec<Segment>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -160,7 +166,9 @@ impl Body {
             Motion::Planet(p) => p.elements(t),
             Motion::Segments { epoch, segments } => {
                 let k = segments.partition_point(|s| s.start <= t).saturating_sub(1);
-                segments[k].elements.advanced((t.0 - epoch.0) * SECONDS_PER_DAY)
+                segments[k]
+                    .elements
+                    .advanced((t.0 - epoch.0) * SECONDS_PER_DAY)
             }
         }
     }
@@ -284,5 +292,7 @@ impl Ephemeris {
 
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }

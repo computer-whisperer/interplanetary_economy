@@ -30,10 +30,15 @@ fn fixture(name: &str) -> Vec<Row> {
 /// Max position error (km) and velocity error (km/s) over a fixture.
 fn max_errors(eph: &Ephemeris, body: &str, fixture_name: &str) -> (f64, f64) {
     let id = eph.lookup(body).unwrap();
-    fixture(fixture_name).iter().fold((0.0f64, 0.0f64), |(dr, dv), row| {
-        let s = eph.state(id, row.t);
-        (dr.max((s.r - row.r).length()), dv.max((s.v - row.v).length()))
-    })
+    fixture(fixture_name)
+        .iter()
+        .fold((0.0f64, 0.0f64), |(dr, dv), row| {
+            let s = eph.state(id, row.t);
+            (
+                dr.max((s.r - row.r).length()),
+                dv.max((s.v - row.v).length()),
+            )
+        })
 }
 
 #[test]
@@ -48,7 +53,11 @@ fn planets_match_horizons() {
         ("mars", "horizons_mars.csv", 150_000.0, 0.015),
     ] {
         let (dr, dv) = max_errors(&eph, body, file);
-        println!("{body}: max |dr| = {dr:.0} km ({:.2e} au), max |dv| = {:.2} m/s", dr / AU_KM, dv * 1e3);
+        println!(
+            "{body}: max |dr| = {dr:.0} km ({:.2e} au), max |dv| = {:.2} m/s",
+            dr / AU_KM,
+            dv * 1e3
+        );
         assert!(dr < max_dr, "{body}: position error {dr} km");
         assert!(dv < max_dv, "{body}: velocity error {dv} km/s");
     }
@@ -67,7 +76,15 @@ fn small_bodies_match_horizons() {
         ("2000-sg344", "horizons_2000sg344.csv", 0.011),
     ] {
         let (dr, dv) = max_errors(&eph, body, file);
-        println!("{body}: max |dr| = {:.4} au, |dv| = {:.0} m/s", dr / AU_KM, dv * 1e3);
-        assert!(dr / AU_KM < max_au, "{body}: position error {} au", dr / AU_KM);
+        println!(
+            "{body}: max |dr| = {:.4} au, |dv| = {:.0} m/s",
+            dr / AU_KM,
+            dv * 1e3
+        );
+        assert!(
+            dr / AU_KM < max_au,
+            "{body}: position error {} au",
+            dr / AU_KM
+        );
     }
 }

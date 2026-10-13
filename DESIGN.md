@@ -296,12 +296,24 @@ Minimal and information-dense:
 
 ## Milestones
 
-- **M0, orbital engine.**
-  - Planet ephemerides from JPL's approximate Keplerian elements; NEA elements
-    from JPL's Small-Body Database, propagated two-body.
-  - Izzo Lambert solver, porkchop cache, Δv graph, and a window-calendar CLI.
-  - Check: reproduces published Earth–Mars window dates and minimum C3 values
-    to within a few percent.
+- **M0, orbital engine.** Done (2026-10-12): `crates/orbit`, CLI `orbit`.
+  - Planet ephemerides from JPL's approximate Keplerian elements. NEAs are
+    piecewise two-body fits to JPL Horizons over 2040–2076 (`tools/neas/`),
+    good to ~0.002 au. Chose this over osculating elements propagated
+    two-body, which drifted ~0.1 au over the span because they carry the
+    Sun's wobble around the barycenter. Close Earth flybys appear as orbit
+    changes.
+  - Izzo Lambert solver, porkchop grids, Δv network (`data/network.toml`),
+    window detection, and a window-calendar CLI. Porkchops are computed on
+    demand (a full 36-year calendar takes ~4 s on 24 cores); caching is
+    deferred until M1 shows it is needed.
+  - Check: the Mars minimum-C3 values in NASA/TM-2010-216764 are reproduced
+    to ≤0.25% (≤0.5% for one row). The handbook's 2035/2037/2039 dates are
+    inconsistent with JPL's own ephemeris; its C3 values for those years are
+    reproduced at dates 63–81 days later.
+  - Simplifications to revisit: zero-revolution Lambert only; a scalar
+    model of the burns at Earth–Moon L1 (real three-body trajectories can
+    be cheaper); no aerocapture speed limit.
 - **M1, headless sim core.**
   - Nodes, commodities, facilities, ships, rocket-equation costing, missions
     and standing routes.
