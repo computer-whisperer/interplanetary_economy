@@ -108,7 +108,7 @@ mod tests {
         let (earth, mars) = (eph.lookup("earth").unwrap(), eph.lookup("mars").unwrap());
         let (start, end) = (Epoch::from_ymd(2040, 1, 1), Epoch::from_ymd(2046, 6, 1));
         let grid = Grid::covering(start, end, 2.0, 80.0, 520.0, 4.0);
-        let porkchop = Porkchop::compute(&eph, earth, mars, grid);
+        let porkchop = Porkchop::compute(eph, earth, mars, grid);
         let synodic = eph.synodic_period_days(earth, mars, start);
         assert!((synodic - 780.0).abs() < 5.0, "{synodic}");
 
@@ -145,13 +145,8 @@ mod tests {
     fn windows_for(to: &str, start: Epoch, end: Epoch) -> (Porkchop, Vec<Window>) {
         let eph = Ephemeris::standard();
         let (earth, to) = (eph.lookup("earth").unwrap(), eph.lookup(to).unwrap());
-        let (lo, hi) = default_tof_range(&eph, earth, to, start);
-        let pc = Porkchop::compute(
-            &eph,
-            earth,
-            to,
-            Grid::covering(start, end, 2.0, lo, hi, 4.0),
-        );
+        let (lo, hi) = default_tof_range(eph, earth, to, start);
+        let pc = Porkchop::compute(eph, earth, to, Grid::covering(start, end, 2.0, lo, hi, 4.0));
         let synodic = eph.synodic_period_days(earth, to, start);
         let windows = find_windows(&pc, synodic, 0.5);
         (pc, windows)
@@ -192,8 +187,8 @@ mod tests {
         let key = |ws: &[Window]| -> Vec<(String, String)> {
             ws.iter()
                 .filter(|w| {
-                    w.best.depart.0 > Epoch::from_ymd(2046, 1, 1).0
-                        && w.best.depart.0 < Epoch::from_ymd(2068, 1, 1).0
+                    w.best.depart.0 > Epoch::from_ymd(2048, 1, 1).0
+                        && w.best.depart.0 < Epoch::from_ymd(2066, 1, 1).0
                 })
                 .map(|w| {
                     (
@@ -205,9 +200,9 @@ mod tests {
         };
         for to in ["2009-uy19", "2006-bz147"] {
             let (_, narrow) =
-                windows_for(to, Epoch::from_ymd(2040, 1, 1), Epoch::from_ymd(2074, 1, 1));
+                windows_for(to, Epoch::from_ymd(2042, 1, 1), Epoch::from_ymd(2072, 1, 1));
             let (_, wide) =
-                windows_for(to, Epoch::from_ymd(2038, 1, 1), Epoch::from_ymd(2076, 1, 1));
+                windows_for(to, Epoch::from_ymd(2040, 1, 1), Epoch::from_ymd(2074, 1, 1));
             assert_eq!(key(&narrow), key(&wide), "{to}");
         }
     }

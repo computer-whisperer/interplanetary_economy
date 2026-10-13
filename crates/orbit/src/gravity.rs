@@ -1,13 +1,16 @@
 //! Gravity on a ship, a massless particle: the massive bodies as point
 //! masses at their ephemeris positions, plus the J2 oblateness of those that
-//! have a [`Figure`](crate::ephem::Figure).
+//! have a [`Figure`](crate::ephem::Figure), and optionally the Sun's
+//! relativistic correction.
 //!
 //! Positions are measured from a center: a body (geocentric for cislunar
 //! space keeps positions small and precise) or the solar-system barycenter.
 //! A body center brings the indirect term, the center's own acceleration
 //! toward the other bodies.
 
+use crate::consts::C_KM_S;
 use crate::ephem::{BodyId, Ephemeris};
+use crate::kepler::State;
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
 
@@ -21,6 +24,7 @@ pub struct Field<'a> {
     others: Vec<(BodyId, f64)>,
     center_gm: f64,
     oblate: bool,
+    relativity: bool,
 }
 
 impl<'a> Field<'a> {
@@ -41,6 +45,7 @@ impl<'a> Field<'a> {
                 .collect(),
             center_gm: center.map_or(0.0, |c| eph.body(c).gm),
             oblate: false,
+            relativity: false,
         }
     }
 
@@ -56,7 +61,16 @@ impl<'a> Field<'a> {
         self
     }
 
-    /// Acceleration of a ship at `r` (from the center) at `t`, km/s².
+    /// Includes the Sun's post-Newtonian (Schwarzschild) correction, which
+    /// moves a near-Earth asteroid by hundreds of km per decade; for ships
+    /// on short legs it is negligible.
+    pub fn with_relativity(mut self) -> Self {
+        self.relativity = true;
+        self
+    }
+
+    /// Acceleration of a ship at `r` (from the center) at `t`, km/s²,
+    /// without the relativistic correction (see [`Self::ode`]).
     pub fn acceleration(&self, t: Epoch, r: DVec3) -> DVec3 {
         let origin = self.center.map(|c| self.eph.barycentric_position(c, t));
         let mut a = DVec3::ZERO;
@@ -88,18 +102,51 @@ impl<'a> Field<'a> {
         k * ((1.0 - 5.0 * z * z / r2) * rho + 2.0 * z * fig.pole)
     }
 
+    /// The Sun's relativistic correction for a ship at `r`, `v` (from the
+    /// center), less the center's own when the center is another body.
+    fn relativity(&self, t: Epoch, r: DVec3, v: DVec3) -> DVec3 {
+        let sun = self.eph.sun();
+        let gm = self.eph.body(sun).gm;
+        let s = self.eph.barycentric(sun, t);
+        let o = self.center.map_or(
+            State {
+                r: DVec3::ZERO,
+                v: DVec3::ZERO,
+            },
+            |c| self.eph.barycentric(c, t),
+        );
+        let (sr, sv) = (s.r - o.r, s.v - o.v);
+        let mut a = schwarzschild(gm, r - sr, v - sv);
+        if self.center.is_some_and(|c| c != sun) {
+            a -= schwarzschild(gm, -sr, -sv);
+        }
+        a
+    }
+
     /// The equations of motion of a ship, `[r, v]` in km and km/s, with time
     /// in seconds after `epoch`: the right-hand side for
     /// [`Dop853`](crate::integrate::Dop853).
     pub fn ode(&self, epoch: Epoch) -> impl Fn(f64, &[f64; 6]) -> [f64; 6] + '_ {
         move |t, y| {
-            let a = self.acceleration(
-                Epoch(epoch.0 + t / SECONDS_PER_DAY),
-                DVec3::new(y[0], y[1], y[2]),
-            );
+            let t = Epoch(epoch.0 + t / SECONDS_PER_DAY);
+            let (r, v) = (DVec3::new(y[0], y[1], y[2]), DVec3::new(y[3], y[4], y[5]));
+            let mut a = self.acceleration(t, r);
+            if self.relativity {
+                a += self.relativity(t, r, v);
+            }
             [y[3], y[4], y[5], a.x, a.y, a.z]
         }
     }
+}
+
+/// The post-Newtonian acceleration of a particle at `r`, `v` from a mass
+/// `gm` (isotropic PPN with β = γ = 1, the one-body term that asteroid
+/// ephemerides use).
+fn schwarzschild(gm: f64, r: DVec3, v: DVec3) -> DVec3 {
+    let r2 = r.length_squared();
+    let rn = r2.sqrt();
+    gm / (C_KM_S * C_KM_S * r2 * rn)
+        * ((4.0 * gm / rn - v.length_squared()) * r + 4.0 * r.dot(v) * v)
 }
 
 /// `d / |d|³`: the pull per unit GM toward a mass at offset `d`.
@@ -136,7 +183,7 @@ mod tests {
     fn earth_j2_regresses_the_node() {
         let eph = Ephemeris::standard();
         let earth = eph.lookup("earth").unwrap();
-        let field = Field::new(&eph, Some(earth), &[earth]).with_oblateness();
+        let field = Field::new(eph, Some(earth), &[earth]).with_oblateness();
         let fig = eph.body(earth).figure.unwrap();
         let gm = eph.body(earth).gm;
         // Equatorial axes: the equinox, the pole, and their cross product.
@@ -188,8 +235,8 @@ mod tests {
         let eph = Ephemeris::standard();
         let earth = eph.lookup("earth").unwrap();
         let epoch = Epoch::from_ymd(2045, 3, 1);
-        let geo = Field::all(&eph, Some(earth));
-        let bary = Field::all(&eph, None);
+        let geo = Field::all(eph, Some(earth));
+        let bary = Field::all(eph, None);
         // Starting near EML1 with a slow drift.
         let (r0, v0) = (
             DVec3::new(320_000.0, 50_000.0, 10_000.0),
@@ -226,7 +273,7 @@ mod tests {
             .ids()
             .filter(|&b| eph.body(b).gm > 0.0 && b != moon)
             .collect();
-        let field = Field::new(&eph, Some(earth), &others).with_oblateness();
+        let field = Field::new(eph, Some(earth), &others).with_oblateness();
         let gm_moon = eph.body(moon).gm;
         let epoch = Epoch::from_ymd(2045, 3, 1);
         let rhs = |t: f64, y: &[f64; 6]| {

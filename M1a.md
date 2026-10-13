@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–3 done.
+Status, 2026-10-13: steps 1–4 done.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -22,6 +22,17 @@ Status, 2026-10-13: steps 1–3 done.
   and barycentric integrations differ by ~100 m over 10 days near Earth,
   because DE440's Earth also feels relativity (~1.9e-13 km/s² beyond point
   masses); the geocentric frame is the better model there.
+- Step 4: asteroids start from Horizons states at 2040-01-01 and are
+  integrated to 2080 when the ephemeris is built (~40 ms wall time for all
+  20, in parallel; `Ephemeris::standard()` builds once per process), with
+  DOP853's dense output for lookups. The Sun's relativistic term was needed:
+  without it, errors reached hundreds of km in the first decade. Against
+  Horizons, worst errors over 2040–2080 run from 6 km (2001 FR85) to 8,700
+  km (Ryugu, after close approaches in the 2070s; Bennu 3,900 km after its
+  2060 flyby), against 0.002 au (~300,000 km) for the old fits. Porkchop
+  grids now sit on whole multiples of their steps, so overlapping searches
+  share points (osculating elements set the default time-of-flight range,
+  and they wander).
 
 ## Why
 
@@ -72,9 +83,11 @@ divide and square root (Chebyshev evaluation needs no trigonometry), and
 the step-size controller's power function comes from a pure-Rust libm,
 not the platform's.
 
-**NEAs** become particles in the same field, started from Horizons states.
-This replaces M0's piecewise two-body fits and their errors near close
-Earth flybys (Bennu 0.016 au, 2000 SG344 0.010 au, 2017 SV19 0.006 au).
+**NEAs** become particles in the same field, started from Horizons states
+at 2040-01-01, with the Sun's relativistic term (it moves an asteroid by
+hundreds of km per decade). This replaces M0's piecewise two-body fits and
+their errors near close Earth flybys (Bennu 0.016 au, 2000 SG344 0.010 au,
+2017 SV19 0.006 au).
 
 **Earth–Moon CR3BP mode** (the Moon on a circular orbit, ship massless):
 the model JPL's orbit catalog uses, for importing orbits and for checks.

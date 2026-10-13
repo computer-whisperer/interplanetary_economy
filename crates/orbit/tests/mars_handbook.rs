@@ -129,11 +129,11 @@ fn c3_matches_handbook() {
         let (dep, arr) = (ymd(m.depart), ymd(m.arrive));
         if m.dates_consistent {
             // The tabulated transfer itself.
-            let (at_dates, ii) = c3(&eph, dep, arr).unwrap();
+            let (at_dates, ii) = c3(eph, dep, arr).unwrap();
             assert_eq!(ii, m.type_ii, "{label}");
             let rel = at_dates / m.c3 - 1.0;
             // The best transfer nearby is at least as good, at about the same time.
-            let (best, best_dep) = search(&eph, m.type_ii, dep, arr, 40, 80);
+            let (best, best_dep) = search(eph, m.type_ii, dep, arr, 40, 80);
             let shift = best_dep.0 - dep.0;
             println!(
                 "{label}: handbook {:6.3}  at its dates {at_dates:6.3} ({:+.2}%)  best {best:6.3} on {best_dep} ({shift:+.0} d)",
@@ -152,7 +152,7 @@ fn c3_matches_handbook() {
         } else {
             let mid = Epoch((dep.0 + arr.0) / 2.0);
             let (best, best_dep) = search(
-                &eph,
+                eph,
                 m.type_ii,
                 dep.plus_days(70.0),
                 mid.plus_days(140.0),

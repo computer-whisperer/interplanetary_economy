@@ -1,6 +1,6 @@
 //! Ephemerides against JPL Horizons (DE441) state vectors.
 
-use orbit::consts::{AU_KM, MU_EARTH, MU_SUN};
+use orbit::consts::{MU_EARTH, MU_SUN};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::kepler::State;
 use orbit::time::Epoch;
@@ -69,7 +69,7 @@ fn de440_matches_horizons() {
         (
             "Moon from Earth",
             "horizons_moon.csv",
-            Box::new(|t| relative(&eph, moon, earth, t)),
+            Box::new(|t| relative(eph, moon, earth, t)),
             0.05,
         ),
         (
@@ -116,30 +116,35 @@ fn constants_match_de440() {
     );
 }
 
-/// The piecewise fits in `data/neas.toml` hold positions to 0.002 au except
-/// across close Earth flybys (2000 SG344 has one inside a segment). This also
-/// checks that the Rust model reproduces the fit script's.
+/// Small bodies, integrated from their Horizons states at 2040-01-01,
+/// against Horizons over 2040–2080. Measured worst errors (2026-10-13): from
+/// 6 km (2001 FR85) to 8,700 km (Ryugu, after close approaches in the 2070s);
+/// Bennu 3,900 km after its 2060 Earth flyby. Horizons also models the large
+/// asteroids' pull and, for some bodies, thermal (Yarkovsky) drift, and close
+/// flybys amplify any difference. The fits these replaced held 0.002 au
+/// (~300,000 km). Tolerances are about twice the measured worst.
 #[test]
 fn small_bodies_match_horizons() {
     let eph = Ephemeris::standard();
-    for (body, file, max_au) in [
-        ("ryugu", "horizons_ryugu.csv", 0.002),
-        ("2008-ev5", "horizons_2008ev5.csv", 0.002),
-        ("2001-fr85", "horizons_2001fr85.csv", 0.003),
-        ("2000-sg344", "horizons_2000sg344.csv", 0.011),
+    for (body, max_km) in [
+        ("ryugu", 20_000.0),
+        ("2008-ev5", 1_500.0),
+        ("bennu", 8_000.0),
+        ("apophis", 500.0),
+        ("2000-sg344", 1_000.0),
+        ("2017-sv19", 100.0),
+        ("2001-fr85", 20.0),
     ] {
         let id = eph.lookup(body).unwrap();
-        let (dr, dv) = max_errors(file, |t| eph.state(id, t));
-        println!(
-            "{body}: max |dr| = {:.4} au, |dv| = {:.0} m/s",
-            dr / AU_KM,
-            dv * 1e3
-        );
-        assert!(
-            dr / AU_KM < max_au,
-            "{body}: position error {} au",
-            dr / AU_KM
-        );
+        let mut by_decade = [0.0f64; 4];
+        for row in fixture(&format!("horizons_{body}.csv")) {
+            let err = (eph.state(id, row.t).r - row.r).length();
+            let decade = (((row.t.0 - Epoch::from_ymd(2040, 1, 1).0) / 3652.5) as usize).min(3);
+            by_decade[decade] = by_decade[decade].max(err);
+        }
+        let worst = by_decade.iter().copied().fold(0.0, f64::max);
+        println!("{body}: worst error by decade {by_decade:.0?} km");
+        assert!(worst < max_km, "{body}: {worst} km");
     }
 }
 

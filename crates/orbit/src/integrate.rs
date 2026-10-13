@@ -6,8 +6,12 @@
 //! Deterministic across machines: the step controller's 1/8th powers are
 //! three square roots, so the integrator itself uses only add, multiply,
 //! divide and square root (M1a.md, Determinism).
+//!
+//! Dense output (DOP853's 7th-order interpolant, three extra derivative
+//! evaluations per step) turns a run into a [`Trajectory`] that can be
+//! evaluated at any time.
 
-use crate::dop853::{A, B, C, E3, E5};
+use crate::dop853::{A, A_EXTRA, B, C, C_EXTRA, D, E3, E5};
 
 const STAGES: usize = 12;
 const SAFETY: f64 = 0.9;
@@ -79,10 +83,30 @@ impl<const N: usize> Dop853<N> {
         rhs: impl Fn(f64, &[f64; N]) -> [f64; N],
         t_end: f64,
     ) -> Result<(), StepTooSmall> {
+        self.advance(&rhs, t_end, None)
+    }
+
+    /// Advances to exactly `t_end`, appending each step's interpolant to
+    /// `out`.
+    pub fn advance_dense(
+        &mut self,
+        rhs: impl Fn(f64, &[f64; N]) -> [f64; N],
+        t_end: f64,
+        out: &mut Vec<DenseStep<N>>,
+    ) -> Result<(), StepTooSmall> {
+        self.advance(&rhs, t_end, Some(out))
+    }
+
+    fn advance(
+        &mut self,
+        rhs: &impl Fn(f64, &[f64; N]) -> [f64; N],
+        t_end: f64,
+        mut out: Option<&mut Vec<DenseStep<N>>>,
+    ) -> Result<(), StepTooSmall> {
         let dir = if t_end >= self.t { 1.0 } else { -1.0 };
         let mut h_abs = match self.h_abs {
             Some(h) => h,
-            None => self.initial_step(&rhs, t_end, dir),
+            None => self.initial_step(rhs, t_end, dir),
         };
         while self.t != t_end {
             let min_step = 10.0 * (self.t.abs().next_up() - self.t.abs());
@@ -98,7 +122,7 @@ impl<const N: usize> Dop853<N> {
                     t_new = t_end;
                 }
                 let h = t_new - self.t;
-                let (y_new, f_new, k) = self.attempt(&rhs, h);
+                let (y_new, f_new, k) = self.attempt(rhs, h);
                 let error = self.error_norm(&k, &y_new, h);
                 let factor = SAFETY / eighth_root(error);
                 if error < 1.0 {
@@ -114,6 +138,9 @@ impl<const N: usize> Dop853<N> {
                     // the step size: keep the one proposed for the next call.
                     if !clamped {
                         h_abs = h.abs() * grow;
+                    }
+                    if let Some(out) = out.as_deref_mut() {
+                        out.push(self.dense_step(rhs, h, &k, y_new));
                     }
                     (self.t, self.y, self.f) = (t_new, y_new, f_new);
                     self.steps += 1;
@@ -162,6 +189,49 @@ impl<const N: usize> Dop853<N> {
         k[STAGES] = f_new;
         self.evaluations += STAGES;
         (y_new, f_new, k)
+    }
+
+    /// The interpolant of the step of size `h` from the current state to
+    /// `y_new`, with stages `k` (scipy's `_dense_output_impl`).
+    fn dense_step(
+        &mut self,
+        rhs: &impl Fn(f64, &[f64; N]) -> [f64; N],
+        h: f64,
+        k: &[[f64; N]; STAGES + 1],
+        y_new: [f64; N],
+    ) -> DenseStep<N> {
+        let mut kx = [[0.0; N]; 16];
+        kx[..=STAGES].copy_from_slice(k);
+        for (e, s) in (STAGES + 1..16).enumerate() {
+            let mut y = self.y;
+            for (j, kj) in kx.iter().enumerate().take(s) {
+                let a = A_EXTRA[e][j] * h;
+                if a != 0.0 {
+                    for i in 0..N {
+                        y[i] += a * kj[i];
+                    }
+                }
+            }
+            kx[s] = rhs(self.t + C_EXTRA[e] * h, &y);
+        }
+        self.evaluations += 3;
+        let mut f = [[0.0; N]; 7];
+        for i in 0..N {
+            let dy = y_new[i] - self.y[i];
+            let (f_old, f_new) = (k[0][i], k[STAGES][i]);
+            f[0][i] = dy;
+            f[1][i] = h * f_old - dy;
+            f[2][i] = 2.0 * dy - h * (f_new + f_old);
+            for (m, row) in D.iter().enumerate() {
+                f[3 + m][i] = h * row.iter().zip(&kx).map(|(d, ks)| d * ks[i]).sum::<f64>();
+            }
+        }
+        DenseStep {
+            t0: self.t,
+            h,
+            y0: self.y,
+            f,
+        }
     }
 
     /// scipy's DOP853 error norm: the 5th-order estimate, damped by the
@@ -222,6 +292,68 @@ impl<const N: usize> Dop853<N> {
     }
 }
 
+/// One step's 7th-order interpolant (scipy's `Dop853DenseOutput`).
+#[derive(Clone, Debug)]
+pub struct DenseStep<const N: usize> {
+    pub t0: f64,
+    pub h: f64,
+    y0: [f64; N],
+    f: [[f64; N]; 7],
+}
+
+impl<const N: usize> DenseStep<N> {
+    /// The state at `t`, within the step (or slightly outside it, less
+    /// accurately).
+    pub fn at(&self, t: f64) -> [f64; N] {
+        let x = (t - self.t0) / self.h;
+        std::array::from_fn(|i| {
+            let f = |m: usize| self.f[m][i];
+            let inner = f(4) + (1.0 - x) * (f(5) + x * f(6));
+            let inner = f(2) + (1.0 - x) * (f(3) + x * inner);
+            self.y0[i] + x * (f(0) + (1.0 - x) * (f(1) + x * inner))
+        })
+    }
+}
+
+/// A forward integration's interpolants, end to end: the solution at any
+/// time in its span.
+#[derive(Clone, Debug)]
+pub struct Trajectory<const N: usize> {
+    steps: Vec<DenseStep<N>>,
+}
+
+impl<const N: usize> Trajectory<N> {
+    /// Steps from one forward run, in order.
+    pub fn new(steps: Vec<DenseStep<N>>) -> Self {
+        assert!(!steps.is_empty(), "a trajectory needs at least one step");
+        let adjacent = |a: &DenseStep<N>, b: &DenseStep<N>| {
+            (b.t0 - (a.t0 + a.h)).abs() <= 1e-12 * b.t0.abs().max(1.0)
+        };
+        assert!(
+            steps.iter().all(|s| s.h > 0.0) && steps.windows(2).all(|w| adjacent(&w[0], &w[1])),
+            "steps must run forward, end to end"
+        );
+        Trajectory { steps }
+    }
+
+    /// First and last times covered.
+    pub fn span(&self) -> (f64, f64) {
+        let last = self.steps.last().unwrap();
+        (self.steps[0].t0, last.t0 + last.h)
+    }
+
+    /// The state at `t`. Panics outside the span.
+    pub fn at(&self, t: f64) -> [f64; N] {
+        let (t0, t1) = self.span();
+        assert!(
+            t >= t0 && t <= t1,
+            "{t} is outside the trajectory's span {t0}..{t1}"
+        );
+        let k = self.steps.partition_point(|s| s.t0 <= t).saturating_sub(1);
+        self.steps[k].at(t)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +403,29 @@ mod tests {
                 (scipy_evaluations, scipy_steps)
             );
         }
+    }
+
+    /// The interpolant between steps is as accurate as the steps.
+    #[test]
+    fn dense_output_matches_kepler() {
+        let y0 = [7_000.0, 0.0, 0.0, 0.0, 9.5, 1.0];
+        let tol = Tolerance {
+            rtol: 1e-12,
+            atol: 1e-15,
+        };
+        let mut ode = Dop853::new(kepler, 0.0, y0, tol);
+        let mut steps = Vec::new();
+        ode.advance_dense(kepler, 86_400.0, &mut steps).unwrap();
+        let path = Trajectory::new(steps);
+        assert_eq!(path.span(), (0.0, 86_400.0));
+        let mut worst: f64 = 0.0;
+        for k in 0..=1000 {
+            let t = k as f64 * 86.4;
+            let exact = propagate(state(&y0), t, MU_EARTH).unwrap();
+            worst = worst.max((state(&path.at(t)).r - exact.r).length());
+        }
+        println!("dense output: worst error {worst:.2e} km");
+        assert!(worst < 1e-4, "{worst} km");
     }
 
     /// Integrating forward then back returns to the start, and stopping at

@@ -4,14 +4,27 @@
 //! (`data/de440.bin`, built by `tools/ephem/`): Chebyshev series for the
 //! Sun, the planetary system barycenters, the Earth–Moon barycenter and the
 //! Moon, as DE440 has them. Outer planets are their system barycenters.
-//! Small bodies use piecewise two-body orbits fitted to JPL Horizons over the
-//! game's span (`data/neas.toml`), until M1a integrates them.
+//!
+//! Small bodies start from JPL Horizons states at 2040-01-01
+//! (`data/neas.toml`) and are integrated as particles in DE440's field
+//! ([`crate::gravity`], with Earth's J2 and the Sun's relativistic term) to
+//! the end of the tables, when the ephemeris is built.
 
-use crate::consts::AU_KM;
+use crate::gravity::Field;
+use crate::integrate::{Dop853, Tolerance, Trajectory};
 use crate::kepler::{Elements, State};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
+use rayon::prelude::*;
 use serde::Deserialize;
+use std::sync::OnceLock;
+
+/// Small-body integration tolerance: steps hold ~1e-12 of the state, well
+/// below the bodies' own uncertainty.
+const SMALL_BODY_TOLERANCE: Tolerance = Tolerance {
+    rtol: 1e-12,
+    atol: 1e-6,
+};
 
 /// Obliquity of the ecliptic of J2000 (IAU 1976, as JPL Horizons uses): the
 /// angle between this module's frame and the ICRF equator.
@@ -71,19 +84,8 @@ enum Motion {
     Earth,
     /// The Earth–Moon barycenter plus the Moon's offset from it.
     Moon,
-    /// Heliocentric two-body orbits, sorted by start; the first and last
-    /// extend before and after the fitted span.
-    Segments {
-        epoch: Epoch,
-        segments: Vec<Segment>,
-    },
-}
-
-#[derive(Clone, Debug)]
-struct Segment {
-    start: Epoch,
-    /// Elements at the body's common epoch.
-    elements: Elements,
+    /// Integrated barycentric `[r, v]`, time in seconds after `epoch`.
+    Integrated { epoch: Epoch, path: Trajectory<6> },
 }
 
 /// One body's DE440 Chebyshev series: records of `intlen` seconds from
@@ -97,16 +99,23 @@ struct Series {
 }
 
 impl Series {
-    /// The record covering `t`, and `t` scaled to [-1, 1] within it.
+    /// First and last times covered, TDB seconds past J2000.
+    fn span(&self) -> (f64, f64) {
+        let records = self.coef.len() / (3 * self.ncoef);
+        (self.init, self.init + records as f64 * self.intlen)
+    }
+
+    /// The record covering `t` (the last one includes its end), and `t`
+    /// scaled to [-1, 1] within it.
     fn record(&self, t: Epoch) -> (&[f64], f64) {
         let n = self.ncoef;
+        let records = self.coef.len() / (3 * n);
         let sec = t.seconds() - self.init;
-        let k = (sec / self.intlen).floor();
         assert!(
-            k >= 0.0 && (k as usize) < self.coef.len() / (3 * n),
+            sec >= 0.0 && sec <= records as f64 * self.intlen,
             "{t} is outside the DE440 tables (2025–2080)"
         );
-        let k = k as usize;
+        let k = ((sec / self.intlen).floor() as usize).min(records - 1);
         let s = 2.0 * (sec - k as f64 * self.intlen) / self.intlen - 1.0;
         (&self.coef[3 * n * k..3 * n * (k + 1)], s)
     }
@@ -225,6 +234,8 @@ pub struct Ephemeris {
     moon_offset: usize,
     emrat: f64,
     sun: BodyId,
+    /// The DE440 tables' span.
+    span: (Epoch, Epoch),
 }
 
 #[derive(Deserialize)]
@@ -240,26 +251,20 @@ struct SmallBodyRow {
     spectral: String,
     diameter_km: Option<f64>,
     h_mag: Option<f64>,
-    segment: Vec<SegmentRow>,
-}
-
-#[derive(Deserialize)]
-struct SegmentRow {
-    start_jd: f64,
-    a_au: f64,
-    e: f64,
-    i_deg: f64,
-    node_deg: f64,
-    peri_deg: f64,
-    mean_anomaly_deg: f64,
-    mean_motion_deg_per_day: f64,
+    /// Barycentric state at the file's epoch, km and km/s.
+    r_km: [f64; 3],
+    v_kms: [f64; 3],
 }
 
 impl Ephemeris {
-    /// DE440 plus the small bodies in `data/neas.toml`.
-    pub fn standard() -> Self {
-        Self::with_small_bodies(include_str!("../../../data/neas.toml"))
-            .expect("data/neas.toml is valid")
+    /// DE440 plus the small bodies in `data/neas.toml`, built once per
+    /// process (integrating the small bodies takes tens of milliseconds).
+    pub fn standard() -> &'static Ephemeris {
+        static STANDARD: OnceLock<Ephemeris> = OnceLock::new();
+        STANDARD.get_or_init(|| {
+            Self::with_small_bodies(include_str!("../../../data/neas.toml"))
+                .expect("data/neas.toml is valid")
+        })
     }
 
     /// DE440 plus small bodies from a TOML document shaped like
@@ -315,33 +320,52 @@ impl Ephemeris {
             pole: DVec3::new(0.0, -OBLIQUITY_J2000.sin(), OBLIQUITY_J2000.cos()),
         });
 
+        let emb = de.series_index(3, 0);
+        let moon_offset = de.series_index(301, 3);
+        let series: Vec<Series> = de.series.into_iter().map(|(_, _, s)| s).collect();
+        let span = (
+            series.iter().map(|s| s.span().0).fold(f64::MIN, f64::max),
+            series.iter().map(|s| s.span().1).fold(f64::MAX, f64::min),
+        );
+        let mut eph = Ephemeris {
+            bodies,
+            series,
+            emb,
+            moon_offset,
+            emrat,
+            sun: BodyId(0),
+            span: (
+                Epoch(span.0 / SECONDS_PER_DAY),
+                Epoch(span.1 / SECONDS_PER_DAY),
+            ),
+        };
+
         let file: SmallBodyFile = toml::from_str(toml_src).map_err(|e| e.to_string())?;
         let epoch = Epoch::from_jd(file.epoch_jd_tdb);
-        for row in file.body {
-            if bodies.iter().any(|b| b.id == row.id) {
+        for (k, row) in file.body.iter().enumerate() {
+            if eph.lookup(&row.id).is_some() || file.body[..k].iter().any(|b| b.id == row.id) {
                 return Err(format!("duplicate body id {:?}", row.id));
             }
-            if row.segment.is_empty() {
-                return Err(format!("body {:?} has no orbit segments", row.id));
-            }
-            let mut segments: Vec<Segment> = row
-                .segment
-                .iter()
-                .map(|s| Segment {
-                    start: Epoch::from_jd(s.start_jd),
-                    elements: Elements {
-                        a: s.a_au * AU_KM,
-                        e: s.e,
-                        i: s.i_deg.to_radians(),
-                        raan: s.node_deg.to_radians(),
-                        argp: s.peri_deg.to_radians(),
-                        mean_anomaly: s.mean_anomaly_deg.to_radians(),
-                        mean_motion: s.mean_motion_deg_per_day.to_radians() / SECONDS_PER_DAY,
-                    },
+        }
+        let paths: Vec<Trajectory<6>> = {
+            let field = Field::all(&eph, None).with_oblateness().with_relativity();
+            let ode = field.ode(epoch);
+            let end = (eph.span.1.0 - epoch.0) * SECONDS_PER_DAY;
+            file.body
+                .par_iter()
+                .map(|row| {
+                    let ([x, y, z], [vx, vy, vz]) = (row.r_km, row.v_kms);
+                    let mut run =
+                        Dop853::new(&ode, 0.0, [x, y, z, vx, vy, vz], SMALL_BODY_TOLERANCE);
+                    let mut steps = Vec::new();
+                    run.advance_dense(&ode, end, &mut steps)
+                        .unwrap_or_else(|e| panic!("{}: {e:?}", row.id));
+                    Trajectory::new(steps)
                 })
-                .collect();
-            segments.sort_by(|a, b| a.start.0.total_cmp(&b.start.0));
-            bodies.push(Body {
+                .collect()
+        };
+        for (row, path) in file.body.into_iter().zip(paths) {
+            eph.bodies.push(Body {
                 id: row.id,
                 name: row.name,
                 kind: BodyKind::SmallBody {
@@ -351,19 +375,10 @@ impl Ephemeris {
                 },
                 gm: 0.0,
                 figure: None,
-                motion: Motion::Segments { epoch, segments },
+                motion: Motion::Integrated { epoch, path },
             });
         }
-        let emb = de.series_index(3, 0);
-        let moon_offset = de.series_index(301, 3);
-        Ok(Ephemeris {
-            bodies,
-            series: de.series.into_iter().map(|(_, _, s)| s).collect(),
-            emb,
-            moon_offset,
-            emrat,
-            sun: BodyId(0),
-        })
+        Ok(eph)
     }
 
     pub fn lookup(&self, id: &str) -> Option<BodyId> {
@@ -382,6 +397,11 @@ impl Ephemeris {
         self.sun
     }
 
+    /// The span of the DE440 tables, which small bodies are integrated to.
+    pub fn span(&self) -> (Epoch, Epoch) {
+        self.span
+    }
+
     /// Position relative to the solar-system barycenter: [`Self::barycentric`]
     /// without the velocity, for evaluating forces.
     pub fn barycentric_position(&self, id: BodyId, t: Epoch) -> DVec3 {
@@ -395,7 +415,7 @@ impl Ephemeris {
                     _ => emb + off,
                 }
             }
-            Motion::Segments { .. } => self.state(id, t).r + self.barycentric_position(self.sun, t),
+            Motion::Integrated { .. } => self.barycentric(id, t).r,
         }
     }
 
@@ -415,11 +435,18 @@ impl Ephemeris {
                     v: emb.v + f * off.v,
                 }
             }
-            Motion::Segments { .. } => {
-                let (h, sun) = (self.state(id, t), self.barycentric(self.sun, t));
+            Motion::Integrated { epoch, path } => {
+                let (t0, t1) = path.span();
+                let sec = (t.0 - epoch.0) * SECONDS_PER_DAY;
+                assert!(
+                    sec >= t0 && sec <= t1,
+                    "{t} is outside {}'s integrated span (from {epoch})",
+                    self.bodies[id.0].id
+                );
+                let y = path.at(sec);
                 State {
-                    r: h.r + sun.r,
-                    v: h.v + sun.v,
+                    r: DVec3::new(y[0], y[1], y[2]),
+                    v: DVec3::new(y[3], y[4], y[5]),
                 }
             }
         }
@@ -427,9 +454,6 @@ impl Ephemeris {
 
     /// State relative to the Sun.
     pub fn state(&self, id: BodyId, t: Epoch) -> State {
-        if let Motion::Segments { epoch, segments } = &self.bodies[id.0].motion {
-            return segment_elements(*epoch, segments, t).state();
-        }
         let (b, sun) = (self.barycentric(id, t), self.barycentric(self.sun, t));
         State {
             r: b.r - sun.r,
@@ -459,20 +483,18 @@ impl Ephemeris {
     }
 
     /// Heliocentric orbital elements of the body's planetary system (see
-    /// [`Self::system_state`]): the fitted ones for small bodies, osculating
-    /// ones about the Sun and the system's mass otherwise. Panics for the
-    /// Sun.
+    /// [`Self::system_state`]): osculating, about the Sun and the system's
+    /// mass. Panics for the Sun.
     pub fn elements(&self, id: BodyId, t: Epoch) -> Elements {
         let body = &self.bodies[id.0];
         let gm = match &body.motion {
-            Motion::Segments { epoch, segments } => return segment_elements(*epoch, segments, t),
             Motion::Earth | Motion::Moon => self
                 .bodies
                 .iter()
                 .filter(|b| matches!(b.motion, Motion::Earth | Motion::Moon))
                 .map(|b| b.gm)
                 .sum(),
-            Motion::Series(_) => {
+            Motion::Series(_) | Motion::Integrated { .. } => {
                 assert_ne!(id, self.sun, "the Sun has no heliocentric orbit");
                 body.gm
             }
@@ -486,11 +508,4 @@ impl Ephemeris {
         let n = |id: BodyId| self.elements(id, t).mean_motion * SECONDS_PER_DAY;
         std::f64::consts::TAU / (n(a) - n(b)).abs()
     }
-}
-
-fn segment_elements(epoch: Epoch, segments: &[Segment], t: Epoch) -> Elements {
-    let k = segments.partition_point(|s| s.start <= t).saturating_sub(1);
-    segments[k]
-        .elements
-        .advanced((t.0 - epoch.0) * SECONDS_PER_DAY)
 }

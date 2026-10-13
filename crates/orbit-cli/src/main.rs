@@ -87,7 +87,7 @@ struct Search {
 }
 
 struct World {
-    eph: Ephemeris,
+    eph: &'static Ephemeris,
 }
 
 impl World {
@@ -114,7 +114,7 @@ impl World {
     }
 
     fn porkchop(&self, from: BodyId, to: BodyId, s: &Search) -> Porkchop {
-        let (lo, hi) = default_tof_range(&self.eph, from, to, s.start);
+        let (lo, hi) = default_tof_range(self.eph, from, to, s.start);
         let grid = Grid::covering(
             s.start,
             s.end,
@@ -123,7 +123,7 @@ impl World {
             s.tof_max.unwrap_or(hi),
             s.tof_step,
         );
-        Porkchop::compute(&self.eph, from, to, grid)
+        Porkchop::compute(self.eph, from, to, grid)
     }
 
     fn windows(&self, from: BodyId, to: BodyId, s: &Search) -> Vec<Window> {

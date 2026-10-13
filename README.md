@@ -21,9 +21,11 @@ sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
 - `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
   then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
   Horizons fixtures the tests check it against (`fixtures.sh`).
-- `tools/neas/` — regenerates `data/neas.toml` from JPL Horizons and SBDB
-  (`fetch.sh DIR`, then `python3 build.py DIR > ../../data/neas.toml`;
-  needs numpy and scipy).
+- `tools/neas/` — regenerates `data/neas.toml` (each asteroid's physical
+  data and Horizons state at 2040-01-01) from JPL Horizons and SBDB
+  (`fetch.sh DIR`, then `python3 build.py DIR > ../../data/neas.toml`), and
+  the Horizons fixtures the tests check the integrated asteroids against
+  (`fixtures.sh`).
 
 ## The `orbit` command
 

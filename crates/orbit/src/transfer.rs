@@ -89,7 +89,11 @@ pub struct Grid {
 }
 
 impl Grid {
-    /// A grid covering `[start, end]` departures and `[tof_min, tof_max]`.
+    /// A grid covering departures in `[start, end]` and times of flight in
+    /// `[tof_min, tof_max]`, on whole multiples of each step (departures
+    /// counted from 2000-01-01 00:00 TDB), so that overlapping searches share
+    /// their points: the first departure is the first on or after `start`,
+    /// and the shortest time of flight the last on or before `tof_min`.
     pub fn covering(
         start: Epoch,
         end: Epoch,
@@ -98,10 +102,13 @@ impl Grid {
         tof_max: f64,
         tof_step: f64,
     ) -> Self {
+        let origin = Epoch::from_ymd(2000, 1, 1).0;
+        let depart_start = Epoch(origin + ((start.0 - origin) / depart_step).ceil() * depart_step);
+        let tof_min = (tof_min / tof_step).floor() * tof_step;
         Grid {
-            depart_start: start,
+            depart_start,
             depart_step,
-            departs: ((end.0 - start.0) / depart_step).floor() as usize + 1,
+            departs: ((end.0 - depart_start.0) / depart_step).floor() as usize + 1,
             tof_min,
             tof_step,
             tofs: ((tof_max - tof_min) / tof_step).floor() as usize + 1,
@@ -165,11 +172,11 @@ mod tests {
         let (earth, mars) = (eph.lookup("earth").unwrap(), eph.lookup("mars").unwrap());
         // Near the handbook's 2033 Type II minimum (C3 7.78 on 2033-04-28,
         // arriving 2034-01-27).
-        let t = Transfer::compute(&eph, earth, mars, Epoch::from_ymd(2033, 4, 28), 274.0).unwrap();
+        let t = Transfer::compute(eph, earth, mars, Epoch::from_ymd(2033, 4, 28), 274.0).unwrap();
         assert!(t.is_type_ii());
         assert!((7.0..8.6).contains(&t.c3()), "{}", t.c3());
 
-        let (lo, hi) = default_tof_range(&eph, earth, mars, Epoch::from_ymd(2040, 1, 1));
+        let (lo, hi) = default_tof_range(eph, earth, mars, Epoch::from_ymd(2040, 1, 1));
         assert!(lo < 100.0 && hi > 450.0, "{lo} {hi}");
     }
 }

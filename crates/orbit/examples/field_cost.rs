@@ -18,12 +18,12 @@ fn main() {
     let fields = [
         (
             "Sun, Earth, Moon",
-            Field::new(&eph, Some(earth), &[sun, earth, moon]),
+            Field::new(eph, Some(earth), &[sun, earth, moon]),
         ),
-        ("all 10 bodies", Field::all(&eph, Some(earth))),
+        ("all 10 bodies", Field::all(eph, Some(earth))),
         (
             "all 10 bodies + J2",
-            Field::all(&eph, Some(earth)).with_oblateness(),
+            Field::all(eph, Some(earth)).with_oblateness(),
         ),
     ];
     for (label, field) in &fields {
@@ -44,9 +44,9 @@ fn main() {
         rtol: 1e-11,
         atol: 1e-8,
     };
-    let field = Field::all(&eph, Some(earth)).with_oblateness();
+    let field = Field::all(eph, Some(earth)).with_oblateness();
     let ode = field.ode(epoch);
-    let leo = (gm(&eph, earth) / 6_778.137f64).sqrt();
+    let leo = (gm(eph, earth) / 6_778.137f64).sqrt();
     for (label, y0) in [
         (
             "LEO, 400 km",

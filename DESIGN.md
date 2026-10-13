@@ -377,8 +377,8 @@ Minimal and information-dense:
   - Superseded by M1a except for Lambert, porkchops, window detection and
     time handling, which become the autopilot's first playbook entry. The
     Δv network and its lunar-assist fit were deleted in M1a step 1 and
-    the Kepler-element planets replaced by DE440 in step 2; the NEA fits
-    go in step 4. The handbook check above departed from the Earth–Moon
+    the Kepler-element planets replaced by DE440 in step 2, and the NEA
+    fits by integration in step 4. The handbook check above departed from the Earth–Moon
     barycenter all along (the Kepler-element "Earth" was the barycenter);
     with DE440 it holds to 0.08%.
 - **M1a, n-body sandbox and autopilot.** See M1a.md. DE440 ephemerides,
