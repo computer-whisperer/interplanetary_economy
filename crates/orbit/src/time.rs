@@ -9,7 +9,6 @@ use std::str::FromStr;
 /// Julian date of the J2000.0 epoch (2000-01-01 12:00 TDB).
 pub const J2000_JD: f64 = 2_451_545.0;
 pub const SECONDS_PER_DAY: f64 = 86_400.0;
-pub const DAYS_PER_CENTURY: f64 = 36_525.0;
 
 /// An instant, as TDB days since J2000.0.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
@@ -53,11 +52,6 @@ impl Epoch {
         let month = if e < 14.0 { e - 1.0 } else { e - 13.0 };
         let year = if month > 2.0 { c - 4716.0 } else { c - 4715.0 };
         (year as i32, month as u32, day)
-    }
-
-    /// Julian centuries since J2000.0.
-    pub fn centuries(self) -> f64 {
-        self.0 / DAYS_PER_CENTURY
     }
 
     pub fn seconds(self) -> f64 {

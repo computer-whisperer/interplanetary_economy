@@ -9,12 +9,14 @@ use crate::time::{Epoch, SECONDS_PER_DAY};
 use rayon::prelude::*;
 use std::f64::consts::PI;
 
-/// A zero-revolution prograde Lambert arc from one body to another.
+/// A zero-revolution prograde Lambert arc from one body's planetary system
+/// to another's.
 #[derive(Clone, Copy, Debug)]
 pub struct Transfer {
     pub depart: Epoch,
     pub tof_days: f64,
-    /// Hyperbolic excess speeds relative to each body, km/s.
+    /// Hyperbolic excess speeds relative to each body's planetary system
+    /// ([`Ephemeris::system_state`]), km/s.
     pub v_inf_depart: f64,
     pub v_inf_arrive: f64,
     /// Prograde transfer angle, radians; beyond π is Type II.
@@ -31,8 +33,8 @@ impl Transfer {
         depart: Epoch,
         tof_days: f64,
     ) -> Option<Self> {
-        let s1 = eph.state(from, depart);
-        let s2 = eph.state(to, depart.plus_days(tof_days));
+        let s1 = eph.system_state(from, depart);
+        let s2 = eph.system_state(to, depart.plus_days(tof_days));
         let sol = lambert::solve(MU_SUN, s1.r, s2.r, tof_days * SECONDS_PER_DAY)?;
         Some(Transfer {
             depart,
@@ -69,7 +71,7 @@ impl Transfer {
 /// bodies: 0.3–3× the Hohmann time between their mean orbits at `t`. Long
 /// Type II transfers to eccentric small bodies need the upper end.
 pub fn default_tof_range(eph: &Ephemeris, from: BodyId, to: BodyId, t: Epoch) -> (f64, f64) {
-    let a = |b: BodyId| eph.body(b).elements(t).a;
+    let a = |b: BodyId| eph.elements(b, t).a;
     let semi = (a(from) + a(to)) / 2.0;
     let hohmann_days = PI * (semi.powi(3) / MU_SUN).sqrt() / SECONDS_PER_DAY;
     (0.3 * hohmann_days, 3.0 * hohmann_days)

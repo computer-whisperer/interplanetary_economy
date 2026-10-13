@@ -29,7 +29,7 @@ enum Cmd {
         #[arg(long, default_value = "2040-01-01")]
         date: Epoch,
     },
-    /// List the bodies: planets and candidate asteroids.
+    /// List the bodies: the Sun, planets, Moon and candidate asteroids.
     Bodies,
     /// Transfer windows between two bodies.
     Windows {
@@ -97,11 +97,18 @@ impl World {
             .ok_or_else(|| anyhow!("unknown body {id:?} (see `orbit bodies`)"))
     }
 
-    /// The two bodies of a transfer, which must differ.
+    /// The two bodies of a transfer: different, each on its own orbit about
+    /// the Sun.
     fn pair(&self, from: &str, to: &str) -> Result<(BodyId, BodyId)> {
         let (a, b) = (self.body(from)?, self.body(to)?);
         if a == b {
             bail!("a transfer needs two different bodies");
+        }
+        for id in [a, b] {
+            let body = self.eph.body(id);
+            if !body.kind.orbits_sun() {
+                bail!("{} is not on its own orbit about the Sun", body.id);
+            }
         }
         Ok((a, b))
     }
@@ -169,8 +176,6 @@ fn ephem(w: &World, body: &str, date: Epoch) -> Result<()> {
         .lookup(body)
         .ok_or_else(|| anyhow!("unknown body {body:?}"))?;
     let b = w.eph.body(id);
-    let s = b.state(date);
-    let el = b.elements(date);
     println!("{} on {date}", b.name);
     if let BodyKind::SmallBody {
         spectral,
@@ -180,28 +185,28 @@ fn ephem(w: &World, body: &str, date: Epoch) -> Result<()> {
     {
         let size = diameter_km.map_or("unknown size".to_string(), |d| format!("{d} km"));
         println!("  spectral class {spectral}, {size}");
+    } else {
+        println!("  GM = {:.6} km³/s²", b.gm);
     }
-    let r = s.r / AU_KM;
-    println!(
-        "  r = ({:+.6}, {:+.6}, {:+.6}) au   |r| = {:.6} au",
-        r.x,
-        r.y,
-        r.z,
-        r.length()
-    );
-    println!(
-        "  v = ({:+.4}, {:+.4}, {:+.4}) km/s |v| = {:.4} km/s",
-        s.v.x,
-        s.v.y,
-        s.v.z,
-        s.v.length()
-    );
-    println!(
-        "  a = {:.6} au  e = {:.5}  i = {:.4}°",
-        el.a / AU_KM,
-        el.e,
-        el.i.to_degrees()
-    );
+    for (frame, s) in [
+        ("heliocentric", w.eph.state(id, date)),
+        ("barycentric", w.eph.barycentric(id, date)),
+    ] {
+        let r = s.r / AU_KM;
+        println!(
+            "  {frame}: r = ({:+.9}, {:+.9}, {:+.9}) au, v = ({:+.6}, {:+.6}, {:+.6}) km/s",
+            r.x, r.y, r.z, s.v.x, s.v.y, s.v.z,
+        );
+    }
+    if b.kind.orbits_sun() {
+        let el = w.eph.elements(id, date);
+        println!(
+            "  a = {:.6} au  e = {:.5}  i = {:.4}°",
+            el.a / AU_KM,
+            el.e,
+            el.i.to_degrees()
+        );
+    }
     Ok(())
 }
 
@@ -210,7 +215,9 @@ fn bodies(w: &World) {
     for id in w.eph.ids() {
         let b = w.eph.body(id);
         let kind = match &b.kind {
+            BodyKind::Star => "star".to_string(),
             BodyKind::Planet => "planet".to_string(),
+            BodyKind::Moon => "moon".to_string(),
             BodyKind::SmallBody {
                 spectral,
                 diameter_km,
@@ -226,8 +233,18 @@ fn bodies(w: &World) {
 
 fn calendar(w: &World, from: &str, s: &Search) -> Result<()> {
     let from = w.body(from)?;
+    if !w.eph.body(from).kind.orbits_sun() {
+        bail!(
+            "{} is not on its own orbit about the Sun",
+            w.eph.body(from).id
+        );
+    }
     let mut all = Vec::new();
-    for to in w.eph.ids().filter(|&to| to != from) {
+    for to in w
+        .eph
+        .ids()
+        .filter(|&to| to != from && w.eph.body(to).kind.orbits_sun())
+    {
         all.extend(w.windows(from, to, s).into_iter().map(|win| (to, win)));
     }
     all.sort_by(|a, b| a.1.open.0.total_cmp(&b.1.open.0));

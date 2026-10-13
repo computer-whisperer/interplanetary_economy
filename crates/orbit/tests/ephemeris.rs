@@ -1,7 +1,8 @@
-//! Ephemerides against JPL Horizons (DE441) state vectors, 2040–2076.
+//! Ephemerides against JPL Horizons (DE441) state vectors.
 
-use orbit::consts::AU_KM;
-use orbit::ephem::Ephemeris;
+use orbit::consts::{AU_KM, MU_EARTH, MU_SUN};
+use orbit::ephem::{BodyId, Ephemeris};
+use orbit::kepler::State;
 use orbit::time::Epoch;
 
 struct Row {
@@ -27,13 +28,13 @@ fn fixture(name: &str) -> Vec<Row> {
         .collect()
 }
 
-/// Max position error (km) and velocity error (km/s) over a fixture.
-fn max_errors(eph: &Ephemeris, body: &str, fixture_name: &str) -> (f64, f64) {
-    let id = eph.lookup(body).unwrap();
+/// Max position error (km) and velocity error (km/s) of `state` over a
+/// fixture.
+fn max_errors(fixture_name: &str, state: impl Fn(Epoch) -> State) -> (f64, f64) {
     fixture(fixture_name)
         .iter()
         .fold((0.0f64, 0.0f64), |(dr, dv), row| {
-            let s = eph.state(id, row.t);
+            let s = state(row.t);
             (
                 dr.max((s.r - row.r).length()),
                 dv.max((s.v - row.v).length()),
@@ -41,26 +42,78 @@ fn max_errors(eph: &Ephemeris, body: &str, fixture_name: &str) -> (f64, f64) {
         })
 }
 
-#[test]
-fn planets_match_horizons() {
-    let eph = Ephemeris::standard();
-    for (body, file, max_dr, max_dv) in [
-        // Table 2a trades accuracy for a 6000-year span: measured errors are
-        // up to ~30,000 km (Earth) and ~125,000 km (Mars), mostly
-        // along-track and not growing. Velocity errors stay near 10 m/s,
-        // far below anything that moves a transfer Δv.
-        ("earth", "horizons_emb.csv", 40_000.0, 0.015),
-        ("mars", "horizons_mars.csv", 150_000.0, 0.015),
-    ] {
-        let (dr, dv) = max_errors(&eph, body, file);
-        println!(
-            "{body}: max |dr| = {dr:.0} km ({:.2e} au), max |dv| = {:.2} m/s",
-            dr / AU_KM,
-            dv * 1e3
-        );
-        assert!(dr < max_dr, "{body}: position error {dr} km");
-        assert!(dv < max_dv, "{body}: velocity error {dv} km/s");
+fn relative(eph: &Ephemeris, body: BodyId, center: BodyId, t: Epoch) -> State {
+    let (b, c) = (eph.barycentric(body, t), eph.barycentric(center, t));
+    State {
+        r: b.r - c.r,
+        v: b.v - c.v,
     }
+}
+
+/// DE440 against Horizons' DE441, 2025–2080. Measured 2026-10-13: Earth
+/// 0.1 m, the Moon from Earth 8 m (the two ephemerides' lunar solutions
+/// differ slightly), the Sun, Mars and Jupiter under 1 mm.
+#[test]
+fn de440_matches_horizons() {
+    let eph = Ephemeris::standard();
+    let id = |s: &str| eph.lookup(s).unwrap();
+    let (sun, earth, moon) = (id("sun"), id("earth"), id("moon"));
+    type StateAt<'a> = Box<dyn Fn(Epoch) -> State + 'a>;
+    let checks: [(&str, &str, StateAt, f64); 5] = [
+        (
+            "Earth",
+            "horizons_earth.csv",
+            Box::new(|t| eph.state(earth, t)),
+            0.01,
+        ),
+        (
+            "Moon from Earth",
+            "horizons_moon.csv",
+            Box::new(|t| relative(&eph, moon, earth, t)),
+            0.05,
+        ),
+        (
+            "Sun from barycenter",
+            "horizons_sun.csv",
+            Box::new(|t| eph.barycentric(sun, t)),
+            0.01,
+        ),
+        (
+            "Mars",
+            "horizons_mars.csv",
+            Box::new(|t| eph.state(id("mars"), t)),
+            0.01,
+        ),
+        (
+            "Jupiter",
+            "horizons_jupiter.csv",
+            Box::new(|t| eph.state(id("jupiter"), t)),
+            0.01,
+        ),
+    ];
+    for (label, file, state, max_dr) in checks {
+        let (dr, dv) = max_errors(file, state);
+        println!(
+            "{label}: max |dr| = {:.3} m, max |dv| = {:.3} mm/s",
+            dr * 1e3,
+            dv * 1e6
+        );
+        assert!(dr < max_dr, "{label}: position error {dr} km");
+        assert!(dv < 1e-6, "{label}: velocity error {dv} km/s");
+    }
+}
+
+/// The constants this crate uses directly agree with the DE440 masses.
+#[test]
+fn constants_match_de440() {
+    let eph = Ephemeris::standard();
+    let gm = |s: &str| eph.body(eph.lookup(s).unwrap()).gm;
+    assert!((gm("sun") / MU_SUN - 1.0).abs() < 1e-12, "{}", gm("sun"));
+    assert!(
+        (gm("earth") / MU_EARTH - 1.0).abs() < 1e-8,
+        "{}",
+        gm("earth")
+    );
 }
 
 /// The piecewise fits in `data/neas.toml` hold positions to 0.002 au except
@@ -75,7 +128,8 @@ fn small_bodies_match_horizons() {
         ("2001-fr85", "horizons_2001fr85.csv", 0.003),
         ("2000-sg344", "horizons_2000sg344.csv", 0.011),
     ] {
-        let (dr, dv) = max_errors(&eph, body, file);
+        let id = eph.lookup(body).unwrap();
+        let (dr, dv) = max_errors(file, |t| eph.state(id, t));
         println!(
             "{body}: max |dr| = {:.4} au, |dv| = {:.0} m/s",
             dr / AU_KM,

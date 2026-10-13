@@ -1,119 +1,17 @@
-//! Heliocentric ephemerides, in the ecliptic and mean equinox of J2000.
+//! Ephemerides, in the ecliptic and mean equinox of J2000, TDB.
 //!
-//! Planets use JPL's approximate Keplerian elements (Standish & Williams,
-//! Table 2a/2b, valid 3000 BC – 3000 AD). Small bodies use piecewise two-body
-//! orbits fitted to JPL Horizons over the game's span (`data/neas.toml`).
-//! Both are deliberately approximate: the game needs the real geometry of the
-//! solar system, not navigation-grade positions.
+//! The Sun, the planets and the Moon come from JPL's DE440 for 2025–2080
+//! (`data/de440.bin`, built by `tools/ephem/`): Chebyshev series for the
+//! Sun, the planetary system barycenters, the Earth–Moon barycenter and the
+//! Moon, as DE440 has them. Outer planets are their system barycenters.
+//! Small bodies use piecewise two-body orbits fitted to JPL Horizons over the
+//! game's span (`data/neas.toml`), until M1a integrates them.
 
 use crate::consts::AU_KM;
 use crate::kepler::{Elements, State};
-use crate::time::{DAYS_PER_CENTURY, Epoch, SECONDS_PER_DAY};
+use crate::time::{Epoch, SECONDS_PER_DAY};
+use glam::DVec3;
 use serde::Deserialize;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Planet {
-    Mercury,
-    Venus,
-    /// The Earth–Moon barycenter; the game treats it as Earth's position.
-    Earth,
-    Mars,
-    Jupiter,
-    Saturn,
-    Uranus,
-    Neptune,
-}
-
-/// One row of Standish Table 2a: value at J2000 and rate per Julian century.
-/// a [au], e, I [deg], L [deg], long. perihelion [deg], long. node [deg].
-struct Standish {
-    a: [f64; 2],
-    e: [f64; 2],
-    i: [f64; 2],
-    l: [f64; 2],
-    varpi: [f64; 2],
-    node: [f64; 2],
-    /// Table 2b terms b, c, s, f for Jupiter–Neptune.
-    bcsf: [f64; 4],
-}
-
-#[rustfmt::skip]
-const STANDISH: [Standish; 8] = [
-    Standish { a: [0.38709843, 0.0], e: [0.20563661, 0.00002123], i: [7.00559432, -0.00590158],
-        l: [252.25166724, 149472.67486623], varpi: [77.45771895, 0.15940013],
-        node: [48.33961819, -0.12214182], bcsf: [0.0; 4] },
-    Standish { a: [0.72332102, -0.00000026], e: [0.00676399, -0.00005107], i: [3.39777545, 0.00043494],
-        l: [181.97970850, 58517.81560260], varpi: [131.76755713, 0.05679648],
-        node: [76.67261496, -0.27274174], bcsf: [0.0; 4] },
-    Standish { a: [1.00000018, -0.00000003], e: [0.01673163, -0.00003661], i: [-0.00054346, -0.01337178],
-        l: [100.46691572, 35999.37306329], varpi: [102.93005885, 0.31795260],
-        node: [-5.11260389, -0.24123856], bcsf: [0.0; 4] },
-    Standish { a: [1.52371243, 0.00000097], e: [0.09336511, 0.00009149], i: [1.85181869, -0.00724757],
-        l: [-4.56813164, 19140.29934243], varpi: [-23.91744784, 0.45223625],
-        node: [49.71320984, -0.26852431], bcsf: [0.0; 4] },
-    Standish { a: [5.20248019, -0.00002864], e: [0.04853590, 0.00018026], i: [1.29861416, -0.00322699],
-        l: [34.33479152, 3034.90371757], varpi: [14.27495244, 0.18199196],
-        node: [100.29282654, 0.13024619], bcsf: [-0.00012452, 0.06064060, -0.35635438, 38.35125000] },
-    Standish { a: [9.54149883, -0.00003065], e: [0.05550825, -0.00032044], i: [2.49424102, 0.00451969],
-        l: [50.07571329, 1222.11494724], varpi: [92.86136063, 0.54179478],
-        node: [113.63998702, -0.25015002], bcsf: [0.00025899, -0.13434469, 0.87320147, 38.35125000] },
-    Standish { a: [19.18797948, -0.00020455], e: [0.04685740, -0.00001550], i: [0.77298127, -0.00180155],
-        l: [314.20276625, 428.49512595], varpi: [172.43404441, 0.09266985],
-        node: [73.96250215, 0.05739699], bcsf: [0.00058331, -0.97731848, 0.17689245, 7.67025000] },
-    Standish { a: [30.06952752, 0.00006447], e: [0.00895439, 0.00000818], i: [1.77005520, 0.00022400],
-        l: [304.22289287, 218.46515314], varpi: [46.68158724, 0.01009938],
-        node: [131.78635853, -0.00606302], bcsf: [-0.00041348, 0.68346318, -0.10162547, 7.67025000] },
-];
-
-impl Planet {
-    pub const ALL: [Planet; 8] = [
-        Planet::Mercury,
-        Planet::Venus,
-        Planet::Earth,
-        Planet::Mars,
-        Planet::Jupiter,
-        Planet::Saturn,
-        Planet::Uranus,
-        Planet::Neptune,
-    ];
-
-    pub fn id(self) -> &'static str {
-        match self {
-            Planet::Mercury => "mercury",
-            Planet::Venus => "venus",
-            Planet::Earth => "earth",
-            Planet::Mars => "mars",
-            Planet::Jupiter => "jupiter",
-            Planet::Saturn => "saturn",
-            Planet::Uranus => "uranus",
-            Planet::Neptune => "neptune",
-        }
-    }
-
-    /// Osculating-equivalent elements at `t`.
-    pub fn elements(self, t: Epoch) -> Elements {
-        let p = &STANDISH[self as usize];
-        let tc = t.centuries();
-        let at = |x: [f64; 2]| x[0] + x[1] * tc;
-        let [b, c, s, f] = p.bcsf;
-        let (l, varpi, node) = (at(p.l), at(p.varpi), at(p.node));
-        let m = l - varpi
-            + b * tc * tc
-            + c * (f * tc).to_radians().cos()
-            + s * (f * tc).to_radians().sin();
-        Elements {
-            a: at(p.a) * AU_KM,
-            e: at(p.e),
-            i: at(p.i).to_radians(),
-            raan: node.to_radians(),
-            argp: (varpi - node).to_radians(),
-            mean_anomaly: m.to_radians(),
-            // The mean-longitude rate: it includes perihelion precession, so
-            // velocities track the tabulated positions.
-            mean_motion: p.l[1].to_radians() / (DAYS_PER_CENTURY * SECONDS_PER_DAY),
-        }
-    }
-}
 
 /// A body's identity in an [`Ephemeris`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,12 +22,16 @@ pub struct Body {
     pub id: String,
     pub name: String,
     pub kind: BodyKind,
+    /// Gravitational parameter, km³/s²; zero for small bodies.
+    pub gm: f64,
     motion: Motion,
 }
 
 #[derive(Clone, Debug)]
 pub enum BodyKind {
+    Star,
     Planet,
+    Moon,
     SmallBody {
         /// Spectral class (SMASSII/Tholen), or "unknown".
         spectral: String,
@@ -138,10 +40,22 @@ pub enum BodyKind {
     },
 }
 
+impl BodyKind {
+    /// On its own orbit about the Sun: what heliocentric transfers connect.
+    pub fn orbits_sun(&self) -> bool {
+        matches!(self, BodyKind::Planet | BodyKind::SmallBody { .. })
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Motion {
-    Planet(Planet),
-    /// Consecutive two-body orbits, sorted by start; the first and last
+    /// A DE440 series, relative to the solar-system barycenter.
+    Series(usize),
+    /// The Earth–Moon barycenter less the Moon's offset from it / EMRAT.
+    Earth,
+    /// The Earth–Moon barycenter plus the Moon's offset from it.
+    Moon,
+    /// Heliocentric two-body orbits, sorted by start; the first and last
     /// extend before and after the fitted span.
     Segments {
         epoch: Epoch,
@@ -156,28 +70,127 @@ struct Segment {
     elements: Elements,
 }
 
-impl Body {
-    pub fn state(&self, t: Epoch) -> State {
-        self.elements(t).state()
-    }
+/// One body's DE440 Chebyshev series: records of `intlen` seconds from
+/// `init` (TDB seconds past J2000), each `ncoef` coefficients for x, y, z.
+#[derive(Clone, Debug)]
+struct Series {
+    init: f64,
+    intlen: f64,
+    ncoef: usize,
+    coef: Vec<f64>,
+}
 
-    pub fn elements(&self, t: Epoch) -> Elements {
-        match &self.motion {
-            Motion::Planet(p) => p.elements(t),
-            Motion::Segments { epoch, segments } => {
-                let k = segments.partition_point(|s| s.start <= t).saturating_sub(1);
-                segments[k]
-                    .elements
-                    .advanced((t.0 - epoch.0) * SECONDS_PER_DAY)
-            }
+impl Series {
+    fn state(&self, t: Epoch) -> State {
+        let n = self.ncoef;
+        let sec = t.seconds() - self.init;
+        let k = (sec / self.intlen).floor();
+        assert!(
+            k >= 0.0 && (k as usize) < self.coef.len() / (3 * n),
+            "{t} is outside the DE440 tables (2025–2080)"
+        );
+        let k = k as usize;
+        let s = 2.0 * (sec - k as f64 * self.intlen) / self.intlen - 1.0;
+        let c = &self.coef[3 * n * k..3 * n * (k + 1)];
+        let coef = |j: usize| DVec3::new(c[j], c[n + j], c[2 * n + j]);
+        // Chebyshev polynomials T_j(s) and their derivatives.
+        let mut r = coef(0);
+        let mut v = DVec3::ZERO;
+        let (mut t_prev, mut t_cur) = (1.0, s);
+        let (mut d_prev, mut d_cur) = (0.0, 1.0);
+        for j in 1..n {
+            r += coef(j) * t_cur;
+            v += coef(j) * d_cur;
+            let t_next = 2.0 * s * t_cur - t_prev;
+            let d_next = 2.0 * t_cur + 2.0 * s * d_cur - d_prev;
+            (t_prev, t_cur) = (t_cur, t_next);
+            (d_prev, d_cur) = (d_cur, d_next);
+        }
+        State {
+            r,
+            v: v * (2.0 / self.intlen),
         }
     }
 }
 
-/// Every heliocentric body the game knows about.
+/// `data/de440.bin`: the constants and series `tools/ephem/build.py` wrote.
+struct De440 {
+    constants: Vec<(String, f64)>,
+    /// (NAIF target, NAIF center, series).
+    series: Vec<(i32, i32, Series)>,
+}
+
+impl De440 {
+    fn parse(bytes: &[u8]) -> De440 {
+        let mut at = 0;
+        let mut take = |n: usize| {
+            let s = &bytes[at..at + n];
+            at += n;
+            s
+        };
+        assert_eq!(take(8), b"DE440ECL", "not a DE440 table file");
+        let u32_ = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
+        let f64_ = |b: &[u8]| f64::from_le_bytes(b.try_into().unwrap());
+        assert_eq!(u32_(take(4)), 1, "unknown DE440 table version");
+        let constants = (0..u32_(take(4)))
+            .map(|_| {
+                let name = take(16);
+                let name = String::from_utf8_lossy(name)
+                    .trim_end_matches('\0')
+                    .to_string();
+                (name, f64_(take(8)))
+            })
+            .collect();
+        let series = (0..u32_(take(4)))
+            .map(|_| {
+                let target = u32_(take(4)) as i32;
+                let center = u32_(take(4)) as i32;
+                let init = f64_(take(8));
+                let intlen = f64_(take(8));
+                let ncoef = u32_(take(4)) as usize;
+                let nrec = u32_(take(4)) as usize;
+                let coef = take(8 * 3 * ncoef * nrec)
+                    .chunks_exact(8)
+                    .map(f64_)
+                    .collect();
+                let s = Series {
+                    init,
+                    intlen,
+                    ncoef,
+                    coef,
+                };
+                (target, center, s)
+            })
+            .collect();
+        De440 { constants, series }
+    }
+
+    fn constant(&self, name: &str) -> f64 {
+        self.constants
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("DE440 constant {name} missing"))
+            .1
+    }
+
+    /// Index of the series for `target` relative to `center`.
+    fn series_index(&self, target: i32, center: i32) -> usize {
+        self.series
+            .iter()
+            .position(|(t, c, _)| (*t, *c) == (target, center))
+            .unwrap_or_else(|| panic!("DE440 series {target} wrt {center} missing"))
+    }
+}
+
+/// The Sun, the planets, the Moon, and the game's small bodies.
 #[derive(Clone, Debug)]
 pub struct Ephemeris {
     bodies: Vec<Body>,
+    series: Vec<Series>,
+    emb: usize,
+    moon_offset: usize,
+    emrat: f64,
+    sun: BodyId,
 }
 
 #[derive(Deserialize)]
@@ -209,26 +222,58 @@ struct SegmentRow {
 }
 
 impl Ephemeris {
-    /// The planets plus the small bodies in `data/neas.toml`.
+    /// DE440 plus the small bodies in `data/neas.toml`.
     pub fn standard() -> Self {
         Self::with_small_bodies(include_str!("../../../data/neas.toml"))
             .expect("data/neas.toml is valid")
     }
 
-    /// The planets plus small bodies from a TOML document shaped like
+    /// DE440 plus small bodies from a TOML document shaped like
     /// `data/neas.toml`.
     pub fn with_small_bodies(toml_src: &str) -> Result<Self, String> {
+        let de = De440::parse(include_bytes!("../../../data/de440.bin"));
+        let emrat = de.constant("EMRAT");
+        let gmb = de.constant("GMB");
+        let mut bodies = Vec::new();
+        let mut massive = |id: &str, kind: BodyKind, gm: f64, motion: Motion| {
+            let mut name = id.to_string();
+            name[..1].make_ascii_uppercase();
+            bodies.push(Body {
+                id: id.to_string(),
+                name,
+                kind,
+                gm,
+                motion,
+            });
+        };
+        let series = |naif: i32| Motion::Series(de.series_index(naif, 0));
+        massive("sun", BodyKind::Star, de.constant("GMS"), series(10));
+        massive("mercury", BodyKind::Planet, de.constant("GM1"), series(1));
+        massive("venus", BodyKind::Planet, de.constant("GM2"), series(2));
+        massive(
+            "earth",
+            BodyKind::Planet,
+            gmb * emrat / (1.0 + emrat),
+            Motion::Earth,
+        );
+        massive("moon", BodyKind::Moon, gmb / (1.0 + emrat), Motion::Moon);
+        for (id, naif) in [
+            ("mars", 4),
+            ("jupiter", 5),
+            ("saturn", 6),
+            ("uranus", 7),
+            ("neptune", 8),
+        ] {
+            massive(
+                id,
+                BodyKind::Planet,
+                de.constant(&format!("GM{naif}")),
+                series(naif),
+            );
+        }
+
         let file: SmallBodyFile = toml::from_str(toml_src).map_err(|e| e.to_string())?;
         let epoch = Epoch::from_jd(file.epoch_jd_tdb);
-        let mut bodies: Vec<Body> = Planet::ALL
-            .iter()
-            .map(|&p| Body {
-                id: p.id().to_string(),
-                name: capitalize(p.id()),
-                kind: BodyKind::Planet,
-                motion: Motion::Planet(p),
-            })
-            .collect();
         for row in file.body {
             if bodies.iter().any(|b| b.id == row.id) {
                 return Err(format!("duplicate body id {:?}", row.id));
@@ -261,10 +306,20 @@ impl Ephemeris {
                     diameter_km: row.diameter_km,
                     h_mag: row.h_mag,
                 },
+                gm: 0.0,
                 motion: Motion::Segments { epoch, segments },
             });
         }
-        Ok(Ephemeris { bodies })
+        let emb = de.series_index(3, 0);
+        let moon_offset = de.series_index(301, 3);
+        Ok(Ephemeris {
+            bodies,
+            series: de.series.into_iter().map(|(_, _, s)| s).collect(),
+            emb,
+            moon_offset,
+            emrat,
+            sun: BodyId(0),
+        })
     }
 
     pub fn lookup(&self, id: &str) -> Option<BodyId> {
@@ -275,24 +330,106 @@ impl Ephemeris {
         &self.bodies[id.0]
     }
 
-    pub fn state(&self, id: BodyId, t: Epoch) -> State {
-        self.bodies[id.0].state(t)
-    }
-
     pub fn ids(&self) -> impl Iterator<Item = BodyId> {
         (0..self.bodies.len()).map(BodyId)
     }
 
+    pub fn sun(&self) -> BodyId {
+        self.sun
+    }
+
+    /// State relative to the solar-system barycenter.
+    pub fn barycentric(&self, id: BodyId, t: Epoch) -> State {
+        match &self.bodies[id.0].motion {
+            Motion::Series(k) => self.series[*k].state(t),
+            Motion::Earth | Motion::Moon => {
+                let emb = self.series[self.emb].state(t);
+                let off = self.series[self.moon_offset].state(t);
+                let f = match self.bodies[id.0].motion {
+                    Motion::Earth => -1.0 / self.emrat,
+                    _ => 1.0,
+                };
+                State {
+                    r: emb.r + f * off.r,
+                    v: emb.v + f * off.v,
+                }
+            }
+            Motion::Segments { .. } => {
+                let (h, sun) = (self.state(id, t), self.barycentric(self.sun, t));
+                State {
+                    r: h.r + sun.r,
+                    v: h.v + sun.v,
+                }
+            }
+        }
+    }
+
+    /// State relative to the Sun.
+    pub fn state(&self, id: BodyId, t: Epoch) -> State {
+        if let Motion::Segments { epoch, segments } = &self.bodies[id.0].motion {
+            return segment_elements(*epoch, segments, t).state();
+        }
+        let (b, sun) = (self.barycentric(id, t), self.barycentric(self.sun, t));
+        State {
+            r: b.r - sun.r,
+            v: b.v - sun.v,
+        }
+    }
+
+    /// Heliocentric state of the body's planetary system: the Earth–Moon
+    /// barycenter for Earth and the Moon, the body itself otherwise (outer
+    /// planets are their system barycenters already). A ship that escapes a
+    /// system leaves with excess speed relative to this, and heliocentric
+    /// transfers connect these states.
+    pub fn system_state(&self, id: BodyId, t: Epoch) -> State {
+        match self.bodies[id.0].motion {
+            Motion::Earth | Motion::Moon => {
+                let (emb, sun) = (
+                    self.series[self.emb].state(t),
+                    self.barycentric(self.sun, t),
+                );
+                State {
+                    r: emb.r - sun.r,
+                    v: emb.v - sun.v,
+                }
+            }
+            _ => self.state(id, t),
+        }
+    }
+
+    /// Heliocentric orbital elements of the body's planetary system (see
+    /// [`Self::system_state`]): the fitted ones for small bodies, osculating
+    /// ones about the Sun and the system's mass otherwise. Panics for the
+    /// Sun.
+    pub fn elements(&self, id: BodyId, t: Epoch) -> Elements {
+        let body = &self.bodies[id.0];
+        let gm = match &body.motion {
+            Motion::Segments { epoch, segments } => return segment_elements(*epoch, segments, t),
+            Motion::Earth | Motion::Moon => self
+                .bodies
+                .iter()
+                .filter(|b| matches!(b.motion, Motion::Earth | Motion::Moon))
+                .map(|b| b.gm)
+                .sum(),
+            Motion::Series(_) => {
+                assert_ne!(id, self.sun, "the Sun has no heliocentric orbit");
+                body.gm
+            }
+        };
+        Elements::from_state(self.system_state(id, t), self.bodies[self.sun.0].gm + gm)
+            .unwrap_or_else(|| panic!("{} is not on a heliocentric ellipse", body.id))
+    }
+
     /// Synodic period of two bodies, in days (infinite for equal periods).
     pub fn synodic_period_days(&self, a: BodyId, b: BodyId, t: Epoch) -> f64 {
-        let n = |id: BodyId| self.body(id).elements(t).mean_motion * SECONDS_PER_DAY;
+        let n = |id: BodyId| self.elements(id, t).mean_motion * SECONDS_PER_DAY;
         std::f64::consts::TAU / (n(a) - n(b)).abs()
     }
 }
 
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
+fn segment_elements(epoch: Epoch, segments: &[Segment], t: Epoch) -> Elements {
+    let k = segments.partition_point(|s| s.start <= t).saturating_sub(1);
+    segments[k]
+        .elements
+        .advanced((t.0 - epoch.0) * SECONDS_PER_DAY)
 }

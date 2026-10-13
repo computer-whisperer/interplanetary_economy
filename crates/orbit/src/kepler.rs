@@ -1,4 +1,4 @@
-//! Two-body orbits: elements to state, and state propagation.
+//! Two-body orbits: elements to and from state, and state propagation.
 
 use glam::DVec3;
 use std::f64::consts::{PI, TAU};
@@ -49,6 +49,51 @@ impl Elements {
             r: rot(r_pf),
             v: rot(v_pf),
         }
+    }
+
+    /// The osculating elements of a state about a body with gravitational
+    /// parameter `mu`; `None` unless the orbit is an ellipse. For a circular
+    /// orbit the argument of periapsis is zero, and for an equatorial one
+    /// the node is.
+    pub fn from_state(s: State, mu: f64) -> Option<Elements> {
+        let r = s.r.length();
+        let h = s.r.cross(s.v);
+        let a = 1.0 / (2.0 / r - s.v.length_squared() / mu);
+        let e_vec = ((s.v.length_squared() - mu / r) * s.r - s.r.dot(s.v) * s.v) / mu;
+        let e = e_vec.length();
+        if !(a > 0.0 && e < 1.0) {
+            return None;
+        }
+        let h_hat = h.normalize();
+        let i = h_hat.z.clamp(-1.0, 1.0).acos();
+        let node = DVec3::new(-h.y, h.x, 0.0);
+        let raan = if node.length() > 1e-12 * h.length() {
+            node.y.atan2(node.x).rem_euclid(TAU)
+        } else {
+            0.0
+        };
+        let n_hat = DVec3::new(raan.cos(), raan.sin(), 0.0);
+        let m_hat = h_hat.cross(n_hat);
+        let (argp, p_hat) = if e > 1e-12 {
+            (
+                e_vec.dot(m_hat).atan2(e_vec.dot(n_hat)).rem_euclid(TAU),
+                e_vec / e,
+            )
+        } else {
+            (0.0, n_hat)
+        };
+        let q_hat = h_hat.cross(p_hat);
+        let nu = s.r.dot(q_hat).atan2(s.r.dot(p_hat));
+        let ecc_anomaly = ((1.0 - e * e).sqrt() * nu.sin()).atan2(e + nu.cos());
+        Some(Elements {
+            a,
+            e,
+            i,
+            raan,
+            argp,
+            mean_anomaly: (ecc_anomaly - e * ecc_anomaly.sin()).rem_euclid(TAU),
+            mean_motion: (mu / a.powi(3)).sqrt(),
+        })
     }
 
     /// The same orbit `dt` seconds later.
@@ -224,6 +269,31 @@ mod tests {
             assert!((s.v.length_squared() - vis_viva).abs() < 1e-9 * vis_viva);
             assert!((s.r.cross(s.v).length() - h_expected).abs() < 1e-9 * h_expected);
         }
+    }
+
+    #[test]
+    fn elements_round_trip_through_state() {
+        let el = sample_orbit();
+        let angle = |x: f64, y: f64| (x - y + PI).rem_euclid(TAU) - PI;
+        for k in 0..12 {
+            let el = el.advanced(k as f64 * 3_000.0);
+            let back = Elements::from_state(el.state(), MU_EARTH).unwrap();
+            assert!((back.a - el.a).abs() < 1e-6 * el.a, "{back:?}");
+            assert!((back.e - el.e).abs() < 1e-10);
+            for (x, y) in [
+                (back.i, el.i),
+                (back.raan, el.raan),
+                (back.argp, el.argp),
+                (back.mean_anomaly, el.mean_anomaly),
+            ] {
+                assert!(angle(x, y).abs() < 1e-9, "{back:?} vs {el:?}");
+            }
+        }
+        let escape = State {
+            r: DVec3::new(7_000.0, 0.0, 0.0),
+            v: DVec3::new(0.0, 12.0, 0.0),
+        };
+        assert!(Elements::from_state(escape, MU_EARTH).is_none());
     }
 
     #[test]

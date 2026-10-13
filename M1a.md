@@ -1,11 +1,18 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: step 1 done. The Δv network and its gateways are
-deleted; `crates/orbit` keeps body-to-body Lambert arcs, porkchops and
-windows, ranked by total excess speed (v∞ at both ends), and the `orbit`
-command works on bodies. Earth–Mars windows land on the handbook's
-minimum-C3 departures for 2041 and 2043 (C3 9.82 and 8.97 against 9.818
-and 8.969).
+Status, 2026-10-13: steps 1–2 done.
+
+- Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
+  Lambert arcs between bodies, porkchops and windows, ranked by total excess
+  speed (v∞ at both ends), and the `orbit` command works on bodies.
+- Step 2: the Sun, planets and Moon come from DE440 (`data/de440.bin`, 4.0
+  MB, 2025–2080, built by `tools/ephem/`). Against Horizons (DE441): Earth
+  within 0.1 m, the Moon from Earth 8 m, the Sun, Mars and Jupiter under 1
+  mm. Heliocentric transfers connect planetary systems: for Earth, the
+  Earth–Moon barycenter. The NASA handbook's Mars departures turned out to
+  be from the barycenter (M0 assumed Earth's center): from it every row
+  matches to 0.08%; from Earth's center, which swings ~12 m/s around it,
+  up to 0.9% off.
 
 ## Why
 
@@ -30,8 +37,10 @@ questions).
 ## Physics
 
 **Massive bodies.** JPL's DE440 ephemeris (public domain), trimmed to
-2040–2080: the Sun, the planetary barycenters, Earth and Moon, as
-Chebyshev tables (~4 MB). A `tools/` script extracts them. Phobos and
+2025–2080 (from 2025 so the NASA handbook check still runs): the Sun, the
+planetary system barycenters, the Earth–Moon barycenter and the Moon, as
+DE440's own Chebyshev series (4.0 MB). Earth follows from the barycenter
+and the Moon by the Earth/Moon mass ratio. `tools/ephem/` extracts them. Phobos and
 Deimos come from JPL as well (Horizons, or its Mars satellite
 ephemeris). A fictional system would integrate its bodies once to make
 the same tables.

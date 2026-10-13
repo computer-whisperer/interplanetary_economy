@@ -376,8 +376,11 @@ Minimal and information-dense:
     aerocapture speed limit.
   - Superseded by M1a except for Lambert, porkchops, window detection and
     time handling, which become the autopilot's first playbook entry. The
-    Δv network and its lunar-assist fit were deleted in M1a step 1; the
-    Kepler-element planets and the NEA fits go in steps 2 and 4.
+    Δv network and its lunar-assist fit were deleted in M1a step 1 and
+    the Kepler-element planets replaced by DE440 in step 2; the NEA fits
+    go in step 4. The handbook check above departed from the Earth–Moon
+    barycenter all along (the Kepler-element "Earth" was the barycenter);
+    with DE440 it holds to 0.08%.
 - **M1a, n-body sandbox and autopilot.** See M1a.md. DE440 ephemerides,
   ships integrated as particles, flight rules, and an autopilot that turns
   legs into flown trajectories from a playbook of transfer types.

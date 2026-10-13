@@ -3,11 +3,14 @@
 //! Design Handbook: Earth-to-Mars Mission Opportunities 2026 to 2045",
 //! NASA/TM-2010-216764, Tables 2–11 (minimum departure energy rows).
 //!
-//! The handbook used JPL DE ephemerides for Earth itself, searched on a 2-day
-//! grid; this uses approximate elements for the Earth–Moon barycenter.
+//! The handbook's departures are from the Earth–Moon barycenter, which is
+//! what `Transfer` uses for Earth: from it, DE440 gives C3 within 0.08% of
+//! every row with consistent dates; from Earth's center, which swings ~12 m/s
+//! around it monthly, up to 0.9% off (measured 2026-10-13). The handbook
+//! searched on a 2-day grid.
 //!
 //! Two handbook quirks, both confirmed against JPL Horizons (DE441) Earth and
-//! Mars state vectors when this test was written (2026-10-12):
+//! Mars state vectors (2026-10-12):
 //! - The 2035, 2037 and 2039 rows have inconsistent dates: Lambert from
 //!   DE441 positions at the tabulated dates gives C3 of 35–1215 km²/s², not
 //!   the tabulated 10–19. The tabulated C3 *values* are right: they are the
@@ -138,12 +141,12 @@ fn c3_matches_handbook() {
                 rel * 100.0
             );
             assert!(
-                rel.abs() < 0.015,
+                rel.abs() < 0.002,
                 "{label}: C3 at handbook dates off by {rel}"
             );
-            assert!(best <= m.c3 * 1.01, "{label}: best {best}");
+            assert!(best <= m.c3 * 1.002, "{label}: best {best}");
             assert!(
-                shift.abs() <= 5.0,
+                shift.abs() <= 2.0,
                 "{label}: best departure shifted {shift} d"
             );
         } else {
@@ -162,7 +165,7 @@ fn c3_matches_handbook() {
                 m.c3,
                 rel * 100.0
             );
-            assert!(rel.abs() < 0.01, "{label}: minimum C3 off by {rel}");
+            assert!(rel.abs() < 0.002, "{label}: minimum C3 off by {rel}");
         }
     }
 }

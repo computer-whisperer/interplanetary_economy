@@ -15,8 +15,11 @@ sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
   parameters, and a sweep that classifies the plans' development paths.
   Out of the workspace: it reads the Δv network that M1a step 1 deleted,
   and M1a step 11 rewires it to the autopilot's flown legs.
-- `data/` — game data: the candidate asteroids, and the economy
-  (`economy.toml`, with sources).
+- `data/` — game data: JPL's DE440 ephemeris for 2025–2080 (`de440.bin`),
+  the candidate asteroids, and the economy (`economy.toml`, with sources).
+- `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
+  then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
+  Horizons fixtures the tests check it against (`fixtures.sh`).
 - `tools/neas/` — regenerates `data/neas.toml` from JPL Horizons and SBDB
   (`fetch.sh DIR`, then `python3 build.py DIR > ../../data/neas.toml`;
   needs numpy and scipy).
