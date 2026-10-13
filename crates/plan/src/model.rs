@@ -759,7 +759,10 @@ mod tests {
         };
         let kept = bought_late(0.0);
         let lost = bought_late(0.05);
-        assert!(kept < 1e-3, "without boil-off, all hydrogen is bought early: {kept}");
+        assert!(
+            kept < 1e-3,
+            "without boil-off, all hydrogen is bought early: {kept}"
+        );
         assert!(lost > 1.0, "with boil-off, some is bought late: {lost}");
     }
 
