@@ -89,6 +89,57 @@ impl<'a> Field<'a> {
         a
     }
 
+    /// The gravity gradient ∂a/∂r at `r` (from the center), for the state
+    /// transition matrix: point masses only. Leaving out J2 and relativity
+    /// only slows Newton's method a little (its residuals use the full
+    /// model).
+    pub fn gradient(&self, t: Epoch, r: DVec3) -> [[f64; 3]; 3] {
+        let origin = self.center.map(|c| self.eph.barycentric_position(c, t));
+        let mut g = [[0.0; 3]; 3];
+        let mut add = |gm: f64, d: DVec3| {
+            let r2 = d.length_squared();
+            let r3 = r2 * r2.sqrt();
+            let d = d.to_array();
+            for (i, row) in g.iter_mut().enumerate() {
+                for (k, v) in row.iter_mut().enumerate() {
+                    *v +=
+                        gm * (3.0 * d[i] * d[k] / (r3 * r2) - if i == k { 1.0 / r3 } else { 0.0 });
+                }
+            }
+        };
+        if self.center.is_some() {
+            add(self.center_gm, -r);
+        }
+        for &(b, gm) in &self.others {
+            let d = self.eph.barycentric_position(b, t) - origin.unwrap_or(DVec3::ZERO);
+            add(gm, d - r);
+        }
+        g
+    }
+
+    /// The equations of motion with the state transition matrix: `[r, v, Φ]`,
+    /// Φ row-major 6×6; see [`Self::ode`] and [`Self::gradient`].
+    pub fn ode_stm(&self, epoch: Epoch) -> impl Fn(f64, &[f64; 42]) -> [f64; 42] + '_ {
+        let ode = self.ode(epoch);
+        move |t, s| {
+            let state: [f64; 6] = s[..6].try_into().unwrap();
+            let mut out = [0.0; 42];
+            out[..6].copy_from_slice(&ode(t, &state));
+            let g = self.gradient(
+                Epoch(epoch.0 + t / SECONDS_PER_DAY),
+                DVec3::new(s[0], s[1], s[2]),
+            );
+            let phi = &s[6..];
+            for c in 0..6 {
+                for r in 0..3 {
+                    out[6 + r * 6 + c] = phi[(r + 3) * 6 + c];
+                    out[6 + (r + 3) * 6 + c] = (0..3).map(|k| g[r][k] * phi[k * 6 + c]).sum();
+                }
+            }
+            out
+        }
+    }
+
     /// The J2 acceleration toward body `b` of a ship at `rho` from its
     /// center, if enabled and the body has a figure.
     fn oblateness(&self, b: BodyId, rho: DVec3) -> DVec3 {
@@ -175,6 +226,47 @@ mod tests {
 
     fn split(y: &[f64; 6]) -> (DVec3, DVec3) {
         (DVec3::new(y[0], y[1], y[2]), DVec3::new(y[3], y[4], y[5]))
+    }
+
+    /// The state transition matrix matches central finite differences of the
+    /// flow (point masses, where the gradient is exact) over two days of a
+    /// cislunar coast.
+    #[test]
+    fn stm_matches_finite_differences() {
+        let eph = Ephemeris::standard();
+        let field = Field::all(eph, eph.lookup("earth"));
+        let epoch = Epoch::from_ymd(2045, 3, 1);
+        let (ode, stm) = (field.ode(epoch), field.ode_stm(epoch));
+        let s0 = [320_000.0, 50_000.0, 10_000.0, -0.1, 0.8, 0.05];
+        let seconds = 2.0 * 86_400.0;
+        let mut y0 = [0.0; 42];
+        y0[..6].copy_from_slice(&s0);
+        for i in 0..6 {
+            y0[6 + i * 7] = 1.0;
+        }
+        let mut run = Dop853::new(&stm, 0.0, y0, TIGHT);
+        run.advance_to(&stm, seconds).unwrap();
+        let mut worst: f64 = 0.0;
+        for c in 0..6 {
+            // Large enough that the integrator's ~1e-12 relative noise
+            // does not swamp the difference (with 10× smaller steps the
+            // worst difference rose 12×).
+            let eps = if c < 3 { 1e-2 } else { 1e-7 };
+            let (mut hi, mut lo) = (s0, s0);
+            hi[c] += eps;
+            lo[c] -= eps;
+            let (a, b) = (fly(&ode, hi, seconds), fly(&ode, lo, seconds));
+            for r in 0..6 {
+                let fd = (a[r] - b[r]) / (2.0 * eps);
+                let got = run.y[6 + r * 6 + c];
+                let scale = (0..6)
+                    .map(|k| run.y[6 + r * 6 + k].abs())
+                    .fold(0.0, f64::max);
+                worst = worst.max((fd - got).abs() / scale);
+            }
+        }
+        println!("STM against finite differences: worst relative difference {worst:.1e}");
+        assert!(worst < 1e-6, "{worst}");
     }
 
     /// Earth's J2 turns a 400 km, 51.6° orbit's node at the secular rate

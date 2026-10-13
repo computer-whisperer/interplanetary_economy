@@ -10,6 +10,7 @@ pub mod gravity;
 pub mod integrate;
 pub mod kepler;
 pub mod lambert;
+pub mod linalg;
 pub mod time;
 pub mod transfer;
 pub mod windows;
