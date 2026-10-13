@@ -86,6 +86,11 @@ output = { lox = 1.0 }
 equipment_t_per_tpy = { plant = { median = 0.03, sigma = 0.8 }, ore = { median = 0.001, sigma = 0.8 } }
 grade = { median = 0.05, sigma = 0.5 }
 build_months = 12.0
+technology = "lunar-ice"
+# Prospecting: VIPER ~$0.93B with its lander (cancelled 2024; Planetary
+# Society); CLPS-class payloads ~$0.06–0.35B (PRIME-1 delivery $47M), 3–5
+# years. By 2040, CLPS-class [ext].
+survey = { cost_musd = { median = 300.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.25 } }
 
 [[facility]]
 # Oxygen from regolith at a sunlit polar site: carbothermal 0.39 t/(t/yr)
@@ -97,6 +102,7 @@ output = { lox = 1.0 }
 equipment_t_per_tpy = { plant = { median = 0.35, sigma = 0.4 }, ore = 0.0 }
 grade = 1.0
 build_months = 12.0
+technology = "regolith-oxygen"
 
 [[facility]]
 # Same at a mare site, which adds the 14-day night: fission or storage
@@ -107,6 +113,7 @@ output = { lox = 1.0 }
 equipment_t_per_tpy = { plant = { median = 0.9, sigma = 0.4 }, ore = 0.0 }
 grade = 1.0
 build_months = 12.0
+technology = "regolith-oxygen"
 
 [[facility]]
 # Methalox from ground ice and atmospheric CO2 (CO2 + 2H2O → CH4 + 2O2, so
@@ -120,6 +127,10 @@ output = { lox = 0.8, ch4 = 0.2 }
 equipment_t_per_tpy = { plant = { median = 0.35, sigma = 0.6 }, ore = 0.0005 }
 grade = { median = 0.3, sigma = 0.5 }
 build_months = 12.0
+technology = "mars-ice"
+# Ice mapping: Mars Ice Mapper, NASA share $185M of an international
+# mission, ~$0.25–0.8B in all, 6–7 years (SpaceNews 2020) [ext].
+survey = { cost_musd = { median = 500.0, sigma = 0.5 }, years = { median = 6.0, sigma = 0.25 } }
 
 [[facility]]
 # Phobos may be carbonaceous (D-type spectrum) or not; if volatile-rich,
@@ -132,6 +143,10 @@ equipment_t_per_tpy = { plant = { median = 0.2, sigma = 0.8 }, ore = { median = 
 grade = { median = 0.06, sigma = 0.5 }
 present = 0.4
 build_months = 12.0
+technology = "volatiles"
+# JAXA MMX: development ~$0.35B, ~8 years from approval to Phobos remote
+# sensing; a follow-on with heritage ~6 [ext].
+survey = { cost_musd = { median = 400.0, sigma = 0.4 }, years = { median = 6.0, sigma = 0.25 } }
 
 # Asteroid composition priors by spectral class; the weights are the
 # probability of each asteroid_plant's resource, the rest is barren.
@@ -174,6 +189,11 @@ equipment_t_per_tpy = { plant = { median = 0.1, sigma = 0.8 }, ore = { median = 
 grade = { median = 0.10, sigma = 0.35 }
 minable_fraction = 0.5
 build_months = 12.0
+technology = "volatiles"
+# Small-sat prospector: Janus <$49M for two craft, AstroForge Odin <$7M, DSI
+# Prospector-1 "tens of millions"; ~3 years to build, cruise and
+# characterize (2–5). Flagships cost ~$0.4–1.4B (Hayabusa2, OSIRIS-REx).
+survey = { cost_musd = { median = 50.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.3 } }
 
 [[asteroid_plant]]
 # Platinum-group metals from metal-rich material: total PGM 7 / 27 / 75 ppm
@@ -187,6 +207,61 @@ equipment_t_per_tpy = { plant = 5.0, ore = { median = 0.003, sigma = 1.0 } }
 grade = { median = 10e-6, sigma = 0.8 }
 minable_fraction = 0.5
 build_months = 12.0
+technology = "pgm"
+survey = { cost_musd = { median = 50.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.3 } }
+
+# Technology programs: development (non-recurring cost, not plant hardware)
+# from program start to the first installable plant, paid at no more than
+# cost / years per year. Every plant names its technology; a plant on a
+# deposit of uncertain content also names the survey that characterizes it,
+# and a survey's cost is divided by the prior probability that the deposit
+# has the resource. Durations count from 2040 and assume each technology is
+# at TRL 5–6 by then [ext]; from today's TRL, NASA data average 7.25 years
+# for TRL 4→9 (Acquisition Research Symposium paper SYM-AM-12-154). Study
+# development costs assume NASA-style hardware at $23–61k/kg, above this
+# file's $10k/kg.
+
+[[technology]]
+# Metzger 2023 (arXiv:2303.09011) Table A-1, development $/kg × surface
+# plant mass: $0.9B (Sowers) to $5.2B (Bennett), baseline $3.0B (2022$);
+# Kornuta et al. 2019 all-in initial capability ~$4B (2019$). Build-up ~5
+# years after TRL 6 (3–8).
+id = "lunar-ice"
+cost_musd = { median = 3300.0, sigma = 0.6 }
+years = { median = 5.0, sigma = 0.3 }
+
+[[technology]]
+# No published DDT&E. Sierra Space carbothermal reached TRL 6 in 2024
+# (NTRS 20250004151); Blue Origin MRE Tipping Point $34.7M. Metzger's
+# ~$120k/kg × a 10–25 t first plant: $0.5–3.5B [ext]. 4–10 years.
+id = "regolith-oxygen"
+cost_musd = { median = 2000.0, sigma = 0.6 }
+years = { median = 5.0, sigma = 0.3 }
+
+[[technology]]
+# Rapp 2024 (MOXIE deputy PI): ice-based ISRU "$10 billion… perhaps
+# considerably more", atmosphere-only ~$5B, both guesses; NASA's 5.2 t plant
+# plus 12.1 t reactor at $120k/kg ≈ $2.3B (NTRS 20160006324). MOXIE took 7
+# years to operate; full ISRU ~12 from start (8–18), ~8 from TRL 6 [ext].
+id = "mars-ice"
+cost_musd = { median = 5000.0, sigma = 0.6 }
+years = { median = 8.0, sigma = 0.3 }
+
+[[technology]]
+# Small-unit studies: Calla et al. 2018 first unit with R&D ~$215M; Hein et
+# al. 2020 $0.11–1.2B. No extraction has been demonstrated in space. The
+# NASA-style $120k/kg on a 10–25 t first plant gives $1.2–3B. Median between
+# the two [ext]. 5–12 years.
+id = "volatiles"
+cost_musd = { median = 1500.0, sigma = 0.9 }
+years = { median = 7.0, sigma = 0.3 }
+
+[[technology]]
+# No published DDT&E; AstroForge has raised $55M and lost its refinery demo
+# (2023) and Odin (2025). 8–20 years [guess].
+id = "pgm"
+cost_musd = { median = 2000.0, sigma = 1.0 }
+years = { median = 10.0, sigma = 0.3 }
 
 # Third-party demand: Q = ref_tpy × (price / ref_usd_per_kg)^−elasticity,
 # growing each year. Launch-market elasticity is ~1.5–2.5 below a few

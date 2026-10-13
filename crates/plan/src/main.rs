@@ -4,10 +4,11 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use orbit::ephem::Ephemeris;
 use orbit::network::Network;
-use plan::classify::{Classification, SOURCES, Source, classify, source_of};
+use plan::classify::{Classification, SOURCES, Source, classify, programs_of, source_of};
 use plan::edges::{self, Edge};
-use plan::model::{self, Commodity, Plan};
+use plan::model::{Commodity, Lp, Plan, ProgramSetup};
 use plan::params::{Draw, EconomyFile, Scenario};
+use plan::search::{self, Outcome};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -50,16 +51,24 @@ enum Cmd {
 #[derive(Args)]
 struct Opts {
     /// Length of a time step.
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 6)]
     months: u32,
+    /// Ignore programs: every plant may be built from the start at no fixed
+    /// cost (the first sweep's model).
+    #[arg(long)]
+    free: bool,
+    /// Also find the best plan using each in-space source alone.
+    #[arg(long, conflicts_with = "free")]
+    alternatives: bool,
     /// Interplanetary edges cost at most this, km/s.
     #[arg(long, default_value_t = 6.0)]
     max_dv: f64,
     /// The development path is read from propellant supply over these
     /// first years.
-    #[arg(long, default_value_t = 15.0)]
+    #[arg(long, default_value_t = 20.0)]
     path_years: f64,
-    /// Opening moves are installations in these first years.
+    /// Opening moves are the capital committed (programs and equipment) in
+    /// these first years.
     #[arg(long, default_value_t = 5.0)]
     opening_years: f64,
     /// Multiplies the equipment per t/yr (α) of every plant at one source,
@@ -78,6 +87,13 @@ fn parse_factor(s: &str) -> Result<(Source, f64), String> {
         .find(|x| x.to_string().eq_ignore_ascii_case(src))
         .ok_or_else(|| format!("unknown source {src:?}"))?;
     Ok((src, f.parse().map_err(|e| format!("{e}"))?))
+}
+
+/// The best plan of one draw, and with `--alternatives` the objective of
+/// the best plan using each in-space source alone.
+struct Planned {
+    best: Outcome,
+    alone: Vec<(Source, Option<f64>)>,
 }
 
 struct World {
@@ -118,6 +134,32 @@ impl World {
         all
     }
 
+    fn plan(&self, sc: &Scenario, edges: &[Edge], opts: &Opts, verbose: bool) -> Planned {
+        let mut lp = Lp::new(sc, &self.net, edges, verbose);
+        if opts.free {
+            return Planned {
+                best: search::free(&mut lp, sc),
+                alone: Vec::new(),
+            };
+        }
+        let best = search::optimise(&mut lp, sc, &vec![true; sc.programs.len()]);
+        let alone = if opts.alternatives {
+            SOURCES[1..]
+                .iter()
+                .map(|&src| {
+                    let allowed = programs_of(&self.eph, &self.net, sc, src);
+                    let out = search::optimise(&mut lp, sc, &allowed);
+                    let objective = (out.plan.status == highs::HighsModelStatus::Optimal)
+                        .then_some(out.plan.objective);
+                    (src, objective)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Planned { best, alone }
+    }
+
     fn classify(&self, sc: &Scenario, plan: &Plan, opts: &Opts) -> Classification {
         classify(
             &self.eph,
@@ -156,14 +198,43 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
     let edges = w.edges(&sc, opts);
     println!("{} edges in {:.1?}", edges.len(), t0.elapsed());
     let t0 = Instant::now();
-    let plan = model::solve(&sc, &w.net, &edges, true);
+    let planned = w.plan(&sc, &edges, opts, true);
+    let out = &planned.best;
+    let plan = &out.plan;
     println!(
-        "{:?}: objective {:.0} $M in {:.1?}",
+        "{:?}: objective {:.0} $M, {} solves in {:.1?}",
         plan.status,
         plan.objective,
+        out.solves,
         t0.elapsed()
     );
     println!("{}", describe_draw(&sc));
+    if let Some(v) = out.earth_only {
+        println!("Earth-only: objective {v:.0} $M");
+    }
+    for &(j, v) in &out.drops {
+        match v {
+            Some(v) => println!("without {}: objective {v:.0} $M", sc.programs[j].id),
+            None => println!("without {}: not optimal", sc.programs[j].id),
+        }
+    }
+    for (src, v) in &planned.alone {
+        match v {
+            Some(v) => println!("{src} alone: objective {v:.0} $M"),
+            None => println!("{src} alone: not optimal"),
+        }
+    }
+    println!("programs funded (cost $M, plants installable from):");
+    for (prog, s) in sc.programs.iter().zip(&out.setup) {
+        if let ProgramSetup::Funded { ready } = s {
+            println!(
+                "  {:<34} {:>7.0}  {}",
+                prog.id,
+                prog.cost_musd,
+                sc.cal.start_of(*ready)
+            );
+        }
+    }
     let per_year = (1.0 / sc.cal.period_years()).round() as usize;
     let at = |y: usize| (y * per_year).min(sc.cal.periods - 1);
     let decade = |v: &[f64], d: usize| -> f64 { v[at(10 * d)..at(10 * d + 10)].iter().sum() };
@@ -269,7 +340,7 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
             v[at(30)]
         );
     }
-    let c = w.classify(&sc, &plan, opts);
+    let c = w.classify(&sc, plan, opts);
     println!(
         "path: {}   opening: {}   supply to {:.0}: {}",
         c.path_label(),
@@ -324,20 +395,22 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
     let t0 = Instant::now();
     let edges = w.edges(&w.scenario(None, opts), opts);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(jobs).build()?;
-    let rows: Vec<(u64, Scenario, Plan, Classification)> = pool.install(|| {
+    let rows: Vec<(u64, Scenario, Planned, Classification)> = pool.install(|| {
         (1..=draws)
             .into_par_iter()
             .map(|seed| {
                 let sc = w.scenario(Some(seed), opts);
-                let plan = model::solve(&sc, &w.net, &edges, false);
-                let c = w.classify(&sc, &plan, opts);
+                let t0 = Instant::now();
+                let planned = w.plan(&sc, &edges, opts, false);
+                let c = w.classify(&sc, &planned.best.plan, opts);
                 eprintln!(
-                    "seed {seed:>4}: {:<24} opening {:<28} {}",
+                    "seed {seed:>4}: {:<24} opening {:<28} {:.0?}; {}",
                     c.path_label(),
                     c.opening_label(),
+                    t0.elapsed(),
                     describe_draw(&sc)
                 );
-                (seed, sc, plan, c)
+                (seed, sc, planned, c)
             })
             .collect()
     });
@@ -345,7 +418,7 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
 
     let failed = rows
         .iter()
-        .filter(|(_, _, p, _)| p.status != highs::HighsModelStatus::Optimal)
+        .filter(|(_, _, p, _)| p.best.plan.status != highs::HighsModelStatus::Optimal)
         .count();
     if failed > 0 {
         println!("{failed} draws did not solve to optimality");
@@ -368,7 +441,7 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
         println!("  {:>5.1}%  {label}", 100.0 * n as f64 / rows.len() as f64);
     }
     println!(
-        "\nopening (sources with ≥ {:.0}% of the equipment installed by {:.0}):",
+        "\nopening (sources with ≥ {:.0}% of the capital committed by {:.0}):",
         plan::classify::PATH_SHARE * 100.0,
         2040.0 + opts.opening_years
     );
@@ -377,13 +450,32 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
     }
 
     if let Some(path) = csv {
-        let mut out = String::from(
+        let mut csv_text = String::from(
             "seed,status,objective_musd,launch_start,launch_end,equipment_usd_per_kg,\
              budget_musd,lunar_ice_grade,wet_asteroids,metal_asteroids,phobos_wet,\
              supply_earth_t,supply_moon_t,supply_mars_t,supply_asteroids_t,\
-             opening_moon_t,opening_mars_t,opening_asteroids_t,path,opening\n",
+             opening_moon_musd,opening_mars_musd,opening_asteroids_musd,path,opening,\
+             solves,program_musd,programs,earth_only_musd,drops,\
+             moon_alone_musd,mars_alone_musd,asteroids_alone_musd\n",
         );
-        for (seed, sc, plan, c) in &rows {
+        for (seed, sc, planned, c) in &rows {
+            let out = &planned.best;
+            let plan = &out.plan;
+            let alone = |src: Source| {
+                planned
+                    .alone
+                    .iter()
+                    .find(|(s, _)| *s == src)
+                    .and_then(|(_, v)| *v)
+                    .map_or(String::new(), |v| format!("{v:.0}"))
+            };
+            let funded: Vec<&str> = sc
+                .programs
+                .iter()
+                .zip(&out.setup)
+                .filter(|(_, s)| matches!(s, ProgramSetup::Funded { .. }))
+                .map(|(p, _)| p.id.as_str())
+                .collect();
             let ice = sc
                 .facilities
                 .iter()
@@ -396,8 +488,8 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
                     .count()
             };
             let _ = writeln!(
-                out,
-                "{seed},{:?},{:.0},{:.0},{:.0},{:.0},{:.0},{:.4},{},{},{},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{},{}",
+                csv_text,
+                "{seed},{:?},{:.0},{:.0},{:.0},{:.0},{:.0},{:.4},{},{},{},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{},{},{},{:.0},{},{},{},{},{},{}",
                 plan.status,
                 plan.objective,
                 sc.launch_usd_per_kg[0],
@@ -412,14 +504,30 @@ fn sweep(w: &World, draws: u64, jobs: usize, csv: Option<PathBuf>, opts: &Opts) 
                 c.supply[1],
                 c.supply[2],
                 c.supply[3],
-                c.opening_equipment[1],
-                c.opening_equipment[2],
-                c.opening_equipment[3],
+                c.opening_musd[1],
+                c.opening_musd[2],
+                c.opening_musd[3],
                 c.path_label(),
                 c.opening_label(),
+                out.solves,
+                plan.spend.iter().flatten().sum::<f64>(),
+                funded.join(";"),
+                out.earth_only.map_or(String::new(), |v| format!("{v:.0}")),
+                out.drops
+                    .iter()
+                    .map(|&(j, v)| format!(
+                        "{}={}",
+                        sc.programs[j].id,
+                        v.map_or("-".into(), |v| format!("{v:.0}"))
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+                alone(Source::Moon),
+                alone(Source::Mars),
+                alone(Source::Asteroids),
             );
         }
-        std::fs::write(&path, out)?;
+        std::fs::write(&path, csv_text)?;
         println!("\nwrote {}", path.display());
     }
     Ok(())

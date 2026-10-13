@@ -1,6 +1,6 @@
 //! Which development path a plan follows.
 
-use crate::model::{Commodity, Plan};
+use crate::model::{Commodity, MUSD_PER_USD_T, Plan};
 use crate::params::Scenario;
 use orbit::ephem::Ephemeris;
 use orbit::network::Network;
@@ -42,10 +42,11 @@ pub struct Classification {
     /// In-space sources supplying ≥ PATH_SHARE of in-space propellant,
     /// largest first; empty for an Earth-only plan.
     pub path: Vec<Source>,
-    /// Equipment installed over the opening years, t, by source.
-    pub opening_equipment: [f64; 4],
-    /// In-space sources receiving ≥ PATH_SHARE of the equipment installed
-    /// in the opening years, largest first.
+    /// Capital committed over the opening years, $M, by source: program
+    /// spending and equipment installed (at its price at LEO).
+    pub opening_musd: [f64; 4],
+    /// In-space sources receiving ≥ PATH_SHARE of the capital committed in
+    /// the opening years, largest first.
     pub opening: Vec<Source>,
 }
 
@@ -77,8 +78,30 @@ pub fn source_of(eph: &Ephemeris, net: &Network, sc: &Scenario, facility: usize)
     }
 }
 
+/// The programs that plants at `source` need. Panics if that would leave a
+/// plant elsewhere buildable.
+pub fn programs_of(eph: &Ephemeris, net: &Network, sc: &Scenario, source: Source) -> Vec<bool> {
+    let at_source: Vec<bool> = (0..sc.facilities.len())
+        .map(|k| source_of(eph, net, sc, k) == source)
+        .collect();
+    let mut allowed = vec![false; sc.programs.len()];
+    for (f, _) in sc.facilities.iter().zip(&at_source).filter(|(_, at)| **at) {
+        for &j in &f.programs {
+            allowed[j] = true;
+        }
+    }
+    for (f, _) in sc.facilities.iter().zip(&at_source).filter(|(_, at)| !**at) {
+        assert!(
+            f.programs.iter().any(|&j| !allowed[j]),
+            "{} is buildable with only {source}'s programs",
+            f.id
+        );
+    }
+    allowed
+}
+
 /// Classifies `plan` by its propellant supply over the first
-/// `path_years`, and the equipment it installs over the first
+/// `path_years`, and the capital it commits over the first
 /// `opening_years`.
 pub fn classify(
     eph: &Ephemeris,
@@ -98,12 +121,43 @@ pub fn classify(
         .iter()
         .map(|c| plan.bought[c][..path_end].iter().sum::<f64>())
         .sum();
-    let mut opening_equipment = [0.0; 4];
+    let sources: Vec<usize> = (0..sc.facilities.len())
+        .map(|k| source_of(eph, net, sc, k) as usize)
+        .collect();
+    let mut opening_musd = [0.0; 4];
     for (k, f) in sc.facilities.iter().enumerate() {
-        let src = source_of(eph, net, sc, k) as usize;
         let propellant = f.output.lox + f.output.ch4;
-        supply[src] += plan.capacity[k][..path_end].iter().sum::<f64>() * dt * propellant;
-        opening_equipment[src] += plan.installed[k][..opening_end].iter().sum::<f64>();
+        supply[sources[k]] += plan.capacity[k][..path_end].iter().sum::<f64>() * dt * propellant;
+        opening_musd[sources[k]] += plan.installed[k][..opening_end]
+            .iter()
+            .enumerate()
+            .map(|(p, x)| x * (sc.equipment_usd_per_kg + sc.launch_usd_per_kg[p]) * MUSD_PER_USD_T)
+            .sum::<f64>();
+    }
+    // A program's spending goes to the sources of its plants, by the
+    // equipment each installs over the plan (equally if none).
+    for (j, spend) in plan.spend.iter().enumerate() {
+        let early: f64 = spend[..opening_end].iter().sum();
+        if early <= 0.0 {
+            continue;
+        }
+        let mut weight = [0.0; 4];
+        let mut count = [0.0; 4];
+        for (k, f) in sc.facilities.iter().enumerate() {
+            if f.programs.contains(&j) {
+                weight[sources[k]] += plan.installed[k].iter().sum::<f64>();
+                count[sources[k]] += 1.0;
+            }
+        }
+        let w = if weight.iter().sum::<f64>() > 0.0 {
+            weight
+        } else {
+            count
+        };
+        let total: f64 = w.iter().sum();
+        for src in 0..4 {
+            opening_musd[src] += early * w[src] / total;
+        }
     }
     let in_space: f64 = supply[1..].iter().sum();
     let total = in_space + supply[0];
@@ -112,10 +166,10 @@ pub fn classify(
     } else {
         Vec::new()
     };
-    let opening = leading(&opening_equipment);
+    let opening = leading(&opening_musd);
     Classification {
         supply,
-        opening_equipment,
+        opening_musd,
         path,
         opening,
     }

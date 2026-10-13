@@ -34,8 +34,10 @@ Units are km/s for Δv and days for time; dates are `YYYY-MM-DD` (TDB).
 ```sh
 cargo run --release -p plan -- solve                 # central values of every parameter
 cargo run --release -p plan -- solve --seed 7        # one random draw
+cargo run --release -p plan -- solve --free          # no program costs or lead times
 cargo run --release -p plan -- sweep --draws 100 --csv sweep.csv
 ```
 
-A quarterly solve takes ~30 s; a sweep runs 12 solves at a time
-(`--jobs`), several minutes each.
+Choosing which programs to fund takes ~10 LP solves of ~9 s each at the
+default six-month steps (`--months`); a sweep runs 12 draws at a time
+(`--jobs`).

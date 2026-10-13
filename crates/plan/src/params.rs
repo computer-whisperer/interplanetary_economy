@@ -103,6 +103,7 @@ pub struct EconomyFile {
     facility: Vec<FacilityRow>,
     asteroid_class: Vec<AsteroidClassRow>,
     asteroid_plant: Vec<AsteroidPlantRow>,
+    technology: Vec<TechnologyRow>,
     demand: Vec<DemandRow>,
 }
 
@@ -189,6 +190,10 @@ struct FacilityRow {
     #[serde(default = "certain")]
     present: f64,
     build_months: f64,
+    /// The `technology` program the plant needs.
+    technology: String,
+    /// The survey of the deposit the plant needs, if any.
+    survey: Option<ProgramRow>,
 }
 
 fn certain() -> f64 {
@@ -217,6 +222,26 @@ struct AsteroidPlantRow {
     /// Fraction of the body's mass that can be mined.
     minable_fraction: f64,
     build_months: f64,
+    technology: String,
+    /// The survey of each body, before its plant.
+    survey: ProgramRow,
+}
+
+/// A fixed cost paid before a plant: spent at no more than `cost_musd /
+/// years` per year, after which the plant may be installed.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProgramRow {
+    cost_musd: Dist,
+    years: Dist,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TechnologyRow {
+    id: String,
+    cost_musd: Dist,
+    years: Dist,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -281,6 +306,29 @@ pub struct FacilityOption {
     pub build_periods: usize,
     /// Cumulative output the deposit can yield, t.
     pub reserve: Option<f64>,
+    /// Indices into [`Scenario::programs`] that must be paid before the
+    /// plant is installed.
+    pub programs: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgramKind {
+    /// Develops a plant technology.
+    Technology,
+    /// Characterizes one deposit.
+    Survey,
+}
+
+/// A fixed cost that must be paid before some plants are installed.
+#[derive(Clone, Debug)]
+pub struct Program {
+    pub id: String,
+    pub kind: ProgramKind,
+    /// $M. A survey's is its mission cost divided by the prior probability
+    /// that the deposit has the resource: the expected cost of finding one.
+    pub cost_musd: f64,
+    /// Spending is at most `cost_musd / lead_periods` per period.
+    pub lead_periods: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -325,8 +373,16 @@ pub struct Scenario {
     pub surfaces: Vec<NodeId>,
     pub ships: Vec<ShipClass>,
     pub facilities: Vec<FacilityOption>,
+    pub programs: Vec<Program>,
     pub demand: Vec<DemandCategory>,
     pub asteroids: Vec<AsteroidDraw>,
+}
+
+impl Scenario {
+    /// Discount factor of period `p`, at its middle.
+    pub fn discount(&self, p: usize) -> f64 {
+        (1.0 + self.discount_rate).powf(-self.cal.years_at(p))
+    }
 }
 
 impl EconomyFile {
@@ -379,6 +435,10 @@ impl EconomyFile {
         let alpha = |e: &EquipmentRow, grade: f64, draw: &mut Draw| {
             e.plant.sample(draw) + e.ore.sample(draw) / grade
         };
+        // Each plant's technology and survey, sampled after everything else
+        // so that adding programs left the other parameters of each seed as
+        // they were.
+        let mut needs: Vec<(&str, Option<(&ProgramRow, f64)>)> = Vec::new();
         let mut facilities = Vec::new();
         for f in &self.facility {
             let present = draw.chance(f.present);
@@ -393,7 +453,9 @@ impl EconomyFile {
                     grade,
                     build_periods: build_periods(f.build_months),
                     reserve: None,
+                    programs: Vec::new(),
                 });
+                needs.push((&f.technology, f.survey.as_ref().map(|s| (s, f.present))));
             }
         }
 
@@ -446,7 +508,9 @@ impl EconomyFile {
                     grade,
                     build_periods: build_periods(p.build_months),
                     reserve: Some(mass_t * p.minable_fraction * grade),
+                    programs: Vec::new(),
                 });
+                needs.push((&p.technology, Some((&p.survey, weights[k]))));
                 p.id.clone()
             });
             asteroids.push(AsteroidDraw {
@@ -483,15 +547,47 @@ impl EconomyFile {
             .collect();
 
         let price_factor = self.metals.price_factor.sample(draw);
+        let equipment_usd_per_kg = self.earth.equipment_usd_per_kg.sample(draw);
+        let budget_musd_per_year = self.budget.musd_per_year.sample(draw);
+
+        let lead_periods =
+            |years: f64| (years / cal.period_years() - 1e-9).ceil().max(1.0) as usize;
+        let mut programs: Vec<Program> = self
+            .technology
+            .iter()
+            .map(|t| Program {
+                id: t.id.clone(),
+                kind: ProgramKind::Technology,
+                cost_musd: t.cost_musd.sample(draw),
+                lead_periods: lead_periods(t.years.sample(draw)),
+            })
+            .collect();
+        for (f, (technology, survey)) in facilities.iter_mut().zip(needs) {
+            let tech = programs
+                .iter()
+                .position(|p| p.kind == ProgramKind::Technology && p.id == technology)
+                .unwrap_or_else(|| panic!("economy.toml: unknown technology {technology:?}"));
+            f.programs.push(tech);
+            if let Some((row, p)) = survey {
+                f.programs.push(programs.len());
+                programs.push(Program {
+                    id: format!("survey:{}", f.id),
+                    kind: ProgramKind::Survey,
+                    cost_musd: row.cost_musd.sample(draw) / p,
+                    lead_periods: lead_periods(row.years.sample(draw)),
+                });
+            }
+        }
+
         Scenario {
             cal,
             discount_rate: self.discount_rate,
             ve: self.propellant.isp_s * G0,
             lox_share: self.propellant.mixture / (1.0 + self.propellant.mixture),
             launch_usd_per_kg,
-            equipment_usd_per_kg: self.earth.equipment_usd_per_kg.sample(draw),
+            equipment_usd_per_kg,
             propellant_usd_per_kg: self.earth.propellant_usd_per_kg,
-            budget_musd_per_year: self.budget.musd_per_year.sample(draw),
+            budget_musd_per_year,
             metal_steps: self
                 .metals
                 .steps
@@ -501,6 +597,7 @@ impl EconomyFile {
             surfaces: self.surfaces.iter().map(|n| node(n)).collect(),
             ships,
             facilities,
+            programs,
             demand,
             asteroids,
         }

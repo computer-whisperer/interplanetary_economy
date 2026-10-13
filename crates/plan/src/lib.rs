@@ -7,3 +7,6 @@ pub mod classify;
 pub mod edges;
 pub mod model;
 pub mod params;
+pub mod search;
+#[cfg(test)]
+mod testing;
