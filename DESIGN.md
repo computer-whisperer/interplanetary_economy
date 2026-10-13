@@ -46,7 +46,10 @@ Beyond the MVP, the full arc includes:
 5. **Progression.** Does gaining institutional powers work as a replacement
    for a tech tree?
 
-Q2 is answered headless by an optimizer before any UI exists (M2). Q4 is
+Q2 is answered headless by an optimizer before any UI exists (M2). M2's
+answer: under any one set of rules one path dominates, but which one the
+rules decide (methalox only: asteroids; both propellants: the Moon), and
+later decisions differ by world; see M2.md, Verdict. Q4 is
 answered by A/B comparison: the game is complete with direct building alone,
 and contracts are a separable layer (M4).
 
@@ -359,15 +362,11 @@ Minimal and information-dense:
     and standing routes.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.
   - Deterministic and seeded, with scenario scripts as tests.
-- **M2, kill-test optimizer.** Two sweeps done (2026-10-13), see M2.md.
-  Without fixed costs, asteroid-led plans win 84% of draws. With
-  technology and survey programs (sourced costs, lead times), asteroids are
-  still the best source in ~70% of draws and the Moon in ~20–25%, though
-  early decisions now differ across draws. The gate's path half still
-  fails. The methalox-only rule decided the winner, so the design now has
-  methalox and hydrolox; with both, the Moon leads in 88% of draws (90%
-  with finite, tiered lunar ice deposits), so the gate fails the other
-  way.
+- **M2, kill-test optimizer.** Done (2026-10-13), see M2.md. The gate
+  fails as written and passes in intent. With methalox and hydrolox and
+  finite lunar ice, the Moon leads 90% of draws; with methalox only,
+  asteroids led ~75%. The rules, not the physics, decide the dominant
+  path, and the decisions after the first move differ by world.
   - Model: a time-expanded network with six-month steps (quarterly and
     monthly steps gave the same plans at 3× and 20× the solve time). Facility modules and
     ship trips are decision variables (the LP relaxation is probably enough to
@@ -391,7 +390,7 @@ Minimal and information-dense:
   so they also make EML1 more important.
 - **Cyclers.** They only matter once there are real crew flows.
 - Tethers, mass drivers, ship design.
-- A second propellant, boil-off, local production of Supplies or Equipment.
+- Local production of Supplies or Equipment.
 - Settlements and population growth.
 - Venus, Ceres and the outer system.
 - Terraforming, multiple Earth factions.
@@ -399,6 +398,11 @@ Minimal and information-dense:
 ## Open questions and tuning knobs
 
 - **Launch-price curve.** The default above is a guess; M2 sweeps it.
+- **Opening variety.** Under the current settings the Moon is the best
+  first move in ~90% of worlds. Settings that move it (M2.md, Verdict):
+  the probability that minable lunar ice exists (now certain), the
+  methalox/hydrolox demand mix and deep-space mandates, hydrogen boil-off,
+  and asteroid water as a source of hydrolox.
 - **Gap between firm efficiency and the Authority's cost of capital.** This
   decides whether contracting is a real choice.
 - **Clawback.** What fraction of net revenue Earth offsets against the
