@@ -32,6 +32,7 @@ use orbit::transfer::{Grid, Porkchop, default_tof_range};
 use orbit::windows::find_windows;
 use rayon::prelude::*;
 use std::fmt::Write as _;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -51,6 +52,12 @@ const PIECE_MARGIN_DAYS: f64 = 0.5;
 
 /// Designs a standing route re-plans from.
 const HISTORY: usize = 8;
+
+/// A re-plan this many times the median of the route's recent departures
+/// is checked against a cold plan: it catches a jump to another family
+/// (2× seen), while costs between station orbits vary ±25% with their
+/// phasing.
+const GUARD: f64 = 1.25;
 
 /// Cold plans per leg timed alone.
 const TIMED: usize = 6;
@@ -112,7 +119,8 @@ struct LegSpec {
     name: String,
     from: Place,
     to: Place,
-    days: f64,
+    /// Durations offered, days: the cheapest of them flies.
+    days: Vec<f64>,
     published: Option<Published>,
 }
 
@@ -126,6 +134,10 @@ impl LegSpec {
             (Place::Station(s), _) | (_, Place::Station(s)) => Some(s),
             _ => None,
         }
+    }
+
+    fn uses(&self, station: usize) -> bool {
+        [self.from, self.to].contains(&Place::Station(station))
     }
 }
 
@@ -154,7 +166,7 @@ fn core_legs() -> Vec<LegSpec> {
             name: name.to_string(),
             from,
             to,
-            days,
+            days: vec![days],
             published,
         };
     let mut legs = vec![
@@ -219,16 +231,23 @@ fn core_legs() -> Vec<LegSpec> {
         leg("l1-llo", l1, Place::Llo, 3.0, None),
         leg("llo-l1", Place::Llo, l1, 3.0, None),
     ];
+    // Between stations, the cheapest of 6 to 14 days: the two orbits'
+    // relative phase repeats only every 12-70 days, more than the window
+    // (a revolution of the first), so a fixed duration finds some dates
+    // badly phased.
     for (a, &(an, _, _)) in STATIONS.iter().enumerate() {
         for (b, &(bn, _, _)) in STATIONS.iter().enumerate() {
             if a != b {
-                legs.push(leg(
-                    &format!("{an}-{bn}"),
-                    Place::Station(a),
-                    Place::Station(b),
-                    10.0,
-                    None,
-                ));
+                legs.push(LegSpec {
+                    days: vec![6.0, 8.0, 10.0, 12.0, 14.0],
+                    ..leg(
+                        &format!("{an}-{bn}"),
+                        Place::Station(a),
+                        Place::Station(b),
+                        0.0,
+                        None,
+                    )
+                });
             }
         }
     }
@@ -311,15 +330,33 @@ impl Sweep {
         }
     }
 
-    /// The leg's duration, s: Hohmann's between low Mars orbit and Phobos.
-    fn duration(&self, leg: &LegSpec) -> f64 {
+    /// The leg's durations, s: Hohmann's between low Mars orbit and Phobos.
+    fn durations(&self, leg: &LegSpec) -> Vec<f64> {
         if leg.mars() {
             let gm = self.eph.body(self.mars).gm;
             let a = (self.eph.body(self.mars).radius + 300.0 + 9_376.0) / 2.0;
-            std::f64::consts::PI * (a.powi(3) / gm).sqrt()
+            vec![std::f64::consts::PI * (a.powi(3) / gm).sqrt()]
         } else {
-            leg.days * DAY
+            leg.days.iter().map(|d| d * DAY).collect()
         }
+    }
+
+    /// The cheapest design of `leg` leaving within `window` (s after
+    /// `date`), over its durations.
+    fn plan(&self, leg: &LegSpec, date: Epoch, from: End, to: End, window: f64) -> Option<Design> {
+        let (field, light) = self.fields(leg);
+        legs::plan(
+            field,
+            light,
+            date,
+            from,
+            to,
+            (0.0, window),
+            &self.durations(leg),
+        )
+        .into_iter()
+        .flatten()
+        .min_by(|a, b| a.dv.total_cmp(&b.dv))
     }
 
     /// A leg's window at `date` (s: a revolution of the station it leaves,
@@ -329,7 +366,8 @@ impl Sweep {
     fn setup(&self, leg: &LegSpec, date: Epoch) -> Option<(f64, End<'_>, End<'_>)> {
         // A piece covering the longest revolution (15 days) and the leg
         // after it.
-        let until = date.plus_days(15.0 + self.duration(leg) / DAY);
+        let longest = self.durations(leg).into_iter().fold(0.0, f64::max);
+        let until = date.plus_days(15.0 + longest / DAY);
         let piece = |place: Place| match place {
             Place::Station(s) => self.pieces[s].covering(date, until).map(Some),
             _ => Some(None),
@@ -353,20 +391,16 @@ impl Sweep {
 
     fn cold(&self, leg: &LegSpec, date: Epoch) -> Option<(f64, Option<Design>, f64)> {
         let (window, from, to) = self.setup(leg, date)?;
-        let (field, light) = self.fields(leg);
         let clock = Instant::now();
-        let d = legs::plan(
-            field,
-            light,
-            date,
-            from,
-            to,
-            (0.0, window),
-            &[self.duration(leg)],
-        )[0]
-        .clone();
+        let d = self.plan(leg, date, from, to, window);
         Some((window, d, clock.elapsed().as_secs_f64()))
     }
+}
+
+/// `f`'s result, or `None` if it panicked: a bug in one design is a row
+/// of the sweep, not the end of it (its message still goes to stderr).
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    catch_unwind(AssertUnwindSafe(f)).ok()
 }
 
 fn counted(d: &Design, counted: Counted) -> f64 {
@@ -407,7 +441,7 @@ pub fn run(opts: &Options, out: &Path) -> Result<()> {
     }
     // References for the stations any chosen leg (or the upkeep) uses.
     let needed: Vec<bool> = (0..STATIONS.len())
-        .map(|s| wants("upkeep") || legs.iter().any(|l| l.station() == Some(s)))
+        .map(|s| wants("upkeep") || legs.iter().any(|l| l.uses(s)))
         .collect();
     let first = opts.start.plus_days(-31.0);
     let count = ((opts.end.0 - first.0) / PIECE_DAYS).ceil() as usize;
@@ -512,6 +546,7 @@ struct ColdRow {
     date: Epoch,
     /// None without a reference piece.
     result: Option<(f64, Option<Design>, f64)>,
+    panicked: bool,
 }
 
 fn cold(
@@ -532,7 +567,9 @@ fn cold(
     let rows: Vec<ColdRow> = jobs
         .par_iter()
         .map(|&(leg, date)| {
-            let result = sweep.cold(&legs[leg], date);
+            let outcome = guarded(|| sweep.cold(&legs[leg], date));
+            let panicked = outcome.is_none();
+            let result = outcome.unwrap_or(Some((0.0, None, 0.0)));
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if n.is_multiple_of(500) {
                 eprintln!(
@@ -541,7 +578,12 @@ fn cold(
                     clock.elapsed().as_secs_f64()
                 );
             }
-            ColdRow { leg, date, result }
+            ColdRow {
+                leg,
+                date,
+                result,
+                panicked,
+            }
         })
         .collect();
     // Design times from plans run one at a time (the sweep's own run many
@@ -556,7 +598,7 @@ fn cold(
                         ((k as f64 + 0.5) * span / TIMED as f64 / CADENCE_DAYS).floor()
                             * CADENCE_DAYS,
                     );
-                    sweep.cold(leg, date).map(|r| r.2)
+                    guarded(|| sweep.cold(leg, date)).flatten().map(|r| r.2)
                 })
                 .collect()
         })
@@ -588,10 +630,11 @@ fn cold(
                 }
                 None => writeln!(
                     csv,
-                    "{},{},{:.3},no,,,,,{s:.3},",
+                    "{},{},{:.3},{},,,,,{s:.3},",
                     leg.name,
                     r.date,
-                    window / DAY
+                    window / DAY,
+                    if r.panicked { "panic" } else { "no" }
                 )?,
             },
         }
@@ -684,7 +727,8 @@ fn cold(
 
 struct RouteRow {
     date: Epoch,
-    /// "replan", "cold", "failed" or "no reference".
+    /// "replan", "checked" (re-planned, cheaper than a cold plan made because
+    /// it cost more than usual), "cold", "failed" or "no reference".
     how: &'static str,
     design: Option<Design>,
     replan_s: f64,
@@ -692,8 +736,7 @@ struct RouteRow {
 }
 
 fn route(sweep: &Sweep, leg: &LegSpec, opts: &Options) -> Vec<RouteRow> {
-    let (field, light) = sweep.fields(leg);
-    let duration = sweep.duration(leg);
+    let (field, _) = sweep.fields(leg);
     let mut history: Vec<Design> = Vec::new();
     let mut rows = Vec::new();
     let mut date = opts.start;
@@ -720,18 +763,28 @@ fn route(sweep: &Sweep, leg: &LegSpec, opts: &Options) -> Vec<RouteRow> {
         let replanned = if history.is_empty() {
             None
         } else {
-            legs::replan(field, from, to, &history, date, (0.0, window)).ok()
+            guarded(|| legs::replan(field, from, to, &history, date, (0.0, window)).ok()).flatten()
         };
         // Time spent re-planning, successful or not (none at the start).
         let replan_s = clock.elapsed().as_secs_f64();
+        // A re-plan keeps its seed's family of paths, which can be a worse
+        // one (seen after a reference piece's boundary: NRHO to low lunar
+        // orbit at twice its usual Δv, kept by every re-plan after). One
+        // more than `GUARD` times the median of the route's recent
+        // departures is checked against a cold plan, and the cheaper flies.
+        let usual = quantile(&sorted(history.iter().map(|d| d.dv).collect()), 0.5);
         let (how, design, cold_s) = match replanned {
-            Some(d) => ("replan", Some(d), 0.0),
-            None => {
+            Some(d) if d.dv <= GUARD * usual => ("replan", Some(d), 0.0),
+            warm => {
                 let clock = Instant::now();
-                let d =
-                    legs::plan(field, light, date, from, to, (0.0, window), &[duration])[0].clone();
+                let cold = guarded(|| sweep.plan(leg, date, from, to, window)).flatten();
                 let s = clock.elapsed().as_secs_f64();
-                (if d.is_some() { "cold" } else { "failed" }, d, s)
+                match (warm, cold) {
+                    (Some(w), Some(c)) if w.dv <= c.dv => ("checked", Some(w), s),
+                    (Some(w), None) => ("checked", Some(w), s),
+                    (_, Some(c)) => ("cold", Some(c), s),
+                    (None, None) => ("failed", None, s),
+                }
             }
         };
         if let Some(d) = &design {
@@ -783,8 +836,8 @@ fn routes(
     )?;
     writeln!(
         report,
-        "{:<14} {:>5} {:>8} {:>6} {:>7}  {:>8} {:>8}  {:>7} {:>7}",
-        "leg", "n", "replan%", "cold%", "failed", "dv50", "cold50", "r50", "r95"
+        "{:<14} {:>5} {:>8} {:>8} {:>6} {:>7}  {:>8} {:>8}  {:>7} {:>7}",
+        "leg", "n", "replan%", "checked%", "cold%", "failed", "dv50", "cold50", "r50", "r95"
     )?;
     let mut every_replan = Vec::new();
     for (leg, rows) in legs.iter().zip(&all) {
@@ -829,10 +882,11 @@ fn routes(
         every_replan.extend(replan_times.iter().copied());
         writeln!(
             report,
-            "{:<14} {:>5} {:>7.1}% {:>5.1}% {:>7}  {:>8.0} {:>8.0}  {:>7.3} {:>7.3}",
+            "{:<14} {:>5} {:>7.1}% {:>7.1}% {:>5.1}% {:>7}  {:>8.0} {:>8.0}  {:>7.3} {:>7.3}",
             leg.name,
             tried.len(),
             share("replan"),
+            share("checked"),
             share("cold"),
             tried.iter().filter(|r| r.how == "failed").count(),
             quantile(&dv_of("replan"), 0.5),
@@ -862,9 +916,9 @@ fn upkeeps(sweep: &Sweep, out: &Path, report: &mut String) -> Result<()> {
     let rows: Vec<(usize, usize, Option<f64>)> = jobs
         .par_iter()
         .map(|&(s, k)| {
-            let u = sweep.pieces[s].refs[k]
-                .as_ref()
-                .and_then(|r| upkeep(&sweep.cislunar, r, Errors::TYPICAL, UPKEEP_RUNS));
+            let u = sweep.pieces[s].refs[k].as_ref().and_then(|r| {
+                guarded(|| upkeep(&sweep.cislunar, r, Errors::TYPICAL, UPKEEP_RUNS)).flatten()
+            });
             (s, k, u.map(|u| u.dv_per_year_kms * 1e3))
         })
         .collect();
@@ -999,8 +1053,10 @@ fn between(sweep: &Sweep, opts: &Options, out: &Path, report: &mut String) -> Re
                 .into_iter()
                 .map(|(leg, to, patched)| {
                     let c = Instant::now();
-                    let d =
-                        interplanetary::plan(&global, &locals, End::Low(leo), to, *depart, arrive);
+                    let d = guarded(|| {
+                        interplanetary::plan(&global, &locals, End::Low(leo), to, *depart, arrive)
+                    })
+                    .flatten();
                     let s = c.elapsed().as_secs_f64();
                     let p = patched.map_or(String::new(), |p| format!("{:.1}", p * 1e3));
                     match d {

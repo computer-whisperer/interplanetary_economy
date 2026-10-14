@@ -605,9 +605,9 @@ pub fn closest(
 ) -> Option<(f64, [f64; 6], f64)> {
     let ode = field.ode(epoch);
     let offset = (epoch.0 - target.epoch.0) * SECONDS_PER_DAY;
-    let (_, last) = target.path.span();
+    let (first, last) = target.path.span();
     let end = (t + span).min(last - offset);
-    if end <= t {
+    if end <= t || t + offset < first {
         return None;
     }
     let gap = |t: f64, s: &[f64; 6]| {
@@ -1380,15 +1380,16 @@ fn redesign(
     };
     // A station is only quasi-periodic: a revolution later it is not quite
     // where the carried departure is. The departure starts on it, with the
-    // previous burn turned with the line the path was carried with.
+    // previous departure burn turned with the line the path was carried
+    // with. (The previous design may be on another piece of the station's
+    // reference, which need not reach back to it.)
     if let End::Orbit(r) = from
         && r.center == field.center()
     {
         let when = |path: &Path| path.epoch.plus_days(path.times[0] / SECONDS_PER_DAY);
         let (t0, t1) = (when(&previous.path), when(&seed));
-        let (was, now) = (r.state(t0), r.state(t1));
-        let s = previous.path.states[0];
-        let mut burn = DVec3::new(s[3] - was[3], s[4] - was[4], s[5] - was[5]);
+        let now = r.state(t1);
+        let mut burn = previous.burns[0].dv;
         if let Some((primary, secondary)) = pair {
             let (f0, f1) = (
                 EarthMoonFrame::at(eph, primary, secondary, t0),
