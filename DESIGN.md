@@ -1,6 +1,7 @@
 # Interplanetary Economy — MVP Design Sketch
 
-Status: draft, 2026-10-12; n-body sandbox 2026-10-13. Working title TBD.
+Status: draft, 2026-10-12; n-body sandbox and the 3D map view 2026-10-13.
+Working title TBD.
 
 ## Vision (full game, for context)
 
@@ -328,11 +329,22 @@ strictly dominated, the layer gets cut or reworked.
 
 ## UI (M3)
 
-Minimal and information-dense:
+The **map view** is the center interface: the real solar system in 3D at
+true scale, after KSP's map view, as realistic as we can afford, on HDR
+displays. It has a time scrubber, and frames that follow the camera's
+focus or turn with two bodies (Earth–Moon, where Lagrange-point orbits are
+closed loops, or Sun–planet). M1c builds it, with its own wgpu renderer
+and damascene for the panels (M1c.md).
 
-- **System map:** 2D heliocentric with real positions and a time scrubber,
-  plus a cislunar inset drawn in the Earth–Moon rotating frame, where
-  Lagrange-point orbits are closed loops.
+Decided 2026-10-13, replacing a 2D heliocentric map with a cislunar inset
+in the rotating frame. The 2D plan was chosen before the n-body sandbox
+existed, when the map only had to show patched conics, and it was
+cheaper. In the sandbox the interesting things are 3D (halos, the
+near-polar NRHO, lunar flybys, departure planes), and the map is where
+the player spends the game. Flying low over terrain (KSP's flight view)
+is not planned.
+
+Around the map, minimal and information-dense:
 - **Window calendar:** a Gantt chart of upcoming windows per route, shaded by
   Δv.
 - **Leg options panel** when planning: the Δv-versus-time frontier (a
@@ -389,6 +401,15 @@ Minimal and information-dense:
     10% of published values, and re-planning a standing route's departure
     takes ≤ 0.1 s. Fail: fall back to tables computed once from the
     physics, without per-trip flights in the sandbox.
+- **M1c, creative sandbox and the map view.** See M1c.md. Mission plans
+  loaded into the sandbox, flown by the autopilot and played back in the
+  3D map view, with no economy. Before M1b, so that the view the game
+  centers on is built and stress-tested before the progression mechanics.
+  - **Gate.** The legs M1a checked against published values fly and
+    draw, and halo orbits close in the Earth–Moon frame. Zooming from 5 au
+    to a low lunar orbit shows no jitter. A ship on every Mars window
+    2040–2075 plays at a month per second at the display's refresh rate.
+    HDR outputs use their headroom.
 - **M1b, headless sim core** on the sandbox.
   - Places, commodities, facilities, ships, rocket-equation costing,
     missions and standing routes flown by the autopilot.
@@ -415,7 +436,7 @@ Minimal and information-dense:
   - **Gate.** Pass: no single path wins a large majority of plausible draws,
     and first-five-year decisions differ across draws. Fail: retune or rethink
     before building any UI.
-- **M3, playable UI** on the core.
+- **M3, playable UI** on the core, around M1c's map view.
 - **M4, contracts and firms;** A/B against direct-build-only.
 
 ## Deliberately out of the MVP
@@ -425,6 +446,8 @@ Minimal and information-dense:
   continuous guidance, which the flight rules can take.
 - **Cyclers.** They only matter once there are real crew flows.
 - Tethers, mass drivers, ship design.
+- Flying low over terrain (KSP's flight view). Ship models are later
+  flavor; on the map, ships are markers.
 - Local production of Supplies or Equipment.
 - Settlements and population growth.
 - Venus, Ceres and the outer system.
@@ -444,6 +467,9 @@ Minimal and information-dense:
   appropriation.
 - **Presenting the option space.** The sandbox can fly anything its
   physics allows; the MVP offers the autopilot's playbook options. How to
-  show more (natural pathways, frontiers, a burn editor) is open.
-- **Stack.** Assumed: a headless Rust core through M2. The UI technology
-  gets decided at M3.
+  show more (natural pathways, frontiers, a burn editor) is open; M1c's
+  creative mode is where a burn editor would go.
+- **Stack.** Decided 2026-10-13 (M1c.md, Engine): a Rust core; the map
+  view on our own wgpu renderer (wgpu over ash and vulkano: the reusable
+  code from earlier projects is wgpu, and it opens HDR swapchains);
+  damascene for panels and text.

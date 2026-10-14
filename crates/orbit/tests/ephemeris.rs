@@ -241,7 +241,7 @@ fn moon_pole_matches_iau() {
 
 /// Phobos and Deimos, precessing ellipses fitted to Horizons, against
 /// Horizons vectors off the fit's daily grid (Mars's center; DE440's "Mars"
-/// is its system's barycenter, 0.2 m away). Measured 2026-10-14: Phobos
+/// is its system's barycenter, 0.2 m away). Measured 2026-10-13: Phobos
 /// within 105 km and 24 m/s, Deimos within 124 km and 7 m/s, over
 /// 2025–2080 (the fit's own residuals reach 107 and 133 km).
 #[test]

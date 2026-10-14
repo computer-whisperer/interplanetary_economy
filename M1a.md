@@ -1,6 +1,7 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-14: steps 1–8 done; step 9 started.
+Status, 2026-10-13: steps 1–8 done; step 9 started, its open part
+deferred; steps 10 and 11 next, then M1c (M1c.md).
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -201,6 +202,12 @@ Status, 2026-10-14: steps 1–8 done; step 9 started.
   need more: a second lunar flyby to turn the asymptote, multi-flyby
   sequences as in McElrath et al., or a leg defined by excess speed alone.
   Ballistic lunar transfers not started.
+  Deferred (2026-10-13): the rest of step 9 waits until the economy shows
+  it cares. Until then, steps 10 and 11 define escapes from station
+  orbits, and captures into them, by excess speed alone, in any
+  direction. That is a stand-in: it assumes a departure can be phased to
+  suit the planetary window, which overstates what is reachable. Step
+  11's M2 rerun shows how much those legs move the economy.
 
 ## Why
 
@@ -443,7 +450,7 @@ that the autopilot exports (step 11).
 11. Route graph export; `crates/plan` reads it; rerun M2's central world
     to see where the hub goes.
 
-### Step 9 plan (2026-10-14)
+### Step 9 plan (2026-10-13)
 
 1. Escapes from station orbits at a given excess velocity, and captures
    into them: fans from the orbit (backward for captures) followed until

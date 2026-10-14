@@ -342,7 +342,7 @@ fn nrho_to_leo_by_aerocapture() {
 
 /// Escape from the L2 halo with a small excess velocity (0.3 km/s along
 /// Earth's heliocentric velocity), within 40 days: a burn from the orbit
-/// and the field's own pull out. (Measured 2026-10-14: 255 m/s.) Larger
+/// and the field's own pull out. (Measured 2026-10-13: 255 m/s.) Larger
 /// excess velocities in a given direction are open: see M1a.md, step 9.
 #[test]
 fn escape_from_l2_halo() {

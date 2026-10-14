@@ -1,8 +1,9 @@
 # Interplanetary economy
 
 A game about developing the solar system's economy under real orbital
-mechanics. Design: [DESIGN.md](DESIGN.md). Next milestone: the n-body
-sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
+mechanics. Design: [DESIGN.md](DESIGN.md). Current milestone: the n-body
+sandbox and autopilot ([M1a.md](M1a.md)); next, the creative sandbox and
+the 3D map view ([M1c.md](M1c.md)); done: the M2 kill-test
 ([M2.md](M2.md)).
 
 ## Layout
