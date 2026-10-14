@@ -1,7 +1,9 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–8 done; step 9 started, its open part
-deferred; steps 10 and 11 next, then M1c (M1c.md).
+Status, 2026-10-14: steps 1–8 done; step 9 started, its open part
+deferred; step 10 done: the gate passes for most legs and fails for legs
+between stations and two kinds of departures to other planets (below);
+step 11 next, then M1c (M1c.md).
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -208,6 +210,86 @@ deferred; steps 10 and 11 next, then M1c (M1c.md).
   direction. That is a stand-in: it assumes a departure can be phased to
   suit the planetary window, which overstates what is reachable. Step
   11's M2 rerun shows how much those legs move the economy.
+
+- Step 10: the gate sweep, `orbit gate` (`crates/orbit-cli/src/gate.rs`),
+  with three library pieces: `End::Hyperbola` (escape or capture by
+  excess speed alone, step 9's stand-in), `legs::replan` (a route's
+  earlier design moved to a later departure) and `interplanetary::plan`.
+  What ran, on 24 cores (2026-10-14):
+  - cold plans of the 50 cislunar and Mars-system legs at departures
+    every 60 days over 2040–2075: 11,440 plans in 2.6 h. Every 5 days,
+    as the gate asks, would take ~31 h;
+  - standing routes of the same legs through 2045 and 2065, a departure
+    each station revolution (or every 5 days): ~4,300 departures;
+  - upkeep of each station in 37 yearly pieces;
+  - LEO to low Mars orbit (burning, and by aerocapture) and to the 20
+    NEAs, every 5 days through each window: 8,616 plans in 67 min.
+
+  Against the gate:
+  1. **Convergence (99%).**
+     - The 38 legs other than between stations: 99.83% (15 failures in
+       8,800). Pass.
+     - Between stations: 88.5%, from 63% (L2 halo to L1 halo) to 100%
+       (DRO to NRHO). Fail. Two orbits' relative phase repeats every 12
+       days (the NRHO and a halo) to ~400 (the L2 halo and the DRO,
+       whose periods nearly match), and transfers of 6–14 days leaving
+       within one revolution cannot reach every phase. The published
+       transfers between these orbits take 40–97 days, for this reason.
+       Fixing it is playbook work: wider windows, or transfers over
+       several revolutions.
+     - Between planets: 96.9%, counting as failures six designs that
+       converged at ~110 km/s (~52 km/s burns at each end;
+       `interplanetary::plan` returns them as designs). Fail, in two
+       kinds of departure. Below 1 km/s of excess speed, 22% fail (53%
+       when also near 180°): the hyperbola lingers for weeks where the
+       Moon pulls hardest, and patched conics seed it badly. Within 30°
+       of a 180° transfer, 8% fail: the arc's plane is ill-defined, the
+       case broken-plane transfers exist for. The other 7,388 departures
+       failed 3 times. Converged designs sit at 0.999× patched conics
+       (median); all 8 above 1.1× are in these two kinds.
+  2. **Δv within 10% of published values**, share of dates: LEO to the
+     L1 halo 100%, to the NRHO 96%, NRHO to LEO 98%, LEO to low lunar
+     orbit 100%, the NRHO, L2 halo and DRO to low lunar orbit 95–100%.
+     LEO to the DRO 36%: median 308 m/s against Artemis I's 344, step
+     6's mismatch.
+  3. **Time.** Plans run in parallel share the cores, which inflates
+     their times.
+     - Re-planning: the median over all re-plans is 0.05–0.06 s,
+       measured in the sweep, where 50 routes shared the cores (six legs
+       run alone re-planned 1.1–3.8× faster). Pass overall. Per leg,
+       alone: 0.013 s for NRHO to low lunar orbit; 0.23–0.32 s for LEO to
+       the NRHO, the L2 halo to LEO, the NRHO to the L2 halo and DRO
+       escapes; 0.93 s for LEO to the DRO. Legs along long cislunar arcs
+       fail per leg.
+     - Re-plans succeed on 94.5% of departures for most legs, at the
+       cold plans' Δv (median ratio 1.001); the rest, including each
+       route's first, plan cold. Between stations 42%, and 6% of
+       departures fail outright; escapes from the DRO and the L2 halo
+       60%.
+     - Cold designs (timing passes from earlier runs): 0.07–5 s for most
+       legs; 5–32 s between stations, a fail. Between planets the sweep
+       ran plans in parallel, so their times are unmeasured; step 7 had
+       0.2–4 s for Mars.
+  4. **Upkeep.** Every station held its orbit through all 37 years. L1
+     halo 3.1–3.7 m/s per year, L2 halo 4.5–5.0, DRO 0.60–0.78: within
+     their ranges. NRHO median 2.3, range 0.8–5.4: 4 of 37 years above
+     the published 0.5–4.
+
+  Also measured: the cold planner sometimes lands in a costlier family
+  of paths. 1.5% of designs on most legs, 3.6% between stations, cost
+  more than 1.25× their leg's median, up to 3× (NRHO to low lunar orbit:
+  2,016 m/s against 697). Standing routes guard against it: a re-plan
+  above 1.25× the route's recent median is checked against a cold plan,
+  and the cheaper flies. Fixed on the way: a year of station-keeping
+  took hours once a policy lost the orbit (the ship flew on through the
+  Moon's point mass); a run now ends 500 km off, which already counted
+  as lost.
+
+  Left open: legs between stations; slow and near-180° departures to
+  other planets; `interplanetary::plan` accepting absurd designs; per-leg
+  re-planning time on long arcs; LEO to the DRO. Step 11 prices legs
+  from these sweeps, as tables; whether M1b flies ships per trip for the
+  legs that pass is decided before M1b.
 
 ## Why
 
@@ -474,8 +556,9 @@ across the span.
      (20; by excess speed alone, step 9's stand-in).
 
    The south pole is the low lunar orbit legs plus `surface`'s rules.
-   Durations are the published legs' (steps 6–8), or 10 days between
-   stations.
+   Durations are the published legs' (steps 6–8). Between stations a leg
+   takes the cheapest of 6, 8, 10, 12 and 14 days: at 10 days alone, too
+   many dates were badly phased.
 
    In the Mars system, low Mars orbit to and from Phobos (2).
 
@@ -511,13 +594,14 @@ across the span.
 5. **Two measurements.**
    - **Cold plans**, at departures every 5 days, each leaving within one
      revolution. They give the playbook's reliability, its design time,
-     and Δv against published values.
+     and Δv against published values. (Run every 60 days: every 5 would
+     take ~31 h. Design times come from a pass of plans run alone.)
    - **Standing routes**, one per leg, with a departure each revolution
-     of the station (every 5 days between low orbits). The windows tile,
-     so each departure is a new ship. Each is re-planned from the route's
-     recent designs, and planned cold when that fails. They give the
-     re-planning time, how often it succeeds, and its Δv against the cold
-     plans.
+     of the station (every 5 days between low orbits), through sample
+     years (2045 and 2065). The windows tile, so each departure is a new
+     ship. Each is re-planned from the route's recent designs, and
+     planned cold when that fails. They give the re-planning time, how
+     often it succeeds, and its Δv against the cold plans.
 6. **Escape by excess speed** (`End::Hyperbola`, step 10a): a periapsis at 200 km
    where a burn along the velocity reaches the hyperbola's speed for the
    v∞ wanted. It is seeded as a low orbit there, so the lunar-flyby
@@ -526,8 +610,9 @@ across the span.
    tries planes of the hyperbolas, becomes `interplanetary::plan`.
 8. **Upkeep**: the station-keeping Monte Carlo at the start of each year,
    for each station.
-9. **Output**: `orbit gate` writes one CSV row per leg and date, and a
-   summary per leg:
+9. **Output**: `orbit gate` writes one CSV row per leg and date
+   (`cold.csv`, `routes.csv`, `upkeep.csv`, `between.csv`), and a
+   summary per leg (`summary.txt`):
    - the share converged;
    - Δv median and range, against the published value;
    - the median re-plan time;

@@ -232,9 +232,9 @@ fn core_legs() -> Vec<LegSpec> {
         leg("llo-l1", Place::Llo, l1, 3.0, None),
     ];
     // Between stations, the cheapest of 6 to 14 days: the two orbits'
-    // relative phase repeats only every 12-70 days, more than the window
-    // (a revolution of the first), so a fixed duration finds some dates
-    // badly phased.
+    // relative phase repeats only every 12-400 days (the L2 halo's and the
+    // DRO's periods nearly match), more than the window (a revolution of
+    // the first), so a fixed duration finds some dates badly phased.
     for (a, &(an, _, _)) in STATIONS.iter().enumerate() {
         for (b, &(bn, _, _)) in STATIONS.iter().enumerate() {
             if a != b {
