@@ -1,21 +1,23 @@
-//! Transfers between a station's orbit and a low circular orbit (M1a.md,
-//! Autopilot, playbook entries 2 and 5): from LEO to a Lagrange-point orbit
-//! and back, from those orbits down to low lunar orbit and back.
+//! Legs between station orbits and low circular orbits in cislunar space
+//! (M1a.md, Autopilot, playbook entries 2 and 5): LEO to and from the
+//! Lagrange-point orbits and low lunar orbit, those orbits to low lunar
+//! orbit, and station to station. [`plan`] is the entry point.
 //!
-//! Seeds come from fans: trajectories leaving the station's orbit (or,
-//! integrated backward, reaching it) with burns of several sizes in many
-//! directions, each followed to its first periapsis about a body. A direct
-//! seed is one whose periapsis about the low orbit's body comes near the
-//! low orbit; a flyby seed passes the Moon first, where a second fan (with
-//! a burn there, possibly none) continues to the low orbit. Seeds are
-//! designed in the full field ([`crate::shooting`]), which makes them meet
-//! both ends exactly and minimizes their total Δv.
+//! Seeds come from fans: trajectories leaving one end (or, integrated
+//! backward, reaching it) with burns of several sizes in many directions.
+//! From a station toward a low orbit, each is followed to its first
+//! periapsis about the low orbit's body, directly or after a lunar flyby,
+//! where a second fan (a burn there, possibly none) continues; toward a
+//! station, to its closest approach to the station; between two low orbits,
+//! from periapses of the far one. Seeds are designed in the full field
+//! ([`crate::shooting`]), which makes them meet both ends exactly and
+//! minimizes their total Δv.
 
 use crate::ephem::BodyId;
 use crate::gravity::Field;
 use crate::integrate::{DenseStep, Dop853, Tolerance};
 use crate::reference::Reference;
-use crate::shooting::{Design, End, Failure, Leg, LowOrbit, Pass, Path};
+use crate::shooting::{Design, End, Leg, LowOrbit, Pass, Path};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
 use rayon::prelude::*;
@@ -281,8 +283,9 @@ pub struct Search {
     /// of the velocity there).
     pub directions: usize,
     pub flyby_directions: usize,
-    /// Longest leg from the station's orbit to a periapsis, s.
-    pub span: f64,
+    /// Durations to keep seeds within, s; the longer bounds how far fans
+    /// follow their trajectories.
+    pub durations: (f64, f64),
     /// Seeds to design.
     pub designs: usize,
 }
@@ -312,7 +315,7 @@ pub fn seeds(
         sizes: sizes.to_vec(),
         directions,
         along,
-        span: search.span,
+        span: search.durations.1,
         body: low.body,
         radii: (eph.body(low.body).radius, 3.0 * low.radius),
     };
@@ -345,7 +348,7 @@ pub fn seeds(
                 sizes: search.sizes.clone(),
                 directions: dirs.clone(),
                 along: None,
-                span: search.span,
+                span: search.durations.1,
                 body: moon,
                 radii: (radius + 50.0, radius + 5_000.0),
             },
@@ -383,17 +386,32 @@ pub fn seeds(
             chains.push((links, estimate));
         }
     }
+    // Direct and flyby seeds alternate, each cheapest first: flybys win
+    // the estimates at long durations, and would crowd out the direct
+    // seeds that short ones need.
+    let (shortest, longest) = search.durations;
+    chains.retain(|(links, _)| {
+        let d = (links.last().unwrap().end - links[0].at).abs();
+        d >= shortest && d <= longest
+    });
     chains.sort_by(|a, b| a.1.total_cmp(&b.1));
-    chains
-        .into_iter()
-        .filter_map(|(links, estimate)| {
-            Some(Seed {
-                path: chain_path(field, epoch, direction, &links)?,
-                estimate,
-            })
-        })
-        .take(search.designs)
-        .collect()
+    let (direct, flyby): (Vec<_>, Vec<_>) = chains.into_iter().partition(|c| c.0.len() == 1);
+    let mut kinds = [direct.into_iter(), flyby.into_iter()];
+    let mut out = Vec::new();
+    let mut turn = 0;
+    while out.len() < search.designs {
+        let Some((links, estimate)) = kinds[turn % 2]
+            .next()
+            .or_else(|| kinds[(turn + 1) % 2].next())
+        else {
+            break;
+        };
+        turn += 1;
+        if let Some(path) = chain_path(field, epoch, direction, &links) {
+            out.push(Seed { path, estimate });
+        }
+    }
+    out
 }
 
 /// A fan chain flown again in the design field and split into arcs of at
@@ -492,55 +510,397 @@ fn chain_path(field: &Field, epoch: Epoch, direction: Direction, links: &[Link])
     })
 }
 
-/// The leg between `reference` and `low`, with free times.
-pub fn leg<'a>(
-    field: &'a Field<'a>,
-    reference: &'a Reference,
-    low: LowOrbit,
-    direction: Direction,
-) -> Leg<'a> {
-    let (from, to) = match direction {
-        Direction::Down => (End::Orbit(reference), End::Low(low)),
-        Direction::Up => (End::Low(low), End::Orbit(reference)),
+/// The closest approach of a ship at `state` at `t` (s after `epoch`) to
+/// where `target` is at the same moment, within `span` s forward: its time,
+/// the ship's state, and the distance. `None` if the ship goes below a
+/// body's surface or farther than [`BEYOND_KM`] from the field's origin, or
+/// the target's span ends first.
+pub fn closest(
+    field: &Field,
+    epoch: Epoch,
+    t: f64,
+    state: [f64; 6],
+    target: &Reference,
+    span: f64,
+) -> Option<(f64, [f64; 6], f64)> {
+    let ode = field.ode(epoch);
+    let offset = (epoch.0 - target.epoch.0) * SECONDS_PER_DAY;
+    let (_, last) = target.path.span();
+    let end = (t + span).min(last - offset);
+    if end <= t {
+        return None;
+    }
+    let gap = |t: f64, s: &[f64; 6]| {
+        let x = target.path.at(t + offset);
+        (DVec3::new(s[0], s[1], s[2]) - DVec3::new(x[0], x[1], x[2])).length()
     };
-    Leg {
+    let mut run = Dop853::new(&ode, t, state, TOL);
+    let mut best: Option<(DenseStep<6>, f64)> = None;
+    while run.t != end {
+        let step = run.step(&ode, end).ok()?;
+        let r = DVec3::new(run.y[0], run.y[1], run.y[2]);
+        if r.length() > BEYOND_KM
+            || field
+                .inside(Epoch(epoch.0 + run.t / SECONDS_PER_DAY), r)
+                .is_some()
+        {
+            return None;
+        }
+        let d = gap(run.t, &run.y);
+        if best.as_ref().is_none_or(|b| d < b.1) {
+            best = Some((step, d));
+        }
+    }
+    // The minimum within the best step and its neighbors' ends, by golden
+    // section on the step's interpolant.
+    let (step, _) = best?;
+    let (mut lo, mut hi) = (step.t0.min(step.t0 + step.h), step.t0.max(step.t0 + step.h));
+    let g = 0.5 * (5.0f64.sqrt() - 1.0);
+    for _ in 0..60 {
+        let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
+        if gap(a, &step.at(a)) < gap(b, &step.at(b)) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    let tc = 0.5 * (lo + hi);
+    let sc = step.at(tc);
+    Some((tc, sc, gap(tc, &sc)))
+}
+
+/// Seeds for rendezvous transfers from `from` to `to` (station orbits),
+/// cheapest estimate first: a fan of burns from `from` at `search.times`,
+/// each trajectory's closest approach to `to` within `search.span`, kept
+/// within `reach` km. The estimate adds the departure burn, the burn to
+/// match `to`'s velocity there, and the miss spread over the flight.
+pub fn rendezvous_seeds(
+    field: &Field,
+    light: &Field,
+    from: &Reference,
+    to: &Reference,
+    search: &Search,
+    reach: f64,
+) -> Vec<Seed> {
+    let epoch = from.epoch;
+    let offset = (epoch.0 - to.epoch.0) * SECONDS_PER_DAY;
+    let dirs = directions(search.directions);
+    let mut combos: Vec<(f64, DVec3)> = Vec::new();
+    for &t in &search.times {
+        for &size in &search.sizes {
+            combos.extend(dirs.iter().map(|&u| (t, size * u)));
+        }
+    }
+    let mut found: Vec<(Link, f64)> = combos
+        .par_iter()
+        .filter_map(|&(t, burn)| {
+            let origin = from.path.at(t);
+            let mut s = origin;
+            for i in 0..3 {
+                s[3 + i] += burn[i];
+            }
+            let (tc, sc, miss) = closest(light, epoch, t, s, to, search.durations.1)?;
+            if miss > reach || tc - t < search.durations.0 {
+                return None;
+            }
+            let x = to.path.at(tc + offset);
+            let matching = (DVec3::new(x[3] - sc[3], x[4] - sc[4], x[5] - sc[5])).length();
+            let link = Link {
+                at: t,
+                origin,
+                burn,
+                end: tc,
+            };
+            Some((link, burn.length() + matching + miss / (tc - t)))
+        })
+        .collect();
+    found.sort_by(|a, b| a.1.total_cmp(&b.1));
+    found
+        .into_iter()
+        .filter_map(|(link, estimate)| {
+            Some(Seed {
+                path: chain_path(field, epoch, Direction::Down, &[link])?,
+                estimate,
+            })
+        })
+        .take(search.designs)
+        .collect()
+}
+
+/// Seeds for transfers between two low orbits, `far` (low lunar orbit) and
+/// `near` (LEO): a fan from periapses of `far` (each of `count` points on
+/// the sphere of its radius, at each of `times`, in each plane through the
+/// point at its inclination, at each hyperbolic excess speed in `excess`,
+/// km/s), coasting (backward for `Up`, from `near` to `far`) to a periapsis
+/// near `near`, lasting within `durations` (s).
+#[allow(clippy::too_many_arguments)]
+pub fn low_seeds(
+    field: &Field,
+    light: &Field,
+    epoch: Epoch,
+    far: &LowOrbit,
+    near: &LowOrbit,
+    direction: Direction,
+    times: &[f64],
+    excess: &[f64],
+    count: usize,
+    durations: (f64, f64),
+    designs: usize,
+) -> Vec<Seed> {
+    let eph = field.ephemeris();
+    let gm = eph.body(far.body).gm;
+    let mut origins: Vec<(f64, [f64; 6])> = Vec::new();
+    for &t in times {
+        let when = Epoch(epoch.0 + t / SECONDS_PER_DAY);
+        let b = field.body_state(far.body, when);
+        let pole = eph.pole(far.body, when);
+        for rho in directions(count) {
+            // Normals of the planes through `rho` at the inclination.
+            let normals: Vec<DVec3> = match (far.inclination, pole) {
+                (Some(i), Some(p)) => {
+                    let u = (p - p.dot(rho) * rho).normalize_or_zero();
+                    let w = rho.cross(u);
+                    let a = if u.dot(p).abs() > 1e-9 {
+                        i.cos() / u.dot(p)
+                    } else {
+                        2.0
+                    };
+                    if a.abs() > 1.0 {
+                        continue;
+                    }
+                    let c = (1.0 - a * a).sqrt();
+                    vec![a * u + c * w, a * u - c * w]
+                }
+                _ => {
+                    let u = rho.any_orthonormal_vector();
+                    let w = rho.cross(u);
+                    (0..8)
+                        .map(|k| {
+                            let q = std::f64::consts::TAU * k as f64 / 8.0;
+                            q.cos() * u + q.sin() * w
+                        })
+                        .collect()
+                }
+            };
+            for h in normals {
+                let along = h.cross(rho);
+                for &vinf in excess {
+                    let speed = (vinf * vinf + 2.0 * gm / far.radius).sqrt();
+                    let (r, v) = (b.r + far.radius * rho, b.v + speed * along);
+                    origins.push((t, [r.x, r.y, r.z, v.x, v.y, v.z]));
+                }
+            }
+        }
+    }
+    let spread = Spread {
+        sizes: vec![0.0],
+        directions: Vec::new(),
+        along: None,
+        span: durations.1,
+        body: near.body,
+        radii: (eph.body(near.body).radius, 3.0 * near.radius),
+    };
+    let gm_near = eph.body(near.body).gm;
+    let mut chains: Vec<(Link, f64)> = fan(light, epoch, &origins, &spread, direction.sign())
+        .into_iter()
+        .map(|shot| {
+            let (at, origin) = origins[shot.origin];
+            let o = DVec3::new(origin[3], origin[4], origin[5])
+                - field
+                    .body_state(far.body, Epoch(epoch.0 + at / SECONDS_PER_DAY))
+                    .v;
+            let estimate = low_burn(gm, far.radius, far.radius, o.length())
+                + low_burn(gm_near, near.radius, shot.radius, shot.speed);
+            let link = Link {
+                at,
+                origin,
+                burn: DVec3::ZERO,
+                end: shot.periapsis_at,
+            };
+            (link, estimate)
+        })
+        .filter(|(link, _)| (link.end - link.at).abs() >= durations.0)
+        .collect();
+    chains.sort_by(|a, b| a.1.total_cmp(&b.1));
+    chains
+        .into_iter()
+        .filter_map(|(link, estimate)| {
+            Some(Seed {
+                path: chain_path(field, epoch, direction, &[link])?,
+                estimate,
+            })
+        })
+        .take(designs)
+        .collect()
+}
+
+/// Seeds a plan designs, and the starting designs it carries to each
+/// requested duration.
+const PLAN_SEEDS: usize = 8;
+const PLAN_STARTS: usize = 1;
+const PLAN_NEAREST: usize = 3;
+
+/// Continuation steps along duration, s.
+const PLAN_STEP: f64 = 0.25 * SECONDS_PER_DAY;
+
+/// How far inside a station reference's span a plan keeps the ship's
+/// times, s.
+const PLAN_MARGIN: f64 = 0.25 * SECONDS_PER_DAY;
+
+/// Designs the leg from `from` to `to` (in `field`, whose origin is Earth),
+/// leaving within `window` (s after `epoch`), at each of `durations` (s).
+/// Seeds come from the playbook for the kinds of end: a fan from a station
+/// to a periapsis near a low orbit (via a lunar flyby too when the low
+/// orbit is about Earth), closest approaches to a station, or a fan between
+/// two low orbits. The cheapest are designed at their own durations, then
+/// carried by continuation to each requested one (the cheapest, and those
+/// nearest each duration); for each, the cheapest design reached. Designs
+/// leave within the window.
+pub fn plan(
+    field: &Field,
+    light: &Field,
+    epoch: Epoch,
+    from: End,
+    to: End,
+    window: (f64, f64),
+    durations: &[f64],
+) -> Vec<Option<Design>> {
+    let shortest = durations.iter().copied().fold(f64::INFINITY, f64::min);
+    let longest = durations.iter().copied().fold(0.0, f64::max);
+    // Seeds within a few days of the durations wanted: continuation from
+    // farther ones is long, and each step a design.
+    let slack = (0.25 * longest).max(SECONDS_PER_DAY);
+    let seed_durations = ((shortest - slack).max(0.0), longest + slack);
+    // A station's reference bounds when the ship can be there (s after
+    // `epoch`), with a margin: held at its very first moment, Newton's
+    // steps leave it.
+    let covered = |end: &End| -> (f64, f64) {
+        match end {
+            End::Orbit(r) => {
+                let (lo, hi) = r.path.span();
+                let shift = (r.epoch.0 - epoch.0) * SECONDS_PER_DAY;
+                (lo + shift + PLAN_MARGIN, hi + shift - PLAN_MARGIN)
+            }
+            End::Low(_) => (f64::NEG_INFINITY, f64::INFINITY),
+        }
+    };
+    let (from_lo, from_hi) = covered(&from);
+    let (to_lo, to_hi) = covered(&to);
+    let window = (
+        window.0.max(from_lo).max(to_lo - shortest),
+        window.1.min(from_hi).min(to_hi - longest),
+    );
+    if window.0 > window.1 {
+        return vec![None; durations.len()];
+    }
+    let arrivals = (window.0 + shortest, window.1 + longest);
+    // Times over the window (or where arrivals can fall), in a reference's
+    // own seconds.
+    let samples = |reference_epoch: Epoch, (lo, hi): (f64, f64)| -> Vec<f64> {
+        let shift = (epoch.0 - reference_epoch.0) * SECONDS_PER_DAY;
+        (0..32)
+            .map(|k| lo + (hi - lo) * k as f64 / 31.0 + shift)
+            .collect()
+    };
+    let center = field.center();
+    let search = |times: Vec<f64>, flyby: bool| Search {
+        times,
+        sizes: vec![0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8],
+        flyby_sizes: if flyby {
+            vec![0.0, 0.1, 0.2, 0.3]
+        } else {
+            vec![]
+        },
+        directions: 30,
+        flyby_directions: 12,
+        durations: seed_durations,
+        designs: PLAN_SEEDS,
+    };
+    let seeded: Vec<Seed> = match (&from, &to) {
+        (End::Orbit(r), End::Low(l)) => {
+            let s = search(samples(r.epoch, window), Some(l.body) == center);
+            seeds(field, light, r, l, Direction::Down, &s)
+        }
+        (End::Low(l), End::Orbit(r)) => {
+            let s = search(samples(r.epoch, arrivals), Some(l.body) == center);
+            seeds(field, light, r, l, Direction::Up, &s)
+        }
+        (End::Orbit(a), End::Orbit(b)) => {
+            let s = search(samples(a.epoch, window), false);
+            rendezvous_seeds(field, light, a, b, &s, 20_000.0)
+        }
+        (End::Low(a), End::Low(b)) => {
+            // The far orbit is the one not about the field's origin.
+            let (far, near, direction, times) = if Some(a.body) == center {
+                (b, a, Direction::Up, samples(epoch, arrivals))
+            } else {
+                (a, b, Direction::Down, samples(epoch, window))
+            };
+            low_seeds(
+                field,
+                light,
+                epoch,
+                far,
+                near,
+                direction,
+                &times,
+                &[0.7, 0.8, 0.9, 1.0],
+                100,
+                seed_durations,
+                PLAN_SEEDS,
+            )
+        }
+    };
+    // Seeds share an epoch, which the leg's times count from.
+    let seed_epoch = seeded.first().map_or(epoch, |s| s.path.epoch);
+    let shift = (epoch.0 - seed_epoch.0) * SECONDS_PER_DAY;
+    let leg = Leg {
         field,
         from,
         to,
         depart: None,
         arrive: None,
         duration: None,
+        window: Some((window.0 + shift, window.1 + shift)),
+    };
+    // Each seed designed at its own duration (with the duration free, the
+    // search crawls along a valley where Δv falls by m/s per day).
+    let mut starts: Vec<Design> = seeded
+        .par_iter()
+        .filter_map(|seed| {
+            let own = seed.path.times.last().unwrap() - seed.path.times[0];
+            Leg {
+                duration: Some(own),
+                ..leg
+            }
+            .design(&seed.path)
+            .ok()
+        })
+        .collect();
+    // The cheapest, and for each requested duration the nearest.
+    starts.sort_by(|a, b| a.dv.total_cmp(&b.dv));
+    let mut chosen: Vec<usize> = (0..starts.len().min(PLAN_STARTS)).collect();
+    for &target in durations {
+        let mut by_nearness: Vec<usize> = (0..starts.len()).collect();
+        by_nearness.sort_by(|&a, &b| {
+            (starts[a].duration() - target)
+                .abs()
+                .total_cmp(&(starts[b].duration() - target).abs())
+        });
+        chosen.extend(by_nearness.into_iter().take(PLAN_NEAREST));
     }
-}
-
-/// Designs a search's cheapest seeds in parallel: the designs that
-/// succeed, cheapest first, and the failures.
-pub fn search(
-    field: &Field,
-    light: &Field,
-    reference: &Reference,
-    low: LowOrbit,
-    direction: Direction,
-    search: &Search,
-    duration: Option<f64>,
-) -> (Vec<Design>, Vec<Failure>) {
-    let mut leg = leg(field, reference, low, direction);
-    leg.duration = duration;
-    let seeds = seeds(field, light, reference, &low, direction, search);
-    let results: Vec<Result<Design, Failure>> =
-        seeds.par_iter().map(|s| leg.design(&s.path)).collect();
-    let (mut designs, mut failures) = (Vec::new(), Vec::new());
-    for r in results {
-        match r {
-            Ok(d) => designs.push(d),
-            Err(e) => failures.push(e),
-        }
-    }
-    designs.sort_by(|a, b| a.dv.total_cmp(&b.dv));
-    (designs, failures)
-}
-
-/// The design's duration in days.
-pub fn days(design: &Design) -> f64 {
-    design.duration() / SECONDS_PER_DAY
+    chosen.sort();
+    chosen.dedup();
+    let carried: Vec<Vec<Option<Design>>> = chosen
+        .par_iter()
+        .map(|&i| leg.frontier(&starts[i], durations, PLAN_STEP))
+        .collect();
+    (0..durations.len())
+        .map(|i| {
+            carried
+                .iter()
+                .filter_map(|c| c[i].clone())
+                .min_by(|a, b| a.dv.total_cmp(&b.dv))
+        })
+        .collect()
 }

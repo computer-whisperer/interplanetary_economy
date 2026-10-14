@@ -14,6 +14,12 @@ use crate::kepler::State;
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
 
+/// Most bodies a field includes besides its center.
+const MAX_BODIES: usize = 15;
+
+/// The other bodies' positions relative to a field's origin at one moment.
+type Positions = [DVec3; MAX_BODIES];
+
 /// The gravity of chosen bodies, in a frame centered on one of them or on
 /// the solar-system barycenter.
 #[derive(Clone, Debug)]
@@ -22,6 +28,9 @@ pub struct Field<'a> {
     center: Option<BodyId>,
     /// Bodies other than the center, with their GMs.
     others: Vec<(BodyId, f64)>,
+    /// The center (if any), then the others: whose positions each
+    /// evaluation looks up together.
+    ids: Vec<BodyId>,
     center_gm: f64,
     oblate: bool,
     relativity: bool,
@@ -35,14 +44,20 @@ impl<'a> Field<'a> {
         if let Some(c) = center {
             assert!(bodies.contains(&c), "the center must be one of the bodies");
         }
+        let others: Vec<(BodyId, f64)> = bodies
+            .iter()
+            .filter(|&&b| Some(b) != center)
+            .map(|&b| (b, eph.body(b).gm))
+            .collect();
+        assert!(others.len() <= MAX_BODIES, "at most {MAX_BODIES} bodies");
         Field {
             eph,
             center,
-            others: bodies
-                .iter()
-                .filter(|&&b| Some(b) != center)
-                .map(|&b| (b, eph.body(b).gm))
+            ids: center
+                .into_iter()
+                .chain(others.iter().map(|&(b, _)| b))
                 .collect(),
+            others,
             center_gm: center.map_or(0.0, |c| eph.body(c).gm),
             oblate: false,
             relativity: false,
@@ -118,19 +133,39 @@ impl<'a> Field<'a> {
         self
     }
 
+    /// The other bodies' positions relative to the origin at `t`, looked up
+    /// together so that Earth and the Moon share one evaluation of the
+    /// Earth–Moon series (they took 2 of every 5 series evaluations).
+    fn positions(&self, t: Epoch) -> Positions {
+        let mut all = [DVec3::ZERO; MAX_BODIES + 1];
+        let n = self.ids.len();
+        self.eph.barycentric_positions(&self.ids, t, &mut all[..n]);
+        let (origin, others) = match self.center {
+            Some(_) => (all[0], &all[1..n]),
+            None => (DVec3::ZERO, &all[..n]),
+        };
+        let mut out = [DVec3::ZERO; MAX_BODIES];
+        for (o, &p) in out.iter_mut().zip(others) {
+            *o = p - origin;
+        }
+        out
+    }
+
     /// Acceleration of a ship at `r` (from the center) at `t`, km/s²,
     /// without the relativistic correction (see [`Self::ode`]).
     pub fn acceleration(&self, t: Epoch, r: DVec3) -> DVec3 {
-        let origin = self.center.map(|c| self.eph.barycentric_position(c, t));
+        self.acceleration_among(&self.positions(t), r)
+    }
+
+    fn acceleration_among(&self, positions: &Positions, r: DVec3) -> DVec3 {
         let mut a = DVec3::ZERO;
         if let Some(c) = self.center {
             a += self.center_gm * point_mass(-r);
             a += self.oblateness(c, r);
         }
-        for &(b, gm) in &self.others {
-            let d = self.eph.barycentric_position(b, t) - origin.unwrap_or(DVec3::ZERO);
+        for (&(b, gm), &d) in self.others.iter().zip(positions) {
             a += gm * point_mass(d - r);
-            if origin.is_some() {
+            if self.center.is_some() {
                 a -= gm * point_mass(d);
             }
             a += self.oblateness(b, r - d);
@@ -144,7 +179,10 @@ impl<'a> Field<'a> {
     /// model). In LEO, leaving out J2 made sensitivities over a few hours
     /// ~20% wrong.
     pub fn gradient(&self, t: Epoch, r: DVec3) -> [[f64; 3]; 3] {
-        let origin = self.center.map(|c| self.eph.barycentric_position(c, t));
+        self.gradient_among(&self.positions(t), r)
+    }
+
+    fn gradient_among(&self, positions: &Positions, r: DVec3) -> [[f64; 3]; 3] {
         let mut g = [[0.0; 3]; 3];
         // The pull of mass `gm` at offset `d` from the ship, and of body
         // `b`'s J2 on a ship at `rho` from it.
@@ -171,8 +209,7 @@ impl<'a> Field<'a> {
             point(&mut g, self.center_gm, -r);
             oblate(&mut g, c, r);
         }
-        for &(b, gm) in &self.others {
-            let d = self.eph.barycentric_position(b, t) - origin.unwrap_or(DVec3::ZERO);
+        for (&(b, gm), &d) in self.others.iter().zip(positions) {
             point(&mut g, gm, d - r);
             oblate(&mut g, b, r - d);
         }
@@ -182,15 +219,17 @@ impl<'a> Field<'a> {
     /// The equations of motion with the state transition matrix: `[r, v, Φ]`,
     /// Φ row-major 6×6; see [`Self::ode`] and [`Self::gradient`].
     pub fn ode_stm(&self, epoch: Epoch) -> impl Fn(f64, &[f64; 42]) -> [f64; 42] + '_ {
-        let ode = self.ode(epoch);
         move |t, s| {
-            let state: [f64; 6] = s[..6].try_into().unwrap();
+            let t = Epoch(epoch.0 + t / SECONDS_PER_DAY);
+            let (r, v) = (DVec3::new(s[0], s[1], s[2]), DVec3::new(s[3], s[4], s[5]));
+            let positions = self.positions(t);
+            let mut a = self.acceleration_among(&positions, r);
+            if self.relativity {
+                a += self.relativity(t, r, v);
+            }
             let mut out = [0.0; 42];
-            out[..6].copy_from_slice(&ode(t, &state));
-            let g = self.gradient(
-                Epoch(epoch.0 + t / SECONDS_PER_DAY),
-                DVec3::new(s[0], s[1], s[2]),
-            );
+            out[..6].copy_from_slice(&[v.x, v.y, v.z, a.x, a.y, a.z]);
+            let g = self.gradient_among(&positions, r);
             let phi = &s[6..];
             for c in 0..6 {
                 for r in 0..3 {

@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–5 done; step 6 in progress.
+Status, 2026-10-13: steps 1–6 done.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -72,11 +72,11 @@ Status, 2026-10-13: steps 1–5 done; step 6 in progress.
   lunar gravity field and atmospheric drag are not modeled (a 100 km polar
   lunar orbit costs ~75 m/s per year in practice).
 
-- Step 6, so far: `shooting` designs a path in the full field: nodes
-  joined by integrated arcs, burns at some of them, ends on a station's
-  reference orbit or at the apsis of a low circular orbit (LEO, plane
-  free; low lunar orbit, plane free or at a set inclination). Minimum-norm
-  Newton steps make it continuous; the generalized reduced gradient then
+- Step 6: `shooting` designs a path in the full field: nodes joined by
+  integrated arcs, burns at some of them, ends on a station's reference
+  orbit or at the apsis of a low circular orbit (LEO, plane free; low
+  lunar orbit, plane free or at a set inclination). Minimum-norm Newton
+  steps make it continuous; the generalized reduced gradient then
   minimizes total Δv over the few free unknowns, re-solving continuity at
   each trial point so every iterate is flyable. What mattered, measured:
   each node scaled by the body pulling hardest there (one Earth–Moon scale
@@ -88,19 +88,52 @@ Status, 2026-10-13: steps 1–5 done; step 6 in progress.
   shows the curvature has moved (it grows ~700× along a flyby burn); and
   lunar flybys as periapsis burns no lower than 100 km, held there when
   the search goes lower. Total Δv falls slowly with duration (a few m/s
-  per day), so legs are designed at set durations, reached by continuation
-  from the free optimum (steps of 0.25 days, halved when one fails).
-  `legs` seeds them: fans of burns from the station's orbit (backward in
-  time for arrivals) to a periapsis about the low orbit's body, or to a
-  lunar flyby and then, with a burn within 60° of the velocity there, on
-  to the low orbit; fans fly in the Sun–Earth–Moon field in parallel (~0.8
-  s). Against Whitley & Martinez (2016): NRHO to polar 100 km lunar orbit
-  in 0.5 days, 681 m/s (730); LEO to the NRHO by powered flyby, after the
-  3.09 km/s leaving LEO, 402 m/s in 5.1 days (428.5) and 396 in 5.4 (409);
-  back to LEO, 398 m/s in 5 days before the capture burn (411.5, to entry
-  interface). Earth's pole had been mirrored through the ecliptic (Earth's
-  J2 was 47° off; harmless at lunar distances, not in LEO); the Moon's
-  pole, by Cassini's laws, is within 0.07° of the IAU's.
+  per day), so a free-duration search crawls: legs are designed at set
+  durations, reached by continuation (steps of 0.25 days, halved when one
+  fails). A departure window is a cost penalty (1 km/s per day squared
+  outside it), then the departure is held at the nearer edge: as a hard
+  wall it trapped searches, and with no penalty a low-orbit-to-low-orbit
+  search drifted a week out, too far to pull back.
+  `legs::plan` designs a leg between any two ends at given durations,
+  seeded by fans of burns flown in parallel in the Sun–Earth–Moon field:
+  from a station to a periapsis near a low orbit, directly or via a
+  powered lunar flyby (a second fan from the flyby, burns within 60° of
+  the velocity there); to a station, the closest approach to it; between
+  two low orbits, from periapses of the far one. Seeds are kept within a
+  few days of the durations wanted, designed at their own durations, and
+  the nearest carried by continuation. Against published values, at their
+  durations (m/s; `tests/transfers.rs`):
+
+  | Leg | Here | Published |
+  |---|---|---|
+  | NRHO to polar 100 km lunar orbit, 0.5 d | 675 | 730 |
+  | L2 halo to it, 3 d / DRO to it, 4 d | 786 / 814 | 800 / 830 |
+  | LEO to NRHO after leaving LEO, 5.1 d / 5.4 d | 392 / 388 | 428.5 / 409.1 |
+  | NRHO to LEO before capture, 5 d | 411 | 411.5 |
+  | L2 halo round trip, 6.5 d each way | 754 | 811 |
+  | LEO (200 km) to L1 halo, 4.1 d / 7.81 d | 3,632 / 3,518 | 3,660 / 3,513 |
+  | Leaving a 185 km LEO for the Moon, 4.4 d | 3,141 | 3,142 |
+  | Low lunar orbit round trip, 3.5 d each way | 1,677 | 1,800+ |
+  | LEO to DRO after leaving LEO, 9 d | 293 | 344 |
+
+  The first eight are Whitley & Martinez (2016), the L1 halo arXiv
+  2502.11694's table 5, the departure Lunar Prospector's, the DRO ESA's
+  Artemis I plan. The DRO is the outlier: 15% below Artemis I's plan and
+  26% below Whitley & Martinez's round trip (957 m/s, a 21-day mission),
+  for a DRO of the same size (65,000–92,000 km from the Moon); both plans
+  carry constraints this search does not. Between stations there are no
+  published fast transfers (the literature's impulsive NRHO–DRO designs
+  take 40–97 days through other families); here NRHO to DRO costs 552 m/s
+  and L1 halo to L2 halo 497, in 10 days. A plan takes 0.1–4.5 s on 24
+  cores. Field cost: evaluating the Earth–Moon series once per time took
+  an evaluation from 254 to 166 ns; with the planets left out (their tides
+  in cislunar space are ~1e-12 km/s², meters per leg) the transfer tests
+  went from 120 s to 23 s with the same results. Earth's pole had been
+  mirrored through the ecliptic (Earth's J2 was 47° off: harmless at lunar
+  distances, not in LEO); the Moon's pole, by Cassini's laws, is within
+  0.07° of the IAU's. Left for later steps: re-planning a standing route
+  from its previous departure, and the reliability and timing sweep (step
+  10).
 
 ## Why
 

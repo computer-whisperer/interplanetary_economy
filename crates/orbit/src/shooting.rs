@@ -42,6 +42,10 @@ const FEASIBLE: f64 = 1e-8;
 /// nothing without a kink in the cost.
 const SMOOTH: f64 = 1e-4;
 
+/// What leaving a day outside the window adds to the cost a search sees,
+/// km/s (it grows with the square of the time).
+const WINDOW_PENALTY: f64 = 1.0;
+
 /// The search stops when the quadratic model predicts the next step would
 /// save less than this, km/s (0.1 mm/s): measured at the end of a lunar
 /// flyby transfer's search, the cost's noise is ~1e-9 km/s.
@@ -113,8 +117,8 @@ impl Path {
     }
 }
 
-/// A path to design: what it joins, and which of its times are fixed (s
-/// after the seed's epoch).
+/// A path to design: what it joins, which of its times are fixed, and when
+/// it may leave (s after the seed's epoch).
 #[derive(Clone, Copy)]
 pub struct Leg<'a> {
     pub field: &'a Field<'a>,
@@ -123,6 +127,9 @@ pub struct Leg<'a> {
     pub depart: Option<f64>,
     pub arrive: Option<f64>,
     pub duration: Option<f64>,
+    /// When the ship may leave. A search that would leave outside it is
+    /// held at the nearer edge.
+    pub window: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -137,8 +144,6 @@ pub struct Burn {
 #[derive(Clone, Debug)]
 pub struct Design {
     pub path: Path,
-    /// The state reaching the last node, before the last burn.
-    pub arrival: [f64; 6],
     pub burns: Vec<Burn>,
     /// Total Δv, km/s.
     pub dv: f64,
@@ -444,12 +449,14 @@ impl<'a> Leg<'a> {
 
     /// The constraints and cost at `z`; `None` where the arcs cannot be
     /// integrated, the nodes are out of order, or an end leaves its
-    /// reference orbit's span.
+    /// reference orbit's span. A departure outside the window adds a
+    /// penalty to the cost, [`WINDOW_PENALTY`] per day squared.
     fn evaluate(&self, layout: &Layout, epoch: Epoch, z: &[f64], derivs: bool) -> Option<Eval> {
         let times = layout.times(z);
         if times.windows(2).any(|w| w[1] <= w[0]) {
             return None;
         }
+
         let states = layout.states(z);
         let ode = self.field.ode(epoch);
         let ode_stm = self.field.ode_stm(epoch);
@@ -644,6 +651,16 @@ impl<'a> Leg<'a> {
             }
         }
 
+        // Leaving outside the window.
+        if let (None, Some((lo, hi))) = (self.depart, self.window) {
+            let outside = (lo - times[0]).max(0.0) - (times[0] - hi).max(0.0);
+            let days = outside / SECONDS_PER_DAY;
+            cost += WINDOW_PENALTY * days * days;
+            if derivs {
+                d_time(&mut grad, 0, -2.0 * WINDOW_PENALTY * days / SECONDS_PER_DAY);
+            }
+        }
+
         // Fixed times.
         let mut fixed = |value: f64, terms: &[(usize, f64)]| {
             let sc = terms
@@ -693,31 +710,43 @@ impl<'a> Leg<'a> {
             .map(|s| DVec3::new(s[0], s[1], s[2]))
             .collect();
         let mut layout = Layout::new(self.field, seed, &positions);
-        let z = self.restore(&layout, epoch, layout.pack(seed))?;
-        let (mut z, mut iterations) = self.minimize(&layout, epoch, z)?;
-        // Passes that went below their lowest radius are held there and the
-        // search runs again (an active set; passes are not released).
-        let times = layout.times(&z);
-        let states = layout.states(&z);
-        let mut low = false;
-        for (pass, held) in &mut layout.passes {
-            let (br, _, _) = self.body(pass.body, epoch, times[pass.node]);
-            let r = states[pass.node];
-            if (DVec3::new(r[0], r[1], r[2]) - br).length() < pass.min_radius {
-                *held = true;
-                low = true;
+        // An active set: passes below their floors are held there, and a
+        // departure the penalty did not keep inside the window at its nearer
+        // edge (a hard edge alone let a search drift days away, too far to
+        // pull back); then the search runs again. Neither is released.
+        let mut leg = *self;
+        let mut z = leg.restore(&layout, epoch, layout.pack(seed))?;
+        let mut iterations = 0;
+        for _ in 0..3 {
+            let (searched, more) = leg.minimize(&layout, epoch, z)?;
+            (z, iterations) = (searched, iterations + more);
+            let times = layout.times(&z);
+            let states = layout.states(&z);
+            let mut changed = false;
+            for (pass, held) in &mut layout.passes {
+                let (br, _, _) = leg.body(pass.body, epoch, times[pass.node]);
+                let r = states[pass.node];
+                if !*held && (DVec3::new(r[0], r[1], r[2]) - br).length() < pass.min_radius {
+                    *held = true;
+                    changed = true;
+                }
             }
+            if let (None, Some((lo, hi))) = (leg.depart, leg.window)
+                && (times[0] < lo || times[0] > hi)
+            {
+                leg.depart = Some(times[0].clamp(lo, hi));
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+            z = leg.restore(&layout, epoch, z)?;
         }
-        if low {
-            z = self.restore(&layout, epoch, z)?;
-            let (again, more) = self.minimize(&layout, epoch, z)?;
-            (z, iterations) = (again, iterations + more);
-        }
-        let z = self.restore(&layout, epoch, z)?;
-        let e = self
+        let z = leg.restore(&layout, epoch, z)?;
+        let e = leg
             .evaluate(&layout, epoch, &z, false)
             .ok_or(Failure::Infeasible(f64::INFINITY))?;
-        self.finish(&layout, epoch, &z, &e, iterations)
+        leg.finish(&layout, epoch, &z, &e, iterations)
     }
 
     /// Designs at each of `durations` (s), by continuation from `from` (a
@@ -1077,7 +1106,6 @@ impl<'a> Leg<'a> {
                 states,
                 passes: layout.passes.iter().map(|&(p, _)| p).collect(),
             },
-            arrival,
             burns,
             iterations,
         })
@@ -1241,6 +1269,7 @@ mod tests {
             depart: Some(0.0),
             arrive: None,
             duration: None,
+            window: None,
         };
         // Tangential, 300 m/s short, flown for 4 h in three arcs.
         let v = 10.0;
@@ -1317,6 +1346,7 @@ mod tests {
             depart: None,
             arrive: None,
             duration: None,
+            window: None,
         };
         let t0 = best - 500.0;
         let mut start = inner.path.at(t0);
@@ -1392,6 +1422,7 @@ mod tests {
             depart: Some(100.0),
             arrive: None,
             duration: Some(3.0 * 86_400.0),
+            window: None,
         };
         // A rough path: away from Earth, a burn node and a coast node.
         let start = [6_800.0, 300.0, 200.0, 0.4, 10.6, 1.5];

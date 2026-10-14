@@ -444,6 +444,29 @@ impl Ephemeris {
         }
     }
 
+    /// [`Self::barycentric_position`] of each of `ids` into `out`, with one
+    /// evaluation of the Earth–Moon series for both Earth and the Moon.
+    pub fn barycentric_positions(&self, ids: &[BodyId], t: Epoch, out: &mut [DVec3]) {
+        let mut earth_moon: Option<(DVec3, DVec3)> = None;
+        for (o, &id) in out.iter_mut().zip(ids) {
+            *o = match self.bodies[id.0].motion {
+                Motion::Earth | Motion::Moon => {
+                    let (emb, off) = *earth_moon.get_or_insert_with(|| {
+                        (
+                            self.series[self.emb].position(t),
+                            self.series[self.moon_offset].position(t),
+                        )
+                    });
+                    match self.bodies[id.0].motion {
+                        Motion::Earth => emb - off / self.emrat,
+                        _ => emb + off,
+                    }
+                }
+                _ => self.barycentric_position(id, t),
+            };
+        }
+    }
+
     /// State relative to the solar-system barycenter.
     pub fn barycentric(&self, id: BodyId, t: Epoch) -> State {
         match &self.bodies[id.0].motion {
