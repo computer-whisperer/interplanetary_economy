@@ -238,3 +238,22 @@ fn moon_pole_matches_iau() {
     }
     println!("worst {worst:.3}°");
 }
+
+/// Phobos and Deimos, precessing ellipses fitted to Horizons, against
+/// Horizons vectors off the fit's daily grid (Mars's center; DE440's "Mars"
+/// is its system's barycenter, 0.2 m away). Measured 2026-10-14: Phobos
+/// within 105 km and 24 m/s, Deimos within 124 km and 7 m/s, over
+/// 2025–2080 (the fit's own residuals reach 107 and 133 km).
+#[test]
+fn moons_of_mars_match_horizons() {
+    let eph = Ephemeris::standard();
+    let mars = eph.lookup("mars").unwrap();
+    for (id, km, kms) in [("phobos", 120.0, 0.03), ("deimos", 150.0, 0.015)] {
+        let moon = eph.lookup(id).unwrap();
+        let (dr, dv) = max_errors(&format!("horizons_{id}_mars.csv"), |t| {
+            relative(eph, moon, mars, t)
+        });
+        println!("{id}: within {dr:.1} km and {:.1} m/s", dv * 1e3);
+        assert!(dr < km && dv < kms, "{id}: {dr} km, {dv} km/s");
+    }
+}

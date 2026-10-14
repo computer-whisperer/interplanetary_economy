@@ -767,6 +767,74 @@ pub fn low_seeds(
         .collect()
 }
 
+/// Seeds for transfers between a low orbit about a planet and one of its
+/// moons (`moon`, rendezvous): for each of `times` (arrivals for `Up`,
+/// departures for `Down`), the arc about the planet between the moon and a
+/// point on the low orbit's sphere 175° away in the moon's plane, taking
+/// the half ellipse's time (a near-Hohmann transfer, clear of Lambert's
+/// 180° singularity).
+pub fn moon_seeds(
+    field: &Field,
+    epoch: Epoch,
+    low: &LowOrbit,
+    moon: BodyId,
+    direction: Direction,
+    times: &[f64],
+) -> Vec<Seed> {
+    let eph = field.ephemeris();
+    let gm = eph.body(low.body).gm;
+    let when = |t: f64| Epoch(epoch.0 + t / SECONDS_PER_DAY);
+    let relative = |t: f64| {
+        let (m, p) = (
+            field.body_state(moon, when(t)),
+            field.body_state(low.body, when(t)),
+        );
+        (m.r - p.r, m.v - p.v)
+    };
+    let mut out = Vec::new();
+    for &t in times {
+        // The moon where it is met (Up) or left (Down), and the low orbit's
+        // point 175° before or after it in the moon's plane.
+        let (rm, vm) = relative(t);
+        let a = (low.radius + rm.length()) / 2.0;
+        let tof = std::f64::consts::PI * (a * a * a / gm).sqrt();
+        let (h, u) = (rm.cross(vm).normalize(), rm.normalize());
+        let w = h.cross(u);
+        let angle = 175f64.to_radians();
+        let (t0, t1, r0, r1) = match direction {
+            Direction::Up => {
+                let point = low.radius * (angle.cos() * u - angle.sin() * w);
+                (t - tof, t, point, rm)
+            }
+            Direction::Down => {
+                let point = low.radius * (angle.cos() * u + angle.sin() * w);
+                (t, t + tof, rm, point)
+            }
+        };
+        let Some(arc) = crate::lambert::solve(gm, r0, r1, t1 - t0) else {
+            continue;
+        };
+        let start = crate::kepler::State { r: r0, v: arc.v1 };
+        let times: Vec<f64> = (0..=8).map(|k| t0 + (t1 - t0) * k as f64 / 8.0).collect();
+        let states: Option<Vec<[f64; 6]>> = times[..8]
+            .iter()
+            .map(|&tk| {
+                let s = crate::kepler::propagate(start, tk - t0, gm)?;
+                let p = field.body_state(low.body, when(tk));
+                let (r, v) = (s.r + p.r, s.v + p.v);
+                Some([r.x, r.y, r.z, v.x, v.y, v.z])
+            })
+            .collect();
+        if let Some(states) = states {
+            out.push(Seed {
+                path: Path::coasting(epoch, times, states),
+                estimate: 0.0,
+            });
+        }
+    }
+    out
+}
+
 /// Seeds a plan designs, and the starting designs it carries to each
 /// requested duration.
 const PLAN_SEEDS: usize = 8;
@@ -788,8 +856,9 @@ const PLAN_MARGIN: f64 = 0.25 * SECONDS_PER_DAY;
 /// two low orbits. The cheapest are designed at their own durations, then
 /// carried by continuation to each requested one (the cheapest, and those
 /// nearest each duration); for each, the cheapest design reached. Designs
-/// leave within the window. Small bodies and escapes are not cislunar: none
-/// for them.
+/// leave within the window. Between a low orbit and a moon of its planet
+/// (Phobos), seeds are Lambert arcs about the planet. Small bodies
+/// elsewhere and escapes are `interplanetary`'s: none for them.
 pub fn plan(
     field: &Field,
     light: &Field,
@@ -861,7 +930,25 @@ pub fn plan(
             other => other,
         }
     }
+    let eph = field.ephemeris();
     let seeded: Vec<Seed> = match (&as_low(from), &as_low(to)) {
+        // A low orbit and one of its planet's moons.
+        (End::Low(l), End::Body(m)) if eph.parent(*m) == Some(l.body) => moon_seeds(
+            field,
+            epoch,
+            l,
+            *m,
+            Direction::Up,
+            &samples(epoch, arrivals),
+        ),
+        (End::Body(m), End::Low(l)) if eph.parent(*m) == Some(l.body) => moon_seeds(
+            field,
+            epoch,
+            l,
+            *m,
+            Direction::Down,
+            &samples(epoch, window),
+        ),
         // Ends between planetary systems are `interplanetary`'s; an
         // atmosphere only ends a leg (and is a low orbit here).
         (End::Body(_) | End::Excess { .. } | End::Atmosphere { .. }, _)
@@ -954,9 +1041,12 @@ pub fn plan(
     }
     chosen.sort();
     chosen.dedup();
+    // Steps of a quarter of the shortest leg at most (a transfer from low
+    // Mars orbit to Phobos takes two hours).
+    let step = PLAN_STEP.min(shortest / 4.0);
     let carried: Vec<Vec<Option<Design>>> = chosen
         .par_iter()
-        .map(|&i| leg.frontier(&starts[i], durations, PLAN_STEP))
+        .map(|&i| leg.frontier(&starts[i], durations, step))
         .collect();
     (0..durations.len())
         .map(|i| {

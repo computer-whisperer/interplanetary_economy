@@ -1,0 +1,47 @@
+# Phobos and Deimos as precessing ellipses about Mars, fitted to JPL
+# Horizons over 2025-2080 by tools/moons/build.py. Angles in degrees,
+# rates per day, `a` in km. Mars's frame: z along its IAU 2000 pole (at
+# 2052), x toward the node of its equator on the ecliptic of J2000. Each
+# ellipse lies in a plane precessing about a Laplace pole leaning
+# (tilt_x, tilt_y) from Mars's pole toward x and y; node and periapsis
+# (a longitude, measured from that frame's x axis) turn at constant
+# rates; the mean longitude has a quadratic term. Their pull is left out
+# (Phobos's escape speed is 11 m/s), like the asteroids'.
+epoch_jd_tdb = 2460676.5
+mars_pole = [0.446092247748, -0.056318475413, 0.893213264471]
+
+[[moon]]
+id = "phobos"
+name = "Phobos"
+radius_km = 11.08
+# Fit residual over 2025-2080: rms 46.58 km, max 106.61 km.
+tilt_x = 0.0005673904
+tilt_y = 0.0091753697
+a_km = 9374.806235
+e = 0.0151242262
+i = 1.0748759811
+node = 109.0569997704
+node_rate = -0.435797511569
+periapsis = -1.2540679212
+periapsis_rate = 0.435181183284
+mean_longitude = -1099.5400178750
+mean_motion = 1128.845118144052
+mean_motion_rate = -2.588548e-11
+
+[[moon]]
+id = "deimos"
+name = "Deimos"
+radius_km = 6.27
+# Fit residual over 2025-2080: rms 48.83 km, max 133.49 km.
+tilt_x = -0.0447455233
+tilt_y = 0.8968051763
+a_km = 23457.490928
+e = 0.0002675663
+i = 1.8032037890
+node = -152.9604142625
+node_rate = -0.018007172873
+periapsis = 10.7607785791
+periapsis_rate = 0.018029328480
+mean_longitude = -426.4464283658
+mean_motion = 285.161873140542
+mean_motion_rate = 4.053224e-09

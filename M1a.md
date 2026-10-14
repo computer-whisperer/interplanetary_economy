@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–7 done.
+Status, 2026-10-14: steps 1–8 done.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -151,10 +151,10 @@ Status, 2026-10-13: steps 1–7 done.
   the excess velocities diverged.) New ends: a small body to meet, and an
   escape or capture with a given excess velocity (osculating, days out).
   The NASA handbook's Mars departures flown LEO (400 km) to a 400 km Mars
-  orbit on its dates: leaving LEO 3,576, 3,550, 3,523 and 3,582 m/s (2031
+  orbit on its dates: leaving LEO 3,576, 3,550, 3,523 and 3,583 m/s (2031
   and 2033 Type I, 2033 and 2043 Type II) against 3,584, 3,558, 3,529 and
   3,582 from the handbook's C3, within 0.25%; into Mars orbit within 0.2%
-  of the same arc's patched conics. (In C3 itself, more sensitive, 0.03–2%
+  of the same arc's patched conics (Mars's J2 included since step 8). (In C3 itself, more sensitive, 0.03–2%
   below the handbook's: Earth swings ~12 m/s about the barycenter the
   handbook departs from.) Escape to the 2033 arc's excess velocity, 3,552.6
   m/s against a hyperbola's 3,557.5; LEO to 2000 SG344 (2066-10-26, 324
@@ -162,6 +162,29 @@ Status, 2026-10-13: steps 1–7 done.
   0.2–4 s. Left for later steps: leaving station orbits for other planets
   (lunar flyby escapes, step 9), Phobos and Deimos (their ephemerides and
   Mars's figure, with step 8's landings), and searching dates (step 10).
+
+- Step 8: `surface` gives landing and ascent as the ideal two-burn Δv
+  between a low orbit and the surface plus a loss per body and direction,
+  fitted to flown values (Moon: Apollo 11's 23 + 2,081 m/s down from 111
+  km and 1,846 m/s up, so 0.374 and 0.159 km/s of loss; Mars: 4,200 m/s up
+  to 100 km, Palaszewski, so 0.594), and an atmosphere's passes for
+  aero-capable ships: aerocapture at a pass altitude then a periapsis
+  raise, entry then a terminal descent (674 m/s at Mars, Palaszewski),
+  each failing above a speed limit (Earth 12.5, Mars 8 km/s: this game's
+  assumptions). `End::Atmosphere` ends a leg there. LEO to Mars by
+  aerocapture on the 2033 arc: 3,550 + 82 m/s (2,820 m/s to capture
+  propulsively); NRHO to LEO by aerocapture in 5 days: 229 + 188 + 97 m/s
+  (M0's fit had 0.77 km/s from L1). Phobos and Deimos are precessing
+  ellipses about Mars (node, periapsis and a Laplace pole fitted to
+  Horizons over 2025–2080, `tools/moons/`): within 105 and 124 km of
+  Horizons off the fit's grid. A fit was chosen over integrating them like
+  the NEAs: Phobos's 7.65-hour orbit would cost seconds of integration at
+  every load, and Mars's unmodeled J4 would turn its node ~6° in 40 years.
+  (Daily samples alias the moons' mean motions; the build unwraps them day
+  by day.) Mars has a figure (J2 of MRO120D, the IAU 2000 pole; the 2015
+  values as found quoted gave an obliquity of 23.9°, not 25.19°). Low Mars
+  orbit (300 km) to Phobos and back: 1,205 m/s each way in 2.2 hours,
+  Hohmann's 1,206, seeded by Lambert arcs about Mars.
 
 ## Why
 

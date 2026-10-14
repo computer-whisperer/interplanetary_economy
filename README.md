@@ -14,8 +14,9 @@ sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
   transfer design in the full field (multiple shooting and Δv
   minimization, `shooting`), cislunar legs between station orbits and low
   orbits seeded by fans (`legs::plan`), legs between planetary systems
-  seeded by patched conics (`interplanetary`), and Lambert transfers
-  between bodies with their porkchop grids and windows.
+  seeded by patched conics (`interplanetary`), landing, ascent and
+  atmospheric passes (`surface`), and Lambert transfers between bodies
+  with their porkchop grids and windows.
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
@@ -23,14 +24,19 @@ sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
   Out of the workspace: it reads the Δv network that M1a step 1 deleted,
   and M1a step 11 rewires it to the autopilot's flown legs.
 - `data/` — game data: JPL's DE440 ephemeris for 2025–2080 (`de440.bin`),
-  the candidate asteroids, the Earth–Moon periodic-orbit families
-  (`orbits.toml`), and the economy (`economy.toml`, with sources).
+  the candidate asteroids, Phobos and Deimos (`moons.toml`), the Earth–Moon
+  periodic-orbit families (`orbits.toml`), and the economy (`economy.toml`,
+  with sources).
 - `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
   then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
   Horizons fixtures the tests check it against (`fixtures.sh`).
 - `tools/orbits/` — regenerates `data/orbits.toml` from JPL's periodic-orbit
   catalog (`fetch.sh DIR`, then `python3 build.py DIR > ../../data/orbits.toml`;
   needs numpy and scipy).
+- `tools/moons/` — regenerates `data/moons.toml` (Phobos and Deimos as
+  precessing ellipses fitted to JPL Horizons; `fetch.sh DIR`, then
+  `python3 build.py DIR > ../../data/moons.toml`; needs numpy and scipy),
+  and the Horizons fixtures the tests check them against (`fixtures.sh`).
 - `tools/neas/` — regenerates `data/neas.toml` (each asteroid's physical
   data and Horizons state at 2040-01-01) from JPL Horizons and SBDB
   (`fetch.sh DIR`, then `python3 build.py DIR > ../../data/neas.toml`), and

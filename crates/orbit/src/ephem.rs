@@ -108,6 +108,58 @@ enum Motion {
     Moon,
     /// Integrated barycentric `[r, v]`, time in seconds after `epoch`.
     Integrated { epoch: Epoch, path: Trajectory<6> },
+    /// A moon's precessing ellipse about its planet.
+    Ellipse(Box<Ellipse>),
+}
+
+/// A moon's orbit as a precessing ellipse about its planet, fitted to JPL
+/// Horizons (`data/moons.toml`, `tools/moons/`): in a plane precessing
+/// about a Laplace pole, node and periapsis turning at constant rates, the
+/// mean longitude with a quadratic term. Angles in radians, rates per
+/// second, from `epoch`.
+#[derive(Clone, Debug)]
+struct Ellipse {
+    center: BodyId,
+    epoch: Epoch,
+    /// The precession's frame: x, y, and z along the Laplace pole.
+    axes: [DVec3; 3],
+    a: f64,
+    e: f64,
+    i: f64,
+    node: (f64, f64),
+    periapsis: (f64, f64),
+    /// Mean longitude, mean motion, and its rate.
+    longitude: (f64, f64, f64),
+}
+
+impl Ellipse {
+    /// Position relative to the planet at `t`.
+    fn position(&self, t: Epoch) -> DVec3 {
+        let s = (t.0 - self.epoch.0) * SECONDS_PER_DAY;
+        let node = self.node.0 + self.node.1 * s;
+        let periapsis = self.periapsis.0 + self.periapsis.1 * s;
+        let (l0, n, ndot) = self.longitude;
+        let local = Elements {
+            a: self.a,
+            e: self.e,
+            i: self.i,
+            raan: node,
+            argp: periapsis - node,
+            mean_anomaly: l0 + n * s + 0.5 * ndot * s * s - periapsis,
+            mean_motion: n,
+        }
+        .state()
+        .r;
+        let [x, y, z] = self.axes;
+        local.x * x + local.y * y + local.z * z
+    }
+
+    /// Velocity relative to the planet at `t`, by central differences of
+    /// the position (the precession's own rates included).
+    fn velocity(&self, t: Epoch) -> DVec3 {
+        let h = 1.0 / SECONDS_PER_DAY;
+        (self.position(Epoch(t.0 + h)) - self.position(Epoch(t.0 - h))) / 2.0
+    }
 }
 
 /// One body's DE440 Chebyshev series: records of `intlen` seconds from
@@ -261,6 +313,34 @@ pub struct Ephemeris {
 }
 
 #[derive(Deserialize)]
+struct MoonFile {
+    epoch_jd_tdb: f64,
+    /// Mars's pole, ecliptic of J2000: the moons' frame's z axis.
+    mars_pole: [f64; 3],
+    moon: Vec<MoonRow>,
+}
+
+/// One moon's fitted elements (degrees, km, per day).
+#[derive(Deserialize)]
+struct MoonRow {
+    id: String,
+    name: String,
+    radius_km: f64,
+    tilt_x: f64,
+    tilt_y: f64,
+    a_km: f64,
+    e: f64,
+    i: f64,
+    node: f64,
+    node_rate: f64,
+    periapsis: f64,
+    periapsis_rate: f64,
+    mean_longitude: f64,
+    mean_motion: f64,
+    mean_motion_rate: f64,
+}
+
+#[derive(Deserialize)]
 struct SmallBodyFile {
     epoch_jd_tdb: f64,
     body: Vec<SmallBodyRow>,
@@ -286,6 +366,8 @@ impl Ephemeris {
         STANDARD.get_or_init(|| {
             Self::with_small_bodies(include_str!("../../../data/neas.toml"))
                 .expect("data/neas.toml is valid")
+                .with_moons(include_str!("../../../data/moons.toml"))
+                .expect("data/moons.toml is valid")
         })
     }
 
@@ -342,6 +424,17 @@ impl Ephemeris {
             j2: de.constant("J2E"),
             radius: de.constant("RE"),
             pole: DVec3::new(0.0, OBLIQUITY_J2000.sin(), OBLIQUITY_J2000.cos()),
+        });
+
+        // Mars: J2 of MRO120D (normalized C20 -8.75022e-4) at its 3,396 km
+        // reference radius; the IAU 2000 pole at 2052 (which gives Mars's
+        // obliquity, 25.19°; the WGCCRE 2015 values as found quoted gave
+        // 23.9°), the frame of data/moons.toml.
+        let mars = bodies.iter_mut().find(|b| b.id == "mars").unwrap();
+        mars.figure = Some(Figure {
+            j2: 1.956_608e-3,
+            radius: 3_396.0,
+            pole: DVec3::new(0.446_092_247_748, -0.056_318_475_413, 0.893_213_264_471),
         });
 
         let emb = de.series_index(3, 0);
@@ -406,6 +499,58 @@ impl Ephemeris {
         Ok(eph)
     }
 
+    /// Adds moons from a TOML document shaped like `data/moons.toml`
+    /// (precessing ellipses about Mars), massless like the small bodies.
+    pub fn with_moons(mut self, toml_src: &str) -> Result<Self, String> {
+        let file: MoonFile = toml::from_str(toml_src).map_err(|e| e.to_string())?;
+        let mars = self.lookup("mars").ok_or("no Mars")?;
+        let base = |pole: DVec3| -> [DVec3; 3] {
+            let z = pole.normalize();
+            let x = DVec3::Z.cross(z).normalize();
+            [x, z.cross(x), z]
+        };
+        let [bx, by, bz] = base(DVec3::from_array(file.mars_pole));
+        let (deg, per_day) = (std::f64::consts::PI / 180.0, 1.0 / SECONDS_PER_DAY);
+        for m in file.moon {
+            if self.lookup(&m.id).is_some() {
+                return Err(format!("duplicate body id {:?}", m.id));
+            }
+            let pole = bz + m.tilt_x * deg * bx + m.tilt_y * deg * by;
+            self.bodies.push(Body {
+                id: m.id,
+                name: m.name,
+                kind: BodyKind::Moon,
+                gm: 0.0,
+                radius: m.radius_km,
+                figure: None,
+                motion: Motion::Ellipse(Box::new(Ellipse {
+                    center: mars,
+                    epoch: Epoch::from_jd(file.epoch_jd_tdb),
+                    axes: base(pole),
+                    a: m.a_km,
+                    e: m.e,
+                    i: m.i * deg,
+                    node: (m.node * deg, m.node_rate * deg * per_day),
+                    periapsis: (m.periapsis * deg, m.periapsis_rate * deg * per_day),
+                    longitude: (
+                        m.mean_longitude * deg,
+                        m.mean_motion * deg * per_day,
+                        m.mean_motion_rate * deg * per_day * per_day,
+                    ),
+                })),
+            });
+        }
+        Ok(self)
+    }
+
+    /// The planet a moon with a fitted orbit circles (Phobos, Deimos).
+    pub fn parent(&self, id: BodyId) -> Option<BodyId> {
+        match &self.bodies[id.0].motion {
+            Motion::Ellipse(el) => Some(el.center),
+            _ => None,
+        }
+    }
+
     pub fn lookup(&self, id: &str) -> Option<BodyId> {
         self.bodies.iter().position(|b| b.id == id).map(BodyId)
     }
@@ -441,6 +586,7 @@ impl Ephemeris {
                 }
             }
             Motion::Integrated { .. } => self.barycentric(id, t).r,
+            Motion::Ellipse(el) => self.barycentric_position(el.center, t) + el.position(t),
         }
     }
 
@@ -483,6 +629,13 @@ impl Ephemeris {
                     v: emb.v + f * off.v,
                 }
             }
+            Motion::Ellipse(el) => {
+                let c = self.barycentric(el.center, t);
+                State {
+                    r: c.r + el.position(t),
+                    v: c.v + el.velocity(t),
+                }
+            }
             Motion::Integrated { epoch, path } => {
                 let (t0, t1) = path.span();
                 let sec = (t.0 - epoch.0) * SECONDS_PER_DAY;
@@ -515,7 +668,8 @@ impl Ephemeris {
     /// system leaves with excess speed relative to this, and heliocentric
     /// transfers connect these states.
     pub fn system_state(&self, id: BodyId, t: Epoch) -> State {
-        match self.bodies[id.0].motion {
+        match &self.bodies[id.0].motion {
+            Motion::Ellipse(el) => self.system_state(el.center, t),
             Motion::Earth | Motion::Moon => {
                 let (emb, sun) = (
                     self.series[self.emb].state(t),
@@ -536,6 +690,7 @@ impl Ephemeris {
     pub fn elements(&self, id: BodyId, t: Epoch) -> Elements {
         let body = &self.bodies[id.0];
         let gm = match &body.motion {
+            Motion::Ellipse(el) => return self.elements(el.center, t),
             Motion::Earth | Motion::Moon => self
                 .bodies
                 .iter()
@@ -573,6 +728,9 @@ impl Ephemeris {
     /// Radius of the body's planetary system's sphere of influence about the
     /// Sun (Laplace's: a (m/M)^(2/5), osculating a), km. Panics for the Sun.
     pub fn sphere_of_influence(&self, id: BodyId, t: Epoch) -> f64 {
+        if let Motion::Ellipse(el) = &self.bodies[id.0].motion {
+            return self.sphere_of_influence(el.center, t);
+        }
         let system: f64 = match self.bodies[id.0].motion {
             Motion::Earth | Motion::Moon => self
                 .bodies
