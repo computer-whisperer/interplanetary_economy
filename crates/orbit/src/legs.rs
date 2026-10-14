@@ -788,7 +788,8 @@ const PLAN_MARGIN: f64 = 0.25 * SECONDS_PER_DAY;
 /// two low orbits. The cheapest are designed at their own durations, then
 /// carried by continuation to each requested one (the cheapest, and those
 /// nearest each duration); for each, the cheapest design reached. Designs
-/// leave within the window.
+/// leave within the window. Small bodies and escapes are not cislunar: none
+/// for them.
 pub fn plan(
     field: &Field,
     light: &Field,
@@ -814,7 +815,7 @@ pub fn plan(
                 let shift = (r.epoch.0 - epoch.0) * SECONDS_PER_DAY;
                 (lo + shift + PLAN_MARGIN, hi + shift - PLAN_MARGIN)
             }
-            End::Low(_) => (f64::NEG_INFINITY, f64::INFINITY),
+            _ => (f64::NEG_INFINITY, f64::INFINITY),
         }
     };
     let (from_lo, from_hi) = covered(&from);
@@ -850,6 +851,10 @@ pub fn plan(
         designs: 2 * PLAN_SEEDS,
     };
     let seeded: Vec<Seed> = match (&from, &to) {
+        // Ends between planetary systems are `interplanetary`'s.
+        (End::Body(_) | End::Excess { .. }, _) | (_, End::Body(_) | End::Excess { .. }) => {
+            return vec![None; durations.len()];
+        }
         (End::Orbit(r), End::Low(l)) => {
             let s = search(samples(r.epoch, window), Some(l.body) == center);
             seeds(field, light, r, l, Direction::Down, &s)

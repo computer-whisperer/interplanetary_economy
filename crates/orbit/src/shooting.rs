@@ -70,6 +70,33 @@ pub enum End<'a> {
     /// At an apsis of a transfer that meets a circular orbit there, burning
     /// along the velocity.
     Low(LowOrbit),
+    /// At a body, matching its velocity: a rendezvous with a small body.
+    Body(BodyId),
+    /// On a hyperbola about a body with the given excess velocity (km/s),
+    /// with no burn: leaving the body's system on its way out (as a leg's
+    /// end), arriving into it (as a start).
+    Excess { body: BodyId, v_inf: DVec3 },
+}
+
+/// The excess velocity of a hyperbola about a body of `gm` through `s` (a
+/// state relative to it): where the ship goes, or (`outgoing` false) where
+/// it came from. `None` if `s` is not on a hyperbola.
+pub fn excess_velocity(gm: f64, s: &[f64; 6], outgoing: bool) -> Option<DVec3> {
+    let (r, v) = (DVec3::new(s[0], s[1], s[2]), DVec3::new(s[3], s[4], s[5]));
+    let speed2 = v.length_squared() - 2.0 * gm / r.length();
+    if speed2 <= 0.0 {
+        return None;
+    }
+    let e = ((v.length_squared() - gm / r.length()) * r - r.dot(v) * v) / gm;
+    let ecc = e.length();
+    let (p, q) = (e / ecc, r.cross(v).normalize().cross(e / ecc));
+    let (cos, sin) = (-1.0 / ecc, (1.0 - 1.0 / (ecc * ecc)).sqrt());
+    let way = if outgoing {
+        cos * p + sin * q
+    } else {
+        -(cos * p - sin * q)
+    };
+    Some(speed2.sqrt() * way)
 }
 
 /// A circular orbit about a body: a parking orbit in LEO, a low lunar
@@ -507,6 +534,62 @@ impl<'a> Leg<'a> {
                     cost_state: cat(DVec3::ZERO, along),
                     cost_t: -along.dot(ba),
                     burn: join(nu / moving * gap),
+                })
+            }
+            End::Body(body) => {
+                let (br, bv, ba) = self.body(*body, epoch, t);
+                let rows = (0..3)
+                    .map(|i| {
+                        let mut ds = [0.0; 6];
+                        ds[i] = 1.0;
+                        ((r - br)[i], ds, -bv[i])
+                    })
+                    .collect();
+                let dv = v - bv;
+                let size = (dv.length_squared() + SMOOTH * SMOOTH).sqrt();
+                let u = dv / size;
+                Some(EndTerms {
+                    rows,
+                    scales: vec![length; 3],
+                    cost: size,
+                    cost_state: [0.0, 0.0, 0.0, u.x, u.y, u.z],
+                    cost_t: -u.dot(ba),
+                    burn: join(dv),
+                })
+            }
+            End::Excess { body, v_inf } => {
+                // Derivatives by central differences: the asymptote's
+                // algebra is long, and the function cheap and smooth.
+                let gm = self.field.ephemeris().body(*body).gm;
+                let at = |t: f64, s: &[f64; 6]| -> Option<DVec3> {
+                    let b = self
+                        .field
+                        .body_state(*body, Epoch(epoch.0 + t / SECONDS_PER_DAY));
+                    let rel: [f64; 6] =
+                        std::array::from_fn(|d| s[d] - if d < 3 { b.r[d] } else { b.v[d - 3] });
+                    Some(excess_velocity(gm, &rel, !leaving)? - *v_inf)
+                };
+                let value = at(t, s)?;
+                let mut ds = [[0.0; 6]; 3];
+                for d in 0..6 {
+                    let h = if d < 3 { 1e-3 } else { 1e-6 };
+                    let (mut hi, mut lo) = (*s, *s);
+                    hi[d] += h;
+                    lo[d] -= h;
+                    let g = (at(t, &hi)? - at(t, &lo)?) / (2.0 * h);
+                    for (i, row) in ds.iter_mut().enumerate() {
+                        row[d] = g[i];
+                    }
+                }
+                let dt = (at(t + 1.0, s)? - at(t - 1.0, s)?) / 2.0;
+                let rows = (0..3).map(|i| (value[i], ds[i], dt[i])).collect();
+                Some(EndTerms {
+                    rows,
+                    scales: vec![speed; 3],
+                    cost: 0.0,
+                    cost_state: [0.0; 6],
+                    cost_t: 0.0,
+                    burn: DVec3::ZERO,
                 })
             }
         }

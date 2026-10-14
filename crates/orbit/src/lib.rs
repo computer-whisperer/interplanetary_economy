@@ -9,6 +9,7 @@ pub mod ephem;
 pub mod families;
 pub mod gravity;
 pub mod integrate;
+pub mod interplanetary;
 pub mod kepler;
 pub mod lambert;
 pub mod legs;

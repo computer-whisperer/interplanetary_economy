@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–6 done.
+Status, 2026-10-13: steps 1–7 done.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -138,6 +138,30 @@ Status, 2026-10-13: steps 1–6 done.
   0.07° of the IAU's. Left for later steps: re-planning a standing route
   from its previous departure, and the reliability and timing sweep (step
   10).
+
+- Step 7: arcs integrate in the frame of the body whose sphere of
+  influence they start in (Earth, Mars, else the barycenter), nodes in one
+  frame; references record theirs. `interplanetary` seeds legs between
+  planetary systems by patched conics: the heliocentric Lambert arc, and a
+  hyperbola at each planet with the arc's excess velocity there, lasting
+  until the ship nears the planet's sphere of influence and patched to the
+  arc where it ends by Newton's method on the excess velocities. (Patched
+  at the planets' centers, a 0.56 km/s departure's arc missed by 1.2
+  million km after the 19 days the ship spends leaving; a plain update of
+  the excess velocities diverged.) New ends: a small body to meet, and an
+  escape or capture with a given excess velocity (osculating, days out).
+  The NASA handbook's Mars departures flown LEO (400 km) to a 400 km Mars
+  orbit on its dates: leaving LEO 3,576, 3,550, 3,523 and 3,582 m/s (2031
+  and 2033 Type I, 2033 and 2043 Type II) against 3,584, 3,558, 3,529 and
+  3,582 from the handbook's C3, within 0.25%; into Mars orbit within 0.2%
+  of the same arc's patched conics. (In C3 itself, more sensitive, 0.03–2%
+  below the handbook's: Earth swings ~12 m/s about the barycenter the
+  handbook departs from.) Escape to the 2033 arc's excess velocity, 3,552.6
+  m/s against a hyperbola's 3,557.5; LEO to 2000 SG344 (2066-10-26, 324
+  days), 4,038 m/s against patched conics' 4,021. A Mars design takes
+  0.2–4 s. Left for later steps: leaving station orbits for other planets
+  (lunar flyby escapes, step 9), Phobos and Deimos (their ephemerides and
+  Mars's figure, with step 8's landings), and searching dates (step 10).
 
 ## Why
 

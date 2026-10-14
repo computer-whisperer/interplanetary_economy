@@ -13,8 +13,9 @@ sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
   orbits carried into the full model, station-keeping and upkeep,
   transfer design in the full field (multiple shooting and Δv
   minimization, `shooting`), cislunar legs between station orbits and low
-  orbits seeded by fans (`legs::plan`), and Lambert transfers between
-  bodies with their porkchop grids and windows.
+  orbits seeded by fans (`legs::plan`), legs between planetary systems
+  seeded by patched conics (`interplanetary`), and Lambert transfers
+  between bodies with their porkchop grids and windows.
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
