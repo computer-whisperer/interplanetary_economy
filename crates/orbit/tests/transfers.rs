@@ -94,6 +94,11 @@ fn world() -> World {
 /// 14.5 days), "dro" (14 days) or "l1" (an L1 northern halo, 12 days), for
 /// at least 60 days from the start.
 fn station(w: &World, which: &str) -> Reference {
+    station_for(w, which, 60.0)
+}
+
+/// [`station`] for at least `span` days.
+fn station_for(w: &World, which: &str, span: f64) -> Reference {
     let (family, days): (&str, f64) = match which {
         "nrho" => ("l2-halo-south", 6.57),
         "l2" => ("l2-halo-north", 14.5),
@@ -102,7 +107,7 @@ fn station(w: &World, which: &str) -> Reference {
         _ => unreachable!(),
     };
     let cat = Catalog::standard();
-    let revs = (60.0 / days).ceil() as usize;
+    let revs = (span / days).ceil() as usize;
     let m = nearest(cat, family, days);
     continue_orbit(
         Ephemeris::standard(),
@@ -431,4 +436,65 @@ fn nrho_escape_and_capture_by_excess_speed() {
         );
         assert!(d.dv < 1.0, "{}", d.dv);
     }
+}
+
+/// Standing routes re-planned from the departures before (`legs::replan`).
+///
+/// From the NRHO to polar low lunar orbit (0.5 days), a departure each
+/// revolution: each re-plans in well under 0.1 s, near the cold plans'
+/// Δv (measured 2026-10-13: 686–714 m/s over a month).
+///
+/// From the L2 halo to LEO (6.5 days, past the Moon): re-planned from the
+/// departure two revolutions back, which is about a synodic month (so the
+/// Sun is where it was relative to the Moon), within 1% of it. Shifted by
+/// one revolution, half a month, it may not converge: there the seed's
+/// family of paths ends (Newton's residuals fold as its gaps are closed in
+/// stages), and a route plans cold.
+#[test]
+fn standing_routes_replan() {
+    let w = world();
+    let nrho = station_for(&w, "nrho", 70.0);
+    let period = nrho.period_s();
+    let (from, to) = (End::Orbit(&nrho), End::Low(w.llo));
+    let mut history = vec![plan(&w, from, to, period / DAY, 0.5)];
+    for k in 1..8 {
+        let date = start().plus_days(k as f64 * period / DAY);
+        let clock = std::time::Instant::now();
+        let d =
+            legs::replan(&w.field, from, to, &history, date, (0.0, period)).expect("re-planned");
+        let took = clock.elapsed().as_secs_f64();
+        println!("NRHO to LLO, {date}: {:.1} m/s in {took:.3} s", d.dv * 1e3);
+        assert!(took < 0.1, "{took} s");
+        assert!(d.dv > 0.68 && d.dv < 0.72, "{}", d.dv);
+        history.push(d);
+    }
+
+    let l2 = station_for(&w, "l2", 60.0);
+    let period = l2.period_s();
+    let (from, to) = (End::Orbit(&l2), End::Low(w.leo));
+    let first = plan(&w, from, to, period / DAY, 6.5);
+    let date = start().plus_days(2.0 * period / DAY);
+    let clock = std::time::Instant::now();
+    let d = legs::replan(
+        &w.field,
+        from,
+        to,
+        std::slice::from_ref(&first),
+        date,
+        (0.0, period),
+    )
+    .expect("re-planned a month on");
+    let took = clock.elapsed().as_secs_f64();
+    println!(
+        "L2 halo to LEO, {date}: {:.1} m/s in {took:.3} s (first {:.1})",
+        d.dv * 1e3,
+        first.dv * 1e3
+    );
+    assert!(took < 1.0, "{took} s");
+    assert!(
+        (d.dv / first.dv - 1.0).abs() < 0.01,
+        "{} against {}",
+        d.dv,
+        first.dv
+    );
 }

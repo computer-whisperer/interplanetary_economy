@@ -13,11 +13,11 @@
 //! ([`crate::shooting`]), which makes them meet both ends exactly and
 //! minimizes their total Δv.
 
-use crate::ephem::BodyId;
+use crate::ephem::{BodyId, Ephemeris};
 use crate::gravity::Field;
 use crate::integrate::{DenseStep, Dop853, Tolerance};
-use crate::reference::Reference;
-use crate::shooting::{Design, End, Leg, LowOrbit, Pass, Path, excess_velocity};
+use crate::reference::{EarthMoonFrame, Reference};
+use crate::shooting::{Design, End, Failure, Leg, LowOrbit, Pass, Path, excess_velocity};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
 use rayon::prelude::*;
@@ -1283,4 +1283,203 @@ pub fn plan(
                 .min_by(|a, b| a.dv.total_cmp(&b.dv))
         })
         .collect()
+}
+
+/// Re-plans a leg from `history`, its designs for earlier departures, to
+/// leave within `window` (s after `epoch`) at the same duration: a
+/// standing route re-plans each departure from the ones before (DESIGN.md,
+/// Player actions). One design, where [`plan`] designs several seeds and
+/// continues them.
+///
+/// The seed is an earlier path moved later by whole revolutions of the
+/// station the leg leaves or reaches (by the window's length if neither
+/// end is a station), to its first departure at or after the window
+/// opens, each node carried with the line from the field's center to its
+/// moon ([`carry`]). Of the earlier paths, the one moved nearest a whole
+/// number of synodic months (and cheapest) is tried first, then the next:
+/// the Sun's pull
+/// turns once a synodic month in the moon's frame, and a leg that reaches
+/// far from Earth feels it (measured 2026-10-13: from the L2 halo to LEO,
+/// half-month shifts of the previous departure often failed; month-long
+/// shifts of the one before always converged, at the cold plan's Δv).
+pub fn replan(
+    field: &Field,
+    from: End,
+    to: End,
+    history: &[Design],
+    epoch: Epoch,
+    window: (f64, f64),
+) -> Result<Design, Failure> {
+    let step = match (from, to) {
+        (End::Orbit(r), _) | (_, End::Orbit(r)) => r.period_s(),
+        _ => window.1 - window.0,
+    };
+    let synodic = field
+        .center()
+        .zip(carrier(field, &from, &to))
+        .map(|(primary, secondary)| synodic_period(field.ephemeris(), primary, secondary, epoch));
+    // Scored by how far from a whole number of synodic months each moves,
+    // a little by how far it moves, and by its Δv over the cheapest's: a
+    // re-plan keeps its seed's local minimum, and 1% more Δv weighs as much
+    // as three days off the Sun's angle.
+    let cheapest = history.iter().map(|d| d.dv).fold(f64::INFINITY, f64::min);
+    let mut candidates: Vec<(f64, &Design, f64)> = history
+        .iter()
+        .map(|previous| {
+            let left = (previous.path.epoch.0 - epoch.0) * SECONDS_PER_DAY + previous.departure();
+            let dt = ((window.0 - left) / step).ceil() * step;
+            let months = synodic.map_or(dt / SECONDS_PER_DAY / 30.0, |p| dt / p);
+            let score = (months - months.round()).abs()
+                + 0.01 * months.abs()
+                + 10.0 * (previous.dv / cheapest - 1.0);
+            (score, previous, dt)
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut failure = Failure::Infeasible(f64::INFINITY);
+    for &(_, previous, dt) in candidates.iter().take(REPLAN_TRIES) {
+        match redesign(field, from, to, previous, dt, epoch, window) {
+            Ok(d) => return Ok(d),
+            Err(e) => failure = e,
+        }
+    }
+    Err(failure)
+}
+
+/// Seeds [`replan`] tries.
+const REPLAN_TRIES: usize = 2;
+
+/// The period of `secondary`'s phase about `primary` as seen from the Sun
+/// at `t`, s: a synodic month for the Moon.
+fn synodic_period(eph: &Ephemeris, primary: BodyId, secondary: BodyId, t: Epoch) -> f64 {
+    let around = EarthMoonFrame::at(eph, primary, secondary, t).rate;
+    let (p, sun) = (eph.barycentric(primary, t), eph.barycentric(eph.sun(), t));
+    let (r, v) = (p.r - sun.r, p.v - sun.v);
+    let year = r.cross(v).length() / r.length_squared();
+    2.0 * std::f64::consts::PI / (around - year)
+}
+
+/// [`replan`]'s design from `previous` moved `dt` s later.
+fn redesign(
+    field: &Field,
+    from: End,
+    to: End,
+    previous: &Design,
+    dt: f64,
+    epoch: Epoch,
+    window: (f64, f64),
+) -> Result<Design, Failure> {
+    let eph = field.ephemeris();
+    let pair = field.center().zip(carrier(field, &from, &to));
+    let mut seed = match pair {
+        Some((primary, secondary)) => carry(eph, primary, secondary, &previous.path, dt),
+        None => Path {
+            epoch: previous.path.epoch.plus_days(dt / SECONDS_PER_DAY),
+            ..previous.path.clone()
+        },
+    };
+    // A station is only quasi-periodic: a revolution later it is not quite
+    // where the carried departure is. The departure starts on it, with the
+    // previous burn turned with the line the path was carried with.
+    if let End::Orbit(r) = from
+        && r.center == field.center()
+    {
+        let when = |path: &Path| path.epoch.plus_days(path.times[0] / SECONDS_PER_DAY);
+        let (t0, t1) = (when(&previous.path), when(&seed));
+        let (was, now) = (r.state(t0), r.state(t1));
+        let s = previous.path.states[0];
+        let mut burn = DVec3::new(s[3] - was[3], s[4] - was[4], s[5] - was[5]);
+        if let Some((primary, secondary)) = pair {
+            let (f0, f1) = (
+                EarthMoonFrame::at(eph, primary, secondary, t0),
+                EarthMoonFrame::at(eph, primary, secondary, t1),
+            );
+            burn = f1.x * burn.dot(f0.x) + f1.y * burn.dot(f0.y) + f1.z * burn.dot(f0.z);
+        }
+        seed.states[0] = [
+            now[0],
+            now[1],
+            now[2],
+            now[3] + burn.x,
+            now[4] + burn.y,
+            now[5] + burn.z,
+        ];
+    }
+    let shift = (epoch.0 - seed.epoch.0) * SECONDS_PER_DAY;
+    Leg {
+        field,
+        locals: &[],
+        from,
+        to,
+        depart: None,
+        arrive: None,
+        duration: Some(previous.duration()),
+        window: Some((window.0 + shift, window.1 + shift)),
+    }
+    .design(&seed)
+}
+
+/// The moon a leg in `field` is carried with when re-planned: a fitted moon
+/// of the field's center that the leg meets (Phobos), or else Earth's Moon
+/// when the field is centered on Earth.
+fn carrier(field: &Field, from: &End, to: &End) -> Option<BodyId> {
+    let eph = field.ephemeris();
+    let center = field.center()?;
+    let met = [from, to].into_iter().find_map(|end| match end {
+        End::Body(b) if eph.parent(*b) == Some(center) => Some(*b),
+        _ => None,
+    });
+    met.or_else(|| (eph.lookup("earth")? == center).then_some(eph.lookup("moon")?))
+}
+
+/// `path` (relative to `primary`) moved `dt` s later, each node carried with
+/// the line from `primary` to `secondary`: turned with it relative to the
+/// secondary within 5% of their separation, relative to the primary within
+/// 15%, in the pulsating frame (scaled with the separation) beyond 15% and
+/// 35% of it, and blended between. Positions near either body keep their
+/// distance from it, which a low orbit's end needs.
+fn carry(eph: &Ephemeris, primary: BodyId, secondary: BodyId, path: &Path, dt: f64) -> Path {
+    let (gp, gs) = (eph.body(primary).gm, eph.body(secondary).gm);
+    let mu = gs / (gp + gs);
+    let relative = |t: Epoch| {
+        let (p, s) = (eph.barycentric(primary, t), eph.barycentric(secondary, t));
+        (s.r - p.r, s.v - p.v)
+    };
+    let states = path
+        .states
+        .iter()
+        .zip(&path.times)
+        .map(|(s, &t)| {
+            let t0 = path.epoch.plus_days(t / SECONDS_PER_DAY);
+            let t1 = t0.plus_days(dt / SECONDS_PER_DAY);
+            let (f0, f1) = (
+                EarthMoonFrame::at(eph, primary, secondary, t0),
+                EarthMoonFrame::at(eph, primary, secondary, t1),
+            );
+            let turn = |w: DVec3| f1.x * w.dot(f0.x) + f1.y * w.dot(f0.y) + f1.z * w.dot(f0.z);
+            let (r, v) = (DVec3::new(s[0], s[1], s[2]), DVec3::new(s[3], s[4], s[5]));
+            let ((r0, v0), (r1, v1)) = (relative(t0), relative(t1));
+            let near_secondary = (r1 + turn(r - r0), v1 + turn(v - v0));
+            let near_primary = (turn(r), turn(v));
+            let x = f1.to_inertial(mu, &f0.to_rotating(mu, s));
+            let between = (DVec3::new(x[0], x[1], x[2]), DVec3::new(x[3], x[4], x[5]));
+            // Blended by distance, so that neighboring nodes carried
+            // differently do not open gaps between them.
+            let weight = |d: f64, inner: f64, outer: f64| {
+                let u = ((outer - d) / (outer - inner)).clamp(0.0, 1.0);
+                u * u * (3.0 - 2.0 * u)
+            };
+            let ws = weight((r - r0).length(), 0.05 * f0.distance, 0.15 * f0.distance);
+            let wp = weight(r.length(), 0.15 * f0.distance, 0.35 * f0.distance);
+            let wb = 1.0 - ws - wp;
+            let r = ws * near_secondary.0 + wp * near_primary.0 + wb * between.0;
+            let v = ws * near_secondary.1 + wp * near_primary.1 + wb * between.1;
+            [r.x, r.y, r.z, v.x, v.y, v.z]
+        })
+        .collect();
+    Path {
+        epoch: path.epoch.plus_days(dt / SECONDS_PER_DAY),
+        states,
+        ..path.clone()
+    }
 }
