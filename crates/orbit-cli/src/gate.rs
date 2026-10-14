@@ -969,8 +969,6 @@ fn between(sweep: &Sweep, opts: &Options, out: &Path, report: &mut String) -> Re
         radius: 6_778.0,
         inclination: None,
     };
-    let gm_e = eph.body(earth).gm;
-    let burn = |gm: f64, r: f64, v: f64| (v * v + 2.0 * gm / r).sqrt() - (gm / r).sqrt();
     let mars = sweep.mars;
     let (gm_m, r_m) = (eph.body(mars).gm, eph.body(mars).radius);
     let lmo = LowOrbit {
@@ -1021,37 +1019,27 @@ fn between(sweep: &Sweep, opts: &Options, out: &Path, report: &mut String) -> Re
         .par_iter()
         .flat_map(|(name, body, depart, tof)| {
             let arrive = depart.plus_days(*tof);
-            let arc = orbit::transfer::Transfer::compute(eph, earth, *body, *depart, *tof);
-            let out_pc = arc.map(|a| burn(gm_e, leo.radius, a.v_inf_depart));
-            let mut variants: Vec<(String, End, Option<f64>)> = Vec::new();
-            if *body == mars {
-                let into = arc.map(|a| burn(gm_m, lmo.radius, a.v_inf_arrive));
-                variants.push((
-                    "leo-lmo".into(),
-                    End::Low(lmo),
-                    out_pc.zip(into).map(|(a, b)| a + b),
-                ));
-                variants.push((
-                    "leo-mars-aero".into(),
-                    End::Atmosphere {
-                        body: mars,
-                        radius: pass,
-                        after,
-                        max_speed: rules.max_speed,
-                    },
-                    out_pc.map(|a| a + after),
-                ));
+            let variants: Vec<(String, End)> = if *body == mars {
+                vec![
+                    ("leo-lmo".into(), End::Low(lmo)),
+                    (
+                        "leo-mars-aero".into(),
+                        End::Atmosphere {
+                            body: mars,
+                            radius: pass,
+                            after,
+                            max_speed: rules.max_speed,
+                        },
+                    ),
+                ]
             } else {
-                let into = arc.map(|a| a.v_inf_arrive);
-                variants.push((
-                    format!("leo-{name}"),
-                    End::Body(*body),
-                    out_pc.zip(into).map(|(a, b)| a + b),
-                ));
-            }
+                vec![(format!("leo-{name}"), End::Body(*body))]
+            };
             let lines: Vec<String> = variants
                 .into_iter()
-                .map(|(leg, to, patched)| {
+                .map(|(leg, to)| {
+                    let patched =
+                        interplanetary::patched(&global, &End::Low(leo), &to, *depart, arrive);
                     let c = Instant::now();
                     let d = guarded(|| {
                         interplanetary::plan(&global, &locals, End::Low(leo), to, *depart, arrive)

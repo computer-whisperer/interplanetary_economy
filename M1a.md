@@ -238,8 +238,7 @@ step 11 next, then M1c (M1c.md).
        Fixing it is playbook work: wider windows, or transfers over
        several revolutions.
      - Between planets: 96.9%, counting as failures six designs that
-       converged at ~110 km/s (~52 km/s burns at each end;
-       `interplanetary::plan` returns them as designs). Fail, in two
+       converged at ~110 km/s (~52 km/s burns at each end). Fail, in two
        kinds of departure. Below 1 km/s of excess speed, 22% fail (53%
        when also near 180°): the hyperbola lingers for weeks where the
        Moon pulls hardest, and patched conics seed it badly. Within 30°
@@ -285,9 +284,18 @@ step 11 next, then M1c (M1c.md).
   Moon's point mass); a run now ends 500 km off, which already counted
   as lost.
 
+  The ~110 km/s designs came from their seeds: patching the hyperbolas
+  to the heliocentric arc by Newton's method diverged on departures below
+  ~1 km/s, to excess speeds up to 115 km/s against the arc's 0.4–0.8.
+  Halving steps until the mismatch shrinks drove those excess speeds
+  toward zero instead, and lost the test's 2000 SG344 design, so the
+  seeds stay as they are. `interplanetary::plan` now rejects a design
+  costing over 3× the leg's patched conics (`interplanetary::patched`;
+  designs that keep their family cost 0.85–1.9×), which removes the six.
+
   Left open: legs between stations; slow and near-180° departures to
-  other planets; `interplanetary::plan` accepting absurd designs; per-leg
-  re-planning time on long arcs; LEO to the DRO. Step 11 prices legs
+  other planets, including how to seed slow ones; per-leg re-planning
+  time on long arcs; LEO to the DRO. Step 11 prices legs
   from these sweeps, as tables; whether M1b flies ships per trip for the
   legs that pass is decided before M1b.
 

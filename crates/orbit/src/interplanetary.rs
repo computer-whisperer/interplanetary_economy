@@ -34,6 +34,14 @@ const CRUISE_ARC_S: f64 = 10.0 * SECONDS_PER_DAY;
 /// where the path is most sensitive.
 const NEAR_NODES_S: [f64; 3] = [3_600.0, 4.0 * 3_600.0, SECONDS_PER_DAY];
 
+/// A design costing more than this times the leg's patched conics
+/// ([`patched`]) has left the seed's family of paths, and is rejected.
+/// Seen in M1a's gate sweep: LEO to near-Earth asteroids at ~110 km/s, ~52
+/// km/s at each end, from seeds whose patching diverged (departures below
+/// ~1 km/s of excess speed, to excess speeds up to 115 km/s). Designs that
+/// keep their family cost 0.85–1.9× patched conics.
+const BEYOND_PATCHED: f64 = 3.0;
+
 /// The periapsis state, relative to a body of `gm`, of a hyperbola with
 /// periapsis radius `rp` and excess velocity `v_inf`: leaving the body
 /// (`outgoing`) or arriving at it. Its plane contains `v_inf`; `turn`
@@ -74,6 +82,42 @@ fn kind(end: &End) -> Option<(BodyId, Option<f64>)> {
         End::Excess { body, .. } => Some((*body, None)),
         End::Orbit(_) | End::Hyperbola { .. } => None,
     }
+}
+
+/// The leg's Δv by patched conics: the heliocentric Lambert arc between the
+/// two systems (the escape's or capture's excess velocity instead, at both
+/// ends, for a leg with one), and at each end the burn between it and the
+/// excess velocity there: a low orbit's at periapsis, the propulsive part
+/// of a pass through an atmosphere, a small body's excess speed, none at an
+/// escape or capture. `None` where the ends are not of those kinds or the
+/// Lambert problem has no solution.
+pub fn patched(field: &Field, from: &End, to: &End, depart: Epoch, arrive: Epoch) -> Option<f64> {
+    let eph = field.ephemeris();
+    let excess = |end: &End| match end {
+        End::Excess { v_inf, .. } => Some(v_inf.length()),
+        _ => None,
+    };
+    let (v_a, v_b) = match (excess(from), excess(to)) {
+        (Some(v), _) | (_, Some(v)) => (v, v),
+        _ => {
+            let (a, b) = (kind(from)?.0, kind(to)?.0);
+            let (sa, sb) = (eph.system_state(a, depart), eph.system_state(b, arrive));
+            let span = (arrive.0 - depart.0) * SECONDS_PER_DAY;
+            let arc = lambert::solve(MU_SUN, sa.r, sb.r, span)?;
+            ((arc.v1 - sa.v).length(), (arc.v2 - sb.v).length())
+        }
+    };
+    let burn = |end: &End, v: f64| match end {
+        End::Low(low) => {
+            let gm = eph.body(low.body).gm;
+            Some((v * v + 2.0 * gm / low.radius).sqrt() - (gm / low.radius).sqrt())
+        }
+        End::Atmosphere { after, .. } => Some(*after),
+        End::Body(_) => Some(v),
+        End::Excess { .. } => Some(0.0),
+        End::Orbit(_) | End::Hyperbola { .. } => None,
+    };
+    Some(burn(from, v_a)? + burn(to, v_b)?)
 }
 
 /// A patched-conic seed for a leg from `from` (a low orbit, a small body,
@@ -280,7 +324,8 @@ pub fn seed(
 /// integrated in `locals` (fields centered on the planets): the cheapest
 /// design from [`seed`]s over the planes of both hyperbolas (each turned by
 /// half a revolution or not; the turn picks which side of the planet the
-/// periapsis lies on). `None` if none converges.
+/// periapsis lies on). `None` if none converges at under
+/// [`BEYOND_PATCHED`] times the leg's patched conics.
 pub fn plan(
     global: &Field,
     locals: &[Field],
@@ -300,6 +345,7 @@ pub fn plan(
         duration: None,
         window: None,
     };
+    let limit = BEYOND_PATCHED * patched(global, &from, &to, depart, arrive)?;
     let half = std::f64::consts::PI;
     [(0.0, 0.0), (0.0, half), (half, 0.0), (half, half)]
         .par_iter()
@@ -307,6 +353,7 @@ pub fn plan(
             leg.design(&seed(global, depart, &from, &to, 0.0, t1, turns)?)
                 .ok()
         })
+        .filter(|d| d.dv <= limit)
         .min_by(|a, b| a.dv.total_cmp(&b.dv))
 }
 
