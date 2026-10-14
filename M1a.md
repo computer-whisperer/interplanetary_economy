@@ -450,6 +450,82 @@ that the autopilot exports (step 11).
 11. Route graph export; `crates/plan` reads it; rerun M2's central world
     to see where the hub goes.
 
+### Step 10 plan (2026-10-13)
+
+The sweep designs every core leg at departures every 5 days from
+2040-01-01 to 2075-12-31, and reports for each leg: the share of
+designs that converge, Δv against published values, and the time to
+re-plan and to design cold. It also reports each station orbit's upkeep
+across the span.
+
+1. **Legs.** The cislunar field is the tests' (the Sun, Earth with J2,
+   the Moon). Its places:
+   - station orbits: the L1 halo (12 days), L2 halo (14.5), NRHO (9:2)
+     and DRO (14);
+   - LEO at 400 km, free plane, or the publication's altitude where a
+     leg checks one;
+   - polar low lunar orbit at 100 km.
+
+   The legs:
+   - LEO to and from each station and low lunar orbit (10);
+   - each station to and from low lunar orbit (8);
+   - station to station (12);
+   - each station and low lunar orbit to and from escape at 1 and 3 km/s
+     (20; by excess speed alone, step 9's stand-in).
+
+   The south pole is the low lunar orbit legs plus `surface`'s rules.
+   Durations are the published legs' (steps 6–8), or 10 days between
+   stations.
+
+   In the Mars system, low Mars orbit to and from Phobos (2).
+
+   Between systems, LEO to low Mars orbit (burning, and by aerocapture)
+   and LEO to each candidate NEA. Departures are every 5 days within each
+   window (`windows`), each at the porkchop's best time of flight for
+   that day.
+2. **A departure date d means leaving within [d, d + W]**, where W is one
+   revolution of the station the leg leaves or reaches (5 days between
+   low orbits). Every date can then reach every phase of the station.
+3. **References** span 2040–2075 in yearly pieces overlapping by 60 days,
+   each carried from the catalog by `continue_orbit`. A leg uses the
+   piece that covers its window and duration. One continuous reference
+   per station, which the game needs, is M1b's.
+4. **Re-planning** (`legs::replan`):
+   - The previous departure's design moves forward by whole revolutions
+     of the station end. Each node is carried with the Earth–Moon line:
+     relative to the Moon near the Moon, to Earth near Earth, and in the
+     pulsating frame between. In the Mars system it is carried with
+     Phobos.
+   - It is then designed at the same duration. A route falls back to a
+     cold plan when re-planning fails.
+   - Measured by a probe (2026-10-13, 10 departures each):
+     - NRHO to low lunar orbit, 2–25 ms; LEO to low lunar orbit, ~15 ms;
+       both at the cold plan's Δv.
+     - Legs through lunar flybys, 0.04–0.6 s.
+     - NRHO to DRO, 0.01–0.1 s, but its designs are 15–40% worse than
+       the cold plan's, or fail.
+   - The cold plans were uneven in the same probe: one NRHO-to-low-orbit
+     date failed, and some dates came out 10–50% above their neighbors.
+5. **Cold plans** run at every fourth date (every 20 days). They measure
+   the playbook's reliability and design time, and are the yardstick for
+   re-planned Δv. Where both exist, the cheaper counts.
+6. **Escape by excess speed** (`End::Periapsis`): a periapsis at 200 km
+   where a burn along the velocity reaches the hyperbola's speed for the
+   v∞ wanted. It is seeded as a low orbit there, so the lunar-flyby
+   chains to perigee apply.
+7. **Plans between systems in the library**: the tests' helper, which
+   tries planes of the hyperbolas, becomes `interplanetary::plan`.
+8. **Upkeep**: the station-keeping Monte Carlo at the start of each year,
+   for each station.
+9. **Output**: `orbit gate` writes one CSV row per leg and date, and a
+   summary per leg:
+   - the share converged;
+   - Δv median and range, against the published value;
+   - the median re-plan time;
+   - the 95th-percentile and longest cold design.
+
+   The pass criteria are the gate's; results go into the status above.
+
 ### Step 9 plan (2026-10-13)
 
 1. Escapes from station orbits at a given excess velocity, and captures

@@ -71,7 +71,7 @@ fn kind(end: &End) -> Option<(BodyId, Option<f64>)> {
         End::Atmosphere { body, radius, .. } => Some((*body, Some(*radius))),
         End::Body(b) => Some((*b, None)),
         End::Excess { body, .. } => Some((*body, None)),
-        End::Orbit(_) => None,
+        End::Orbit(_) | End::Hyperbola { .. } => None,
     }
 }
 

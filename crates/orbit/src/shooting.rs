@@ -76,6 +76,17 @@ pub enum End<'a> {
     /// with no burn: leaving the body's system on its way out (as a leg's
     /// end), arriving into it (as a start).
     Excess { body: BodyId, v_inf: DVec3 },
+    /// At the periapsis of a hyperbola about a body with excess speed
+    /// `v_inf` (km/s), in any direction, at `radius`: leaving the body's
+    /// system after a burn there along the velocity (as a leg's end), or
+    /// arriving before one (as a start). The stand-in for escapes and
+    /// captures at a given excess velocity until those can be aimed
+    /// (M1a.md, step 9).
+    Hyperbola {
+        body: BodyId,
+        radius: f64,
+        v_inf: f64,
+    },
     /// Through a body's atmosphere, for aero-capable ships (as a leg's end
     /// only): the arrival's periapsis (of its vacuum conic) at `radius`,
     /// where the pass brakes it, no faster than `max_speed` (km/s); `after`
@@ -504,26 +515,43 @@ impl<'a> Leg<'a> {
                     burn: join(dv),
                 })
             }
-            End::Low(low) => {
-                let (br, bv, ba) = self.body(low.body, epoch, t);
+            End::Low(_) | End::Hyperbola { .. } => {
+                // An apsis at a radius, and the speed a burn along the
+                // velocity reaches there: a circular orbit's, or a
+                // hyperbola's.
+                let eph = self.field.ephemeris();
+                let (body, radius, inclination, target) = match *end {
+                    End::Low(low) => (
+                        low.body,
+                        low.radius,
+                        low.inclination,
+                        (eph.body(low.body).gm / low.radius).sqrt(),
+                    ),
+                    End::Hyperbola {
+                        body,
+                        radius,
+                        v_inf,
+                    } => (
+                        body,
+                        radius,
+                        None,
+                        (v_inf * v_inf + 2.0 * eph.body(body).gm / radius).sqrt(),
+                    ),
+                    _ => unreachable!(),
+                };
+                let (br, bv, ba) = self.body(body, epoch, t);
                 let (rho, nu) = (r - br, v - bv);
                 let dist = rho.length();
                 let rho_hat = rho / dist;
                 let cat = |a: DVec3, b: DVec3| [a.x, a.y, a.z, b.x, b.y, b.z];
                 let mut rows = vec![
-                    (
-                        dist - low.radius,
-                        cat(rho_hat, DVec3::ZERO),
-                        -rho_hat.dot(bv),
-                    ),
+                    (dist - radius, cat(rho_hat, DVec3::ZERO), -rho_hat.dot(bv)),
                     (rho.dot(nu), cat(nu, rho), -bv.dot(nu) - rho.dot(ba)),
                 ];
                 let mut scales = vec![length, length * speed];
-                if let Some(inc) = low.inclination {
-                    let pole = self
-                        .field
-                        .ephemeris()
-                        .pole(low.body, Epoch(epoch.0 + t / SECONDS_PER_DAY))
+                if let Some(inc) = inclination {
+                    let pole = eph
+                        .pole(body, Epoch(epoch.0 + t / SECONDS_PER_DAY))
                         .expect("an inclination needs the body's pole");
                     let h = rho.cross(nu);
                     let h_hat = h / h.length();
@@ -537,7 +565,7 @@ impl<'a> Leg<'a> {
                     scales.push(1.0);
                 }
                 let moving = nu.length();
-                let gap = moving - (self.field.ephemeris().body(low.body).gm / low.radius).sqrt();
+                let gap = moving - target;
                 let size = (gap * gap + SMOOTH * SMOOTH).sqrt();
                 let along = nu / moving * (gap / size);
                 Some(EndTerms {

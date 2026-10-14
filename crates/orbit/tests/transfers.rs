@@ -368,3 +368,67 @@ fn escape_from_l2_halo() {
     );
     assert!(d.dv < 0.4, "{}", d.dv);
 }
+
+/// Escape from the NRHO at an excess speed of 3 km/s in any direction, and
+/// capture back (`End::Hyperbola`, step 9's stand-in): to a 200 km perigee
+/// by a lunar flyby, where a burn along the velocity reaches the
+/// hyperbola's speed. No published values; the perigee burn alone, from an
+/// orbit reaching the Moon's distance, is ~0.49 km/s.
+#[test]
+fn nrho_escape_and_capture_by_excess_speed() {
+    let w = world();
+    let eph = Ephemeris::standard();
+    let earth = w.leo.body;
+    let gm = eph.body(earth).gm;
+    let nrho = station(&w, "nrho");
+    let radius = 6_578.0;
+    let v_inf = 3.0;
+    let hyperbola = End::Hyperbola {
+        body: earth,
+        radius,
+        v_inf,
+    };
+    let period = nrho.period_s() / DAY;
+    for (what, from, to) in [
+        ("escape", End::Orbit(&nrho), hyperbola),
+        ("capture", hyperbola, End::Orbit(&nrho)),
+    ] {
+        let d = plan(&w, from, to, period, 5.0);
+        let b = burns(&d);
+        println!("NRHO {what} at {v_inf} km/s: {b:.0?} m/s");
+        // At the perigee end the ship moves at the hyperbola's speed.
+        let (k, t) = if what == "escape" {
+            (d.path.times.len() - 1, *d.path.times.last().unwrap())
+        } else {
+            (0, d.path.times[0])
+        };
+        let ode = w.field.ode(d.path.epoch);
+        let state = if k == 0 {
+            // Before the burn: the burn undone.
+            let s = d.path.states[0];
+            let dv = d.burns[0].dv;
+            [s[0], s[1], s[2], s[3] - dv.x, s[4] - dv.y, s[5] - dv.z]
+        } else {
+            let mut run = Dop853::new(&ode, d.path.times[k - 1], d.path.states[k - 1], TOLERANCE);
+            run.advance_to(&ode, t).unwrap();
+            let dv = d.burns.last().unwrap().dv;
+            [
+                run.y[0],
+                run.y[1],
+                run.y[2],
+                run.y[3] + dv.x,
+                run.y[4] + dv.y,
+                run.y[5] + dv.z,
+            ]
+        };
+        let r = glam::DVec3::new(state[0], state[1], state[2]).length();
+        let speed = glam::DVec3::new(state[3], state[4], state[5]).length();
+        let wanted = (v_inf * v_inf + 2.0 * gm / radius).sqrt();
+        assert!((r - radius).abs() < 1e-3, "perigee at {r} km");
+        assert!(
+            (speed - wanted).abs() < 1e-6,
+            "{speed} km/s against {wanted}"
+        );
+        assert!(d.dv < 1.0, "{}", d.dv);
+    }
+}

@@ -1133,14 +1133,17 @@ pub fn plan(
         durations: seed_durations,
         designs: 2 * PLAN_SEEDS,
     };
-    // An atmosphere is seeded as a low orbit at its pass's radius.
+    // An atmosphere is seeded as a low orbit at its pass's radius, and a
+    // hyperbola as one at its periapsis.
     fn as_low<'b>(end: End<'b>) -> End<'b> {
         match end {
-            End::Atmosphere { body, radius, .. } => End::Low(LowOrbit {
-                body,
-                radius,
-                inclination: None,
-            }),
+            End::Atmosphere { body, radius, .. } | End::Hyperbola { body, radius, .. } => {
+                End::Low(LowOrbit {
+                    body,
+                    radius,
+                    inclination: None,
+                })
+            }
             other => other,
         }
     }
@@ -1172,10 +1175,11 @@ pub fn plan(
             Direction::Down,
             &samples(epoch, window),
         ),
-        // Ends between planetary systems are `interplanetary`'s; an
-        // atmosphere only ends a leg (and is a low orbit here).
-        (End::Body(_) | End::Excess { .. } | End::Atmosphere { .. }, _)
-        | (_, End::Body(_) | End::Excess { .. } | End::Atmosphere { .. }) => {
+        // Ends between planetary systems are `interplanetary`'s. (An
+        // atmosphere and a hyperbola are low orbits here.)
+        (End::Body(_) | End::Excess { .. } | End::Atmosphere { .. } | End::Hyperbola { .. }, _)
+        | (_, End::Body(_) | End::Excess { .. } | End::Atmosphere { .. } | End::Hyperbola { .. }) =>
+        {
             return vec![None; durations.len()];
         }
         (End::Orbit(r), End::Low(l)) => {
