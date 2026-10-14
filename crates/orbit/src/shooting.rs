@@ -42,6 +42,10 @@ const FEASIBLE: f64 = 1e-8;
 /// nothing without a kink in the cost.
 const SMOOTH: f64 = 1e-4;
 
+/// A departure this close to a window's edge in a seed (s) starts held
+/// there, as in continuation.
+const HELD_S: f64 = 1.0;
+
 /// What leaving a day outside the window adds to the cost a search sees,
 /// km/s (it grows with the square of the time).
 const WINDOW_PENALTY: f64 = 1.0;
@@ -52,6 +56,9 @@ const WINDOW_PENALTY: f64 = 1.0;
 const CONVERGED_KMS: f64 = 1e-7;
 
 const FEASIBILITY_ITERATIONS: usize = 30;
+
+/// Designs a continuation may take toward one duration.
+const CONTINUATION_STEPS: usize = 400;
 const ITERATIONS: usize = 100;
 
 /// Where a path starts or ends.
@@ -95,7 +102,8 @@ pub struct Path {
 }
 
 /// A burn at the periapsis of a close pass (a powered flyby), no lower than
-/// `min_radius`.
+/// `min_radius` on either side of it: held at that floor, the burn is also
+/// perpendicular to the radius.
 #[derive(Clone, Copy, Debug)]
 pub struct Pass {
     pub node: usize,
@@ -181,7 +189,7 @@ struct Layout {
     length: Vec<f64>,
     speed: Vec<f64>,
     time: Vec<f64>,
-    /// Close passes, and whether each is held at its lowest radius.
+    /// Close passes, and whether each is held at its floor.
     passes: Vec<(Pass, bool)>,
 }
 
@@ -220,6 +228,11 @@ impl Layout {
             length,
             speed,
             time,
+            // Released at first even when the seed is at the floor (as in
+            // continuation, where the search then dives back toward the
+            // surface before it is held again): held from the start, the
+            // flyby is too rigid to linearize, and continuation's restores
+            // failed (LEO to DRO, measured 2026-10-13).
             passes: path.passes.iter().map(|&p| (p, false)).collect(),
         }
     }
@@ -431,17 +444,17 @@ impl<'a> Leg<'a> {
                     ));
                     scales.push(1.0);
                 }
-                let speed = nu.length();
-                let gap = speed - (self.field.ephemeris().body(low.body).gm / low.radius).sqrt();
+                let moving = nu.length();
+                let gap = moving - (self.field.ephemeris().body(low.body).gm / low.radius).sqrt();
                 let size = (gap * gap + SMOOTH * SMOOTH).sqrt();
-                let along = nu / speed * (gap / size);
+                let along = nu / moving * (gap / size);
                 Some(EndTerms {
                     rows,
                     scales,
                     cost: size,
                     cost_state: cat(DVec3::ZERO, along),
                     cost_t: -along.dot(ba),
-                    burn: join(nu / speed * gap),
+                    burn: join(nu / moving * gap),
                 })
             }
         }
@@ -600,44 +613,36 @@ impl<'a> Leg<'a> {
             }
         }
 
-        // Close passes: the burn at the periapsis of the arc arriving, and
-        // if held there, at the lowest radius.
+        // Close passes: the burn at the periapsis of the arc arriving; held,
+        // at the floor and the periapsis of the arc leaving too, so that a
+        // burn with an inward part cannot take that arc lower (measured: up
+        // to 0.17 km below the floor). Asking the latter of every pass made
+        // all flyby burns tangential, which lost the cheapest DRO and L2
+        // halo flybys; asking it only once a held burn pointed inward, the
+        // restore to it failed (LEO to DRO, 2026-10-13).
         for &(pass, held) in &layout.passes {
             let k = pass.node;
             let (br, bv, ba) = self.body(pass.body, epoch, times[k]);
             let (x, y) = (states[k], arrival(k));
             let rho = DVec3::new(x[0], x[1], x[2]) - br;
-            let nu = DVec3::new(y[3], y[4], y[5]) - bv;
             let (l, v) = (layout.length[k], layout.speed[k]);
-            c.push(rho.dot(nu) / (l * v));
-            if derivs {
-                let mut row = vec![0.0; n];
-                d_state(
-                    &mut row,
-                    k,
-                    &[
-                        nu.x / (l * v),
-                        nu.y / (l * v),
-                        nu.z / (l * v),
-                        0.0,
-                        0.0,
-                        0.0,
-                    ],
-                );
-                d_arrival(
-                    &mut row,
-                    k,
-                    &[
-                        0.0,
-                        0.0,
-                        0.0,
-                        rho.x / (l * v),
-                        rho.y / (l * v),
-                        rho.z / (l * v),
-                    ],
-                );
-                d_time(&mut row, k, (-bv.dot(nu) - rho.dot(ba)) / (l * v));
-                jac.push(row);
+            let sides: &[bool] = if held { &[false, true] } else { &[false] };
+            for &leaving in sides {
+                let s = if leaving { x } else { y };
+                let nu = DVec3::new(s[3], s[4], s[5]) - bv;
+                c.push(rho.dot(nu) / (l * v));
+                if derivs {
+                    let mut row = vec![0.0; n];
+                    let (a, b) = (nu / (l * v), rho / (l * v));
+                    if leaving {
+                        d_state(&mut row, k, &[a.x, a.y, a.z, b.x, b.y, b.z]);
+                    } else {
+                        d_state(&mut row, k, &[a.x, a.y, a.z, 0.0, 0.0, 0.0]);
+                        d_arrival(&mut row, k, &[0.0, 0.0, 0.0, b.x, b.y, b.z]);
+                    }
+                    d_time(&mut row, k, (-bv.dot(nu) - rho.dot(ba)) / (l * v));
+                    jac.push(row);
+                }
             }
             if held {
                 let u = rho / rho.length();
@@ -715,6 +720,12 @@ impl<'a> Leg<'a> {
         // edge (a hard edge alone let a search drift days away, too far to
         // pull back); then the search runs again. Neither is released.
         let mut leg = *self;
+        if let (None, Some((lo, hi))) = (leg.depart, leg.window) {
+            let t0 = seed.times[0];
+            if (t0 - lo).abs() < HELD_S || (t0 - hi).abs() < HELD_S {
+                leg.depart = Some(t0.clamp(lo, hi));
+            }
+        }
         let mut z = leg.restore(&layout, epoch, layout.pack(seed))?;
         let mut iterations = 0;
         for _ in 0..3 {
@@ -779,21 +790,23 @@ impl<'a> Leg<'a> {
             let Some(mut current) = side.clone() else {
                 continue;
             };
-            let mut reached = true;
+            let mut reached = false;
             let mut size = step;
-            while (current.duration() - target).abs() > 1e-6 {
+            for _ in 0..CONTINUATION_STEPS {
                 let gap = target - current.duration();
+                if gap.abs() <= 1e-6 {
+                    reached = true;
+                    break;
+                }
                 leg.duration = Some(current.duration() + gap.clamp(-size, size));
                 match leg.design(&current.path) {
                     Ok(d) => {
                         current = d;
                         size = (2.0 * size).min(step);
                     }
-                    Err(_) if size > step / 16.0 => size /= 2.0,
-                    Err(_) => {
-                        reached = false;
-                        break;
-                    }
+                    // Halved from what was tried, so the retry differs.
+                    Err(_) if size > step / 16.0 => size = size.min(gap.abs()) / 2.0,
+                    Err(_) => break,
                 }
             }
             if reached {
@@ -1382,8 +1395,8 @@ mod tests {
     }
 
     /// The analytic constraint Jacobian and cost gradient match central
-    /// differences, for both kinds of end, an inner burn and a coast node,
-    /// in the full field.
+    /// differences: a low orbit at an inclination to an orbit, an inner burn
+    /// and a coast node, in the full field.
     #[test]
     fn derivatives_match_differences() {
         let eph = Ephemeris::standard();
@@ -1449,31 +1462,207 @@ mod tests {
             .chain([target.path.at(3.1 * 86_400.0)].map(|s| DVec3::new(s[0], s[1], s[2])))
             .collect();
         let layout = Layout::new(&field, &path, &positions);
-        let z = layout.pack(&path);
-        let e = leg.evaluate(&layout, epoch, &z, true).unwrap();
+        assert_derivatives(&leg, &layout, epoch, &layout.pack(&path));
+    }
+
+    /// Central differences of every constraint row and the cost against the
+    /// analytic derivatives, at steps of 1e-5 and 1e-7 (scaled), either of
+    /// which may match: the larger misses by its truncation at a LEO node
+    /// (68 m there), the smaller by the integrator's step-size noise on arcs
+    /// near the Moon.
+    fn assert_derivatives(leg: &Leg, layout: &Layout, epoch: Epoch, z: &[f64]) {
+        let e = leg.evaluate(layout, epoch, z, true).unwrap();
+        let differences = |h: f64| -> Vec<(f64, Vec<f64>)> {
+            (0..z.len())
+                .map(|j| {
+                    let at = |dz: f64| {
+                        let mut z2 = z.to_vec();
+                        z2[j] += dz;
+                        leg.evaluate(layout, epoch, &z2, false).unwrap()
+                    };
+                    let (plus, minus) = (at(h), at(-h));
+                    let rows = (0..e.c.len())
+                        .map(|r| (plus.c[r] - minus.c[r]) / (2.0 * h))
+                        .collect();
+                    ((plus.cost - minus.cost) / (2.0 * h), rows)
+                })
+                .collect()
+        };
+        let (coarse, fine) = (differences(1e-5), differences(1e-7));
+        let err = |analytic: f64, numeric: f64| (analytic - numeric).abs() / (1.0 + numeric.abs());
         let mut worst = 0.0f64;
         for j in 0..z.len() {
-            let h = 1e-7;
-            let at = |dz: f64| {
-                let mut z2 = z.clone();
-                z2[j] += dz;
-                leg.evaluate(&layout, epoch, &z2, false).unwrap()
-            };
-            let (plus, minus) = (at(h), at(-h));
-            let fd = |a: f64, b: f64| (a - b) / (2.0 * h);
-            let mut check = |analytic: f64, numeric: f64, what: &str| {
-                let err = (analytic - numeric).abs() / (1.0 + numeric.abs());
-                worst = worst.max(err);
+            let mut check = |analytic: f64, a: f64, b: f64, what: &str| {
+                let e = err(analytic, a).min(err(analytic, b));
+                worst = worst.max(e);
                 assert!(
-                    err < 1e-4,
-                    "{what}, unknown {j}: analytic {analytic:e}, differences {numeric:e}"
+                    e < 1e-4,
+                    "{what}, unknown {j}: analytic {analytic:e}, differences {a:e}, {b:e}"
                 );
             };
-            check(e.grad[j], fd(plus.cost, minus.cost), "cost");
+            check(e.grad[j], coarse[j].0, fine[j].0, "cost");
             for r in 0..e.c.len() {
-                check(e.jac[r][j], fd(plus.c[r], minus.c[r]), &format!("row {r}"));
+                check(
+                    e.jac[r][j],
+                    coarse[j].1[r],
+                    fine[j].1[r],
+                    &format!("row {r}"),
+                );
             }
         }
         println!("worst relative difference {worst:e}");
+    }
+
+    /// A reference: `s` at `t0` integrated to `t1`.
+    fn flown(field: &Field, epoch: Epoch, t0: f64, t1: f64, s: [f64; 6]) -> Reference {
+        let ode = field.ode(epoch);
+        let mut run = Dop853::new(&ode, t0, s, TOL);
+        let mut steps = Vec::new();
+        run.advance_dense(&ode, t1, &mut steps).unwrap();
+        Reference {
+            epoch,
+            revolutions: 1,
+            patches: Vec::new(),
+            path: crate::integrate::Trajectory::new(steps),
+        }
+    }
+
+    /// The other terms: a station orbit as the start, a lunar pass held at
+    /// its floor as both arcs' periapsis, coasts on both sides, a
+    /// low lunar orbit end at an inclination, the window penalty below its
+    /// early edge, and a fixed arrival.
+    #[test]
+    fn derivatives_with_a_held_pass_and_window() {
+        let eph = Ephemeris::standard();
+        let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
+        let field = Field::new(eph, Some(earth), &[eph.sun(), earth, moon]).with_oblateness();
+        let epoch = Epoch::from_ymd(2045, 3, 1);
+        let ode = field.ode(epoch);
+        let times = [1_000.0, 30_000.0, 60_000.0, 90_000.0, 120_000.0];
+        // A pass 3,000 km from the Moon, flown back to the start.
+        let m = field.body_state(moon, Epoch(epoch.0 + times[2] / SECONDS_PER_DAY));
+        let pass = [
+            m.r.x + 3_000.0,
+            m.r.y,
+            m.r.z + 300.0,
+            m.v.x + 0.05,
+            m.v.y + 1.8,
+            m.v.z + 0.1,
+        ];
+        let mut back = Dop853::new(&ode, times[2], pass, TOL);
+        back.advance_to(&ode, times[1]).unwrap();
+        let mut s1 = back.y;
+        s1[5] += 0.002;
+        back.advance_to(&ode, times[0]).unwrap();
+        // The station passes the start with a different velocity.
+        let mut on_station = back.y;
+        on_station[3] -= 0.05;
+        on_station[4] += 0.03;
+        let mut before = Dop853::new(&ode, times[0], on_station, TOL);
+        before.advance_to(&ode, -86_400.0).unwrap();
+        let station = flown(&field, epoch, -86_400.0, 10.0 * 86_400.0, before.y);
+        let mut s0 = station.path.at(times[0]);
+        s0[3] += 0.05;
+        s0[4] -= 0.03;
+        let mut leave = pass;
+        leave[4] += 0.05;
+        let mut after = Dop853::new(&ode, times[2], leave, TOL);
+        after.advance_to(&ode, times[3]).unwrap();
+        let mut s3 = after.y;
+        s3[0] += 1.0;
+        after.advance_to(&ode, times[4]).unwrap();
+        let path = Path {
+            epoch,
+            times: times.to_vec(),
+            states: vec![s0, s1, leave, s3],
+            burns: vec![true, false, true, false, true],
+            passes: vec![Pass {
+                node: 2,
+                body: moon,
+                min_radius: 1_838.0,
+            }],
+        };
+        let positions: Vec<DVec3> = path
+            .states
+            .iter()
+            .chain([&after.y])
+            .map(|s| DVec3::new(s[0], s[1], s[2]))
+            .collect();
+        let mut layout = Layout::new(&field, &path, &positions);
+        layout.passes[0].1 = true;
+        let leg = Leg {
+            field: &field,
+            from: End::Orbit(&station),
+            to: End::Low(LowOrbit {
+                body: moon,
+                radius: eph.body(moon).radius + 100.0,
+                inclination: Some(1.2),
+            }),
+            depart: None,
+            arrive: Some(times[4] + 50.0),
+            duration: None,
+            window: Some((times[0] + 0.5 * 86_400.0, times[0] + 2.0 * 86_400.0)),
+        };
+        assert_derivatives(&leg, &layout, epoch, &layout.pack(&path));
+    }
+
+    /// And: LEO with the plane free as the start, a pass not held, a station
+    /// orbit as the end, the window penalty past its late edge, and a fixed
+    /// duration.
+    #[test]
+    fn derivatives_with_a_free_pass_and_late_window() {
+        let eph = Ephemeris::standard();
+        let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
+        let field = Field::new(eph, Some(earth), &[eph.sun(), earth, moon]).with_oblateness();
+        let epoch = Epoch::from_ymd(2045, 3, 1);
+        let ode = field.ode(epoch);
+        let start = [6_800.0, 300.0, 200.0, 0.4, 10.6, 1.5];
+        let times = [100.0, 30_000.0, 80_000.0, 150_000.0, 3.0 * 86_400.0];
+        let mut run = Dop853::new(&ode, times[0], start, TOL);
+        let mut states = vec![start];
+        for &t in &times[1..4] {
+            run.advance_to(&ode, t).unwrap();
+            let mut s = run.y;
+            s[4] += 0.01;
+            states.push(s);
+        }
+        run.advance_to(&ode, times[4]).unwrap();
+        let mut back = Dop853::new(&ode, times[4], run.y, TOL);
+        back.advance_to(&ode, 0.0).unwrap();
+        let mut s = back.y;
+        s[3] += 0.01;
+        let station = flown(&field, epoch, 0.0, 10.0 * 86_400.0, s);
+        let path = Path {
+            epoch,
+            times: times.to_vec(),
+            states,
+            burns: vec![true, false, true, false, true],
+            passes: vec![Pass {
+                node: 2,
+                body: moon,
+                min_radius: 1_838.0,
+            }],
+        };
+        let positions: Vec<DVec3> = path
+            .states
+            .iter()
+            .chain([&run.y])
+            .map(|s| DVec3::new(s[0], s[1], s[2]))
+            .collect();
+        let layout = Layout::new(&field, &path, &positions);
+        let leg = Leg {
+            field: &field,
+            from: End::Low(LowOrbit {
+                body: earth,
+                radius: 6_778.0,
+                inclination: None,
+            }),
+            to: End::Orbit(&station),
+            depart: None,
+            arrive: None,
+            duration: Some(3.0 * 86_400.0),
+            window: Some((-2.0 * 86_400.0, -0.5 * 86_400.0)),
+        };
+        assert_derivatives(&leg, &layout, epoch, &layout.pack(&path));
     }
 }

@@ -93,7 +93,11 @@ Status, 2026-10-13: steps 1–6 done.
   fails). A departure window is a cost penalty (1 km/s per day squared
   outside it), then the departure is held at the nearer edge: as a hard
   wall it trapped searches, and with no penalty a low-orbit-to-low-orbit
-  search drifted a week out, too far to pull back.
+  search drifted a week out, too far to pull back. A flyby held at its
+  floor is also the periapsis of the arc leaving it (a burn with an
+  inward part took that arc up to 0.17 km lower, found in review); seeds
+  get nodes 1 and 4 hours from each end of each link, without which the
+  DRO's flyby designs failed.
   `legs::plan` designs a leg between any two ends at given durations,
   seeded by fans of burns flown in parallel in the Sun–Earth–Moon field:
   from a station to a periapsis near a low orbit, directly or via a
@@ -108,13 +112,13 @@ Status, 2026-10-13: steps 1–6 done.
   |---|---|---|
   | NRHO to polar 100 km lunar orbit, 0.5 d | 675 | 730 |
   | L2 halo to it, 3 d / DRO to it, 4 d | 786 / 814 | 800 / 830 |
-  | LEO to NRHO after leaving LEO, 5.1 d / 5.4 d | 392 / 388 | 428.5 / 409.1 |
-  | NRHO to LEO before capture, 5 d | 411 | 411.5 |
+  | LEO to NRHO after leaving LEO, 5.1 d / 5.4 d | 395 / 388 | 428.5 / 409.1 |
+  | NRHO to LEO before capture, 5 d | 415 | 411.5 |
   | L2 halo round trip, 6.5 d each way | 754 | 811 |
-  | LEO (200 km) to L1 halo, 4.1 d / 7.81 d | 3,632 / 3,518 | 3,660 / 3,513 |
+  | LEO (200 km) to L1 halo, 4.1 d / 7.81 d | 3,632 / 3,523 | 3,660 / 3,513 |
   | Leaving a 185 km LEO for the Moon, 4.4 d | 3,141 | 3,142 |
-  | Low lunar orbit round trip, 3.5 d each way | 1,677 | 1,800+ |
-  | LEO to DRO after leaving LEO, 9 d | 293 | 344 |
+  | Low lunar orbit round trip, 3.5 d each way | 1,678 | 1,800+ |
+  | LEO to DRO after leaving LEO, 9 d | 304 | 344 |
 
   The first eight are Whitley & Martinez (2016), the L1 halo arXiv
   2502.11694's table 5, the departure Lunar Prospector's, the DRO ESA's
@@ -124,8 +128,8 @@ Status, 2026-10-13: steps 1–6 done.
   carry constraints this search does not. Between stations there are no
   published fast transfers (the literature's impulsive NRHO–DRO designs
   take 40–97 days through other families); here NRHO to DRO costs 552 m/s
-  and L1 halo to L2 halo 497, in 10 days. A plan takes 0.1–4.5 s on 24
-  cores. Field cost: evaluating the Earth–Moon series once per time took
+  and L1 halo to L2 halo 497, in 10 days. A plan takes 0.1–3 s on 24
+  cores, LEO to the DRO 12 s. Field cost: evaluating the Earth–Moon series once per time took
   an evaluation from 254 to 166 ns; with the planets left out (their tides
   in cislunar space are ~1e-12 km/s², meters per leg) the transfer tests
   went from 120 s to 23 s with the same results. Earth's pole had been
@@ -375,3 +379,29 @@ that the autopilot exports (step 11).
 10. The gate sweep.
 11. Route graph export; `crates/plan` reads it; rerun M2's central world
     to see where the hub goes.
+
+### Step 7 plan (2026-10-13)
+
+Interplanetary legs fly in a barycentric field, but integrating near LEO
+in barycentric coordinates (~1.5e8 km) leaves ~15 cm of noise per step,
+far above the 0.07 mm continuity wanted there. So:
+
+1. Frames. Each arc integrates in the frame of the body whose sphere of
+   influence its first node is in (Earth, Mars, else the solar-system
+   barycenter); nodes keep one global frame. An arc's end and state
+   transition matrix carry over unchanged if its equations of motion are
+   written globally: f_global(t, x) = f_local(t, x - B(t)) + B'(t), B the
+   local center's state. References record their frame, so a station's
+   orbit is an end in any field.
+2. Mars gets a figure (J2, radius, IAU pole) for low Mars orbit; small
+   bodies become ends (rendezvous with the ephemeris state).
+3. Seeds from patched conics: a heliocentric Lambert arc between the
+   planetary systems (`transfer`), a departure hyperbola from the low orbit
+   with that excess velocity (its periapsis on the cone the asymptote
+   allows, the plane free), and an arrival hyperbola likewise; nodes along
+   each, multiple shooting closes the patches.
+4. Escape at a given excess velocity: an end where the ship's osculating
+   two-body excess velocity about Earth equals it, some days out.
+5. Checks: the NASA handbook's Mars departures flown LEO to low Mars orbit
+   (departure C3 from the LEO burn against the handbook's), and a NEA
+   rendezvous against NHATS.

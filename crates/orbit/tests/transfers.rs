@@ -30,12 +30,18 @@
 use orbit::ephem::Ephemeris;
 use orbit::families::{Catalog, Member};
 use orbit::gravity::Field;
+use orbit::integrate::{Dop853, Tolerance};
 use orbit::legs;
 use orbit::reference::{Reference, continue_orbit};
 use orbit::shooting::{Design, End, LowOrbit};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 
 const DAY: f64 = SECONDS_PER_DAY;
+
+const TOLERANCE: Tolerance = Tolerance {
+    rtol: 1e-12,
+    atol: 1e-9,
+};
 
 fn start() -> Epoch {
     Epoch::from_ymd(2045, 3, 1)
@@ -125,6 +131,11 @@ fn plan(w: &World, from: End, to: End, window_days: f64, duration: f64) -> Desig
     );
     println!("planned in {:.1} s", clock.elapsed().as_secs_f64());
     let d = designs[0].clone().expect("a design");
+    // No lunar flyby goes below its floor on either side of the pass.
+    for pass in &d.path.passes {
+        let lowest = lowest(&w.field, &d, pass.node, pass.body);
+        assert!(lowest > pass.min_radius - 0.01, "flyby down to {lowest} km");
+    }
     let leaves = d.departure() + (d.path.epoch.0 - start().0) * DAY;
     assert!(
         (-1.0..=window_days * DAY + 1.0).contains(&leaves),
@@ -132,6 +143,23 @@ fn plan(w: &World, from: End, to: End, window_days: f64, duration: f64) -> Desig
         leaves / DAY
     );
     d
+}
+
+/// The closest the arcs into and out of node `k` come to `body`, km.
+fn lowest(field: &Field, d: &Design, k: usize, body: orbit::ephem::BodyId) -> f64 {
+    let ode = field.ode(d.path.epoch);
+    let mut low = f64::INFINITY;
+    for arc in [k - 1, k] {
+        let (t0, t1) = (d.path.times[arc], d.path.times[arc + 1]);
+        let mut run = Dop853::new(&ode, t0, d.path.states[arc], TOLERANCE);
+        for j in 1..=4_000 {
+            let t = t0 + (t1 - t0) * j as f64 / 4_000.0;
+            run.advance_to(&ode, t).unwrap();
+            let b = field.body_position(body, Epoch(d.path.epoch.0 + t / DAY));
+            low = low.min((glam::DVec3::new(run.y[0], run.y[1], run.y[2]) - b).length());
+        }
+    }
+    low
 }
 
 fn burns(d: &Design) -> Vec<f64> {

@@ -414,8 +414,30 @@ pub fn seeds(
     out
 }
 
-/// A fan chain flown again in the design field and split into arcs of at
-/// most [`ARC_S`], as a path in time order: a burn node where each link
+/// Times of the nodes after `from` along a link to `to` (either way in
+/// time), ending at `to`: at most [`ARC_S`] apart, and 1 and 4 hours from
+/// each end, where the ship passes a body and its path is most sensitive.
+/// With half-day arcs beside a lunar flyby, a few m/s at perilune moved the
+/// next node thousands of km, past what Newton's steps could follow.
+fn node_times(from: f64, to: f64) -> Vec<f64> {
+    let span = (to - from).abs();
+    let arcs = ((span / ARC_S).ceil() as usize).max(2);
+    let mut offsets: Vec<f64> = (1..=arcs).map(|j| span * j as f64 / arcs as f64).collect();
+    for near in [3_600.0, 4.0 * 3_600.0] {
+        if 3.0 * near < span {
+            offsets.extend([near, span - near]);
+        }
+    }
+    offsets.sort_by(|a, b| a.total_cmp(b));
+    offsets.dedup_by(|a, b| (*a - *b).abs() < 1_800.0);
+    // The end stays exact.
+    *offsets.last_mut().unwrap() = span;
+    let dir = (to - from).signum();
+    offsets.into_iter().map(|o| from + dir * o).collect()
+}
+
+/// A fan chain flown again in the design field and split into arcs (see
+/// [`node_times`]), as a path in time order: a burn node where each link
 /// starts, coast nodes along it. `None` if the trajectory hits a body.
 fn chain_path(field: &Field, epoch: Epoch, direction: Direction, links: &[Link]) -> Option<Path> {
     let ode = field.ode(epoch);
@@ -427,11 +449,9 @@ fn chain_path(field: &Field, epoch: Epoch, direction: Direction, links: &[Link])
         for i in 0..3 {
             flown[3 + i] += link.burn[i];
         }
-        let arcs = (((link.end - link.at).abs() / ARC_S).ceil() as usize).max(2);
         let mut run = Dop853::new(&ode, link.at, flown, TOL);
-        let mut states = Vec::with_capacity(arcs);
-        for j in 1..=arcs {
-            let t = link.at + (link.end - link.at) * j as f64 / arcs as f64;
+        let mut states = Vec::new();
+        for t in node_times(link.at, link.end) {
             run.advance_to(&ode, t).ok()?;
             let r = DVec3::new(run.y[0], run.y[1], run.y[2]);
             if field
@@ -535,7 +555,10 @@ pub fn closest(
         (DVec3::new(s[0], s[1], s[2]) - DVec3::new(x[0], x[1], x[2])).length()
     };
     let mut run = Dop853::new(&ode, t, state, TOL);
-    let mut best: Option<(DenseStep<6>, f64)> = None;
+    // The step ending at the nearest sampled point, and the one after it:
+    // the minimum lies in one of the two.
+    let mut best: Option<(DenseStep<6>, Option<DenseStep<6>>, f64)> = None;
+    let mut waiting = false;
     while run.t != end {
         let step = run.step(&ode, end).ok()?;
         let r = DVec3::new(run.y[0], run.y[1], run.y[2]);
@@ -546,32 +569,42 @@ pub fn closest(
         {
             return None;
         }
+        if waiting && let Some(b) = best.as_mut() {
+            b.1 = Some(step.clone());
+        }
         let d = gap(run.t, &run.y);
-        if best.as_ref().is_none_or(|b| d < b.1) {
-            best = Some((step, d));
+        waiting = best.as_ref().is_none_or(|b| d < b.2);
+        if waiting {
+            best = Some((step, None, d));
         }
     }
-    // The minimum within the best step and its neighbors' ends, by golden
-    // section on the step's interpolant.
-    let (step, _) = best?;
-    let (mut lo, mut hi) = (step.t0.min(step.t0 + step.h), step.t0.max(step.t0 + step.h));
+    // Golden section over both steps' interpolants (time runs forward).
+    let (step, after, _) = best?;
+    let state_at = |t: f64| match &after {
+        Some(a) if t > step.t0 + step.h => a.at(t),
+        _ => step.at(t),
+    };
+    let (mut lo, mut hi) = (
+        step.t0,
+        after.as_ref().map_or(step.t0 + step.h, |a| a.t0 + a.h),
+    );
     let g = 0.5 * (5.0f64.sqrt() - 1.0);
     for _ in 0..60 {
         let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
-        if gap(a, &step.at(a)) < gap(b, &step.at(b)) {
+        if gap(a, &state_at(a)) < gap(b, &state_at(b)) {
             hi = b;
         } else {
             lo = a;
         }
     }
     let tc = 0.5 * (lo + hi);
-    let sc = step.at(tc);
+    let sc = state_at(tc);
     Some((tc, sc, gap(tc, &sc)))
 }
 
 /// Seeds for rendezvous transfers from `from` to `to` (station orbits),
 /// cheapest estimate first: a fan of burns from `from` at `search.times`,
-/// each trajectory's closest approach to `to` within `search.span`, kept
+/// each trajectory's closest approach to `to` within `search.durations`, kept
 /// within `reach` km. The estimate adds the departure burn, the burn to
 /// match `to`'s velocity there, and the miss spread over the flight.
 pub fn rendezvous_seeds(
@@ -814,7 +847,7 @@ pub fn plan(
         directions: 30,
         flyby_directions: 12,
         durations: seed_durations,
-        designs: PLAN_SEEDS,
+        designs: 2 * PLAN_SEEDS,
     };
     let seeded: Vec<Seed> = match (&from, &to) {
         (End::Orbit(r), End::Low(l)) => {
@@ -847,10 +880,21 @@ pub fn plan(
                 &[0.7, 0.8, 0.9, 1.0],
                 100,
                 seed_durations,
-                PLAN_SEEDS,
+                2 * PLAN_SEEDS,
             )
         }
     };
+    // Seeds leaving outside the window (an arrival fan's can) would only
+    // be held at its edge: twice as many are drawn, and the first inside
+    // kept.
+    let seeded: Vec<Seed> = seeded
+        .into_iter()
+        .filter(|seed| {
+            let leaves = seed.path.times[0] + (seed.path.epoch.0 - epoch.0) * SECONDS_PER_DAY;
+            leaves >= window.0 && leaves <= window.1
+        })
+        .take(PLAN_SEEDS)
+        .collect();
     // Seeds share an epoch, which the leg's times count from.
     let seed_epoch = seeded.first().map_or(epoch, |s| s.path.epoch);
     let shift = (epoch.0 - seed_epoch.0) * SECONDS_PER_DAY;
