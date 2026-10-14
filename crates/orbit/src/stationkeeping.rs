@@ -89,7 +89,8 @@ impl Rng {
 }
 
 /// One run: a ship inserted on the reference (with navigation error) held
-/// there until the last maneuver whose horizon the reference still covers.
+/// there until the last maneuver whose horizon the reference still covers,
+/// or until it strays farther than [`HELD_KM`].
 pub fn simulate(
     field: &Field,
     reference: &Reference,
@@ -125,6 +126,12 @@ pub fn simulate(
                 .sum::<f64>()
                 .sqrt(),
         );
+        // Lost: the policy fails, and a ship left to wander can fall
+        // through the Moon's point mass, where integrating it crawls (a
+        // year of NRHO took over 10 minutes).
+        if worst > HELD_KM {
+            break;
+        }
         let estimate = noisy(&truth, &mut rng);
         let delta: [f64; 6] = std::array::from_fn(|i| estimate[i] - reference_now[i]);
         // The reference's sensitivity over the horizon.
