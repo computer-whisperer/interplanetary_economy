@@ -465,6 +465,16 @@ Around the map, minimal and information-dense:
   decides whether contracting is a real choice.
 - **Clawback.** What fraction of net revenue Earth offsets against the
   appropriation.
+- **Where stations go.** With the hub at any one of the four Earth–Moon
+  station orbits, M2's central world is worth the same within 0.5%, and
+  the LP over all four at once does not solve (M1a.md, step 11). Where
+  to build stations and how to route traffic stay the player's
+  decisions: the game should show the trade (transfer costs, upkeep,
+  phasing) rather than compute one answer.
+- **Trip costs.** Wear (a ship's price over 50 flights) and $0.5M of
+  operations per trip [guess] cut the central world's lunar plant to a
+  third and its value by 17% (M1a.md, step 11): the largest lever
+  measured since M2.
 - **Presenting the option space.** The sandbox can fly anything its
   physics allows; the MVP offers the autopilot's playbook options. How to
   show more (natural pathways, frontiers, a burn editor) is open; M1c's

@@ -63,12 +63,14 @@ arrival). Units are km/s for speeds and days for time; dates are
 ## The `plan` command
 
 ```sh
-cargo run --release -p plan -- solve                 # central values of every parameter
-cargo run --release -p plan -- solve --seed 7        # one random draw
-cargo run --release -p plan -- solve --free          # no program costs or lead times
-cargo run --release -p plan -- sweep --draws 100 --csv sweep.csv
+cargo run --release -p plan -- solve --hub nrho              # central values, the NRHO as the hub
+cargo run --release -p plan -- solve --hub l1 --seed 7       # one random draw
+cargo run --release -p plan -- solve --hub dro --free        # no program costs or lead times
+cargo run --release -p plan -- sweep --hub nrho --draws 100 --csv sweep.csv
 ```
 
-Choosing which programs to fund takes ~10 LP solves of ~22 s each at the
+`--hub` keeps one station orbit (l1, l2, nrho, dro) and leaves the others
+out: the LP over the whole route graph does not solve (M1a.md, step 11).
+Choosing which programs to fund takes ~6 LP solves of ~30 s each at the
 default six-month steps (`--months`); a sweep runs 12 draws at a time
 (`--jobs`).

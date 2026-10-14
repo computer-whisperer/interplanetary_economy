@@ -689,7 +689,9 @@ impl EconomyFile {
                 demand.push(DemandCategory {
                     id,
                     what,
-                    nodes: d.nodes.iter().map(|n| node(n)).collect(),
+                    // Places the graph leaves out (`plan --hub`) are not
+                    // served; the test below checks the names.
+                    nodes: d.nodes.iter().filter_map(|n| graph.lookup(n)).collect(),
                     segments: segments
                         .iter()
                         .map(|s| DemandSegment {
@@ -796,6 +798,18 @@ impl From<OutputRow> for Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Demand categories name places of the route graph (a scenario skips
+    /// absent ones, for graphs restricted by `plan --hub`).
+    #[test]
+    fn demand_nodes_are_places() {
+        let graph = crate::edges::standard(Ephemeris::standard());
+        for d in &EconomyFile::standard().demand {
+            for n in &d.nodes {
+                assert!(graph.lookup(n).is_some(), "{}: no place {n}", d.id);
+            }
+        }
+    }
 
     #[test]
     fn deposits_share_one_survey_and_leaner_ones_need_more_equipment() {

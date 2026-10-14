@@ -78,7 +78,14 @@ struct Opts {
     /// Multiplies the launch price, after drawing.
     #[arg(long, default_value_t = 1.0)]
     launch_factor: f64,
+    /// Keep one station orbit as the hub: the others, with their legs and
+    /// gateways, leave the route graph (M1a step 11).
+    #[arg(long, value_parser = STATIONS)]
+    hub: Option<String>,
 }
+
+/// The route graph's station orbits.
+const STATIONS: [&str; 4] = ["l1", "l2", "nrho", "dro"];
 
 fn parse_factor(s: &str) -> Result<(Source, f64), String> {
     let (src, f) = s.split_once('=').ok_or("expected SOURCE=FACTOR")?;
@@ -175,7 +182,12 @@ impl World {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let eph = Ephemeris::standard();
-    let graph = edges::standard(eph);
+    let (Cmd::Solve { opts, .. } | Cmd::Sweep { opts, .. }) = &cli.cmd;
+    let mut graph = edges::standard(eph);
+    if let Some(hub) = &opts.hub {
+        let others: Vec<&str> = STATIONS.into_iter().filter(|s| s != hub).collect();
+        graph = graph.without(&others);
+    }
     let world = World {
         eph,
         graph,
@@ -331,21 +343,25 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
         .collect();
     println!("budget binds through: {}", binding.join(" "));
     println!("marginal value, $/kg (2040, 2045, 2055, 2070):");
-    for (node, c) in [
-        ("leo", Commodity::Lox),
-        ("l1", Commodity::Lox),
-        ("l2", Commodity::Lox),
-        ("nrho", Commodity::Lox),
-        ("dro", Commodity::Lox),
-        ("nrho", Commodity::Ch4),
-        ("nrho", Commodity::Lh2),
+    let stations = STATIONS
+        .into_iter()
+        .flat_map(|s| [Commodity::Lox, Commodity::Ch4, Commodity::Lh2].map(|c| (s, c)));
+    let others = [
         ("llo", Commodity::Lox),
         ("moon-south-pole", Commodity::Lox),
         ("moon-south-pole", Commodity::Payload),
         ("lmo", Commodity::Lox),
         ("mars-surface", Commodity::Payload),
-    ] {
-        let v = &plan.price[&(w.graph.lookup(node).unwrap(), c)];
+    ];
+    for (node, c) in [("leo", Commodity::Lox)]
+        .into_iter()
+        .chain(stations)
+        .chain(others)
+    {
+        let Some(place) = w.graph.lookup(node) else {
+            continue;
+        };
+        let v = &plan.price[&(place, c)];
         println!(
             "  {:<16} {:<8} {:>8.0} {:>8.0} {:>8.0} {:>8.0}",
             node,

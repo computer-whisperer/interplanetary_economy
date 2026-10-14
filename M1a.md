@@ -1,9 +1,10 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-14: steps 1–8 done; step 9 started, its open part
-deferred; step 10 done: the gate passes for most legs and fails for legs
-between stations and two kinds of departures to other planets (below);
-step 11 next, then M1c (M1c.md).
+Status, 2026-10-14: steps 1–11 done, step 9's open part deferred. The
+gate passes for most legs and fails for legs between stations and two
+kinds of departures to other planets (step 10, below); whether M1b flies
+ships per trip for the legs that pass is decided before M1b. Next: M1c
+(M1c.md).
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -299,10 +300,10 @@ step 11 next, then M1c (M1c.md).
   from these sweeps, as tables; whether M1b flies ships per trip for the
   legs that pass is decided before M1b.
 
-- Step 11, so far (2026-10-14): `orbit::routes` and `orbit routes` export
+- Step 11 (2026-10-14): `orbit::routes` and `orbit routes` export
   the route graph (`data/routes.toml`: 31 places, 44 legs), and
-  `crates/plan` reads it and is back in the workspace (its 8 tests
-  pass). Added to the sweep, every 60 days over 2040–2075: returns to
+  `crates/plan` reads it and is back in the workspace (its 9 tests pass,
+  on scenarios with the L1 halo as the only station). Added to the sweep, every 60 days over 2040–2075: returns to
   LEO by aerocapture (1,097 of 1,100 converged; medians 410 m/s from the
   DRO to 908 from low lunar orbit; M2's map had 770 from EML1 and 900
   from low lunar orbit), and the legs flown from a publication's LEO
@@ -311,17 +312,44 @@ step 11 next, then M1c (M1c.md).
   L1 halo 619 m/s, L2 halo 467, NRHO 504, DRO 401, low lunar orbit 897.
   Escapes at 1 and 3 km/s agree to 1 m/s, as they must under step 9's
   stand-in (the way down does not depend on v∞).
-  Blocked: M2's LP on this graph is 2.4× larger (180k columns; 6 places
-  in Earth's system now leave for other planets, against 2), and
-  HiGHS's interior point method makes no progress on it, falling back to
-  a simplex that had not finished after 10 minutes. Without the direct
-  legs between stations it solves (77 s per solve). The NRHO–DRO pair
-  alone breaks it, though neither of its two legs alone does, nor does
-  the L1–L2 pair. A cost of $0.1M per trip also makes it solve ($0.01M
-  does not). The likely cause: trips between stations that cost almost
-  nothing (on surplus lunar propellant) leave a large set of equally
-  good plans, which interior point methods handle badly. Solver
-  settings (bound scaling, presolve off, dualizing) did not help.
+  M2's LP on the whole graph does not solve: it is 2.4× larger (180k
+  columns; 6 places in Earth's system now leave for other planets,
+  against 2), and HiGHS's interior point method makes no progress,
+  falling back to a simplex that had not finished one solve after 10
+  minutes. Without the direct legs between stations it solves (77 s per
+  solve); the NRHO–DRO pair alone breaks it, though neither of its legs
+  alone does, nor does the L1–L2 pair. Costs per trip flip it both ways
+  ($0.01M fails, $0.1M solves, $1–2M fails), and solver settings
+  (bound scaling, presolve off, dualizing) did not help: the LP sits at
+  the edge of what the method handles (M2's original already took 143
+  iterations), not behind one modeling flaw. So the hub is chosen the
+  way a player would choose it: `plan solve --hub STATION` keeps one
+  station and leaves the others out (87k columns, ~30 s per solve).
+  Trips now cost wear and operations: a ship's price over 50 flights
+  plus $0.5M (`data/economy.toml`; M2 had none).
+
+  The central world (hub-propellant demand at the station kept; value in
+  $B, discounted):
+
+  | Hub | Best plan | Earth only | Lunar ice plant (t/yr) |
+  |---|---|---|---|
+  | L1 halo | 297.6 | 212.8 | 110,000 |
+  | L2 halo | 298.5 | 213.8 | 111,000 |
+  | NRHO | 299.0 | 213.6 | 113,000 |
+  | DRO | 298.9 | 214.4 | 112,000 |
+  | M2 (EML1, its Δv map, no trip costs) | 364.2 | 221.7 | 315,000 |
+
+  Every hub gives the same path (Moon, 91% of propellant to 2060) and
+  plans within 0.5% of each other: the NRHO is best by $1.4B over the
+  L1 halo (it has the cheapest legs to low lunar orbit, 0.70 km/s
+  against 0.80–0.82; the cause is not isolated). Which station
+  hosts the hub is close to a free choice in this world, decided by
+  what the model leaves out (upkeep, phasing, risk). The drop from M2
+  is the trip costs: the NRHO hub without them is worth $360.6B with a
+  321,000 t/yr plant, 1% from M2's EML1. With them, oxygen at LEO is
+  worth $102/kg in 2055 against M2's $47 (still under launch: lunar
+  oxygen still supplies LEO through the 2050s), the plant is a third
+  the size, and more haulers are bought (~130 against 62).
 
 ## Why
 
@@ -617,7 +645,8 @@ measured by the autopilot, then reruns M2's central world.
    own route.
 7. **Rerun M2's central world** (`plan solve`), and record where the
    hub's propellant is delivered, the development path, and the plan's
-   value against M2's.
+   value against M2's. (Done once per station, `--hub`: the LP over all
+   four does not solve; see the status.)
 
 ### Step 10 plan (2026-10-13)
 

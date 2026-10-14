@@ -196,6 +196,27 @@ impl RouteGraph {
         &self.legs
     }
 
+    /// The graph without the places `ids` and their legs.
+    pub fn without(&self, ids: &[&str]) -> RouteGraph {
+        let mut g = RouteGraph::new(self.source.clone());
+        let mut kept = HashMap::new();
+        for (id, p) in self.places() {
+            if !ids.contains(&p.id.as_str()) {
+                kept.insert(id, g.add_place(p.clone()));
+            }
+        }
+        for l in &self.legs {
+            if let (Some(&from), Some(&to)) = (kept.get(&l.from), kept.get(&l.to)) {
+                g.legs.push(Leg {
+                    from,
+                    to,
+                    ..l.clone()
+                });
+            }
+        }
+        g
+    }
+
     pub fn from_toml(src: &str, eph: &Ephemeris) -> Result<RouteGraph, String> {
         let file: File = toml::from_str(src).map_err(|e| e.to_string())?;
         let mut graph = RouteGraph::new(file.source);
