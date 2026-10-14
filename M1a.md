@@ -404,6 +404,24 @@ that the autopilot exports (step 11).
 11. Route graph export; `crates/plan` reads it; rerun M2's central world
     to see where the hub goes.
 
+### Step 8 plan (2026-10-13)
+
+1. Landing and ascent (`surface`): between a low circular orbit and rest
+   on the surface (its rotation included), Δv is the ideal two-burn
+   transfer plus a loss per body and direction, fitted to flown values:
+   the Moon from Apollo 11 (descent 23 + 2,081 m/s from 111 km, ascent
+   1,846 m/s to 17 × 83 km; NASA TM X-58040), Mars from published ascent
+   vehicles; small bodies and Phobos none. The gate's south-pole legs are a
+   station orbit to polar low lunar orbit (step 6) then down.
+2. Aerocapture and entry, for aero-capable ships: an arrival whose
+   hyperbola's periapsis is at the atmosphere's interface, which the pass
+   brakes into an orbit up to the low orbit (then a periapsis raise, Δv
+   from the conic), or (entry) to the surface with a terminal propulsive
+   Δv; each with an entry-speed limit at the interface.
+3. Phobos and Deimos as particles about Mars from Horizons states (like
+   the NEAs, with Mars's J2, IAU pole), checked against Horizons; low Mars
+   orbit to and from Phobos.
+
 ### Step 7 plan (2026-10-13)
 
 Interplanetary legs fly in a barycentric field, but integrating near LEO

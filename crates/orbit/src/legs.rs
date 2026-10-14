@@ -850,9 +850,22 @@ pub fn plan(
         durations: seed_durations,
         designs: 2 * PLAN_SEEDS,
     };
-    let seeded: Vec<Seed> = match (&from, &to) {
-        // Ends between planetary systems are `interplanetary`'s.
-        (End::Body(_) | End::Excess { .. }, _) | (_, End::Body(_) | End::Excess { .. }) => {
+    // An atmosphere is seeded as a low orbit at its pass's radius.
+    fn as_low<'b>(end: End<'b>) -> End<'b> {
+        match end {
+            End::Atmosphere { body, radius, .. } => End::Low(LowOrbit {
+                body,
+                radius,
+                inclination: None,
+            }),
+            other => other,
+        }
+    }
+    let seeded: Vec<Seed> = match (&as_low(from), &as_low(to)) {
+        // Ends between planetary systems are `interplanetary`'s; an
+        // atmosphere only ends a leg (and is a low orbit here).
+        (End::Body(_) | End::Excess { .. } | End::Atmosphere { .. }, _)
+        | (_, End::Body(_) | End::Excess { .. } | End::Atmosphere { .. }) => {
             return vec![None; durations.len()];
         }
         (End::Orbit(r), End::Low(l)) => {

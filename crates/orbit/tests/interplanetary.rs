@@ -10,6 +10,7 @@ use orbit::ephem::Ephemeris;
 use orbit::gravity::Field;
 use orbit::interplanetary;
 use orbit::shooting::{End, Leg, LowOrbit};
+use orbit::surface;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::transfer::Transfer;
 
@@ -49,7 +50,10 @@ fn design(w: &World, from: End, to: End, depart: Epoch, arrive: Epoch) -> orbit:
     let mut best: Option<orbit::shooting::Design> = None;
     for a in 0..2 {
         for b in 0..2 {
-            let turns = (a as f64 * std::f64::consts::PI, b as f64 * std::f64::consts::PI);
+            let turns = (
+                a as f64 * std::f64::consts::PI,
+                b as f64 * std::f64::consts::PI,
+            );
             let Some(seed) = interplanetary::seed(&w.global, depart, &from, &to, 0.0, t1, turns)
             else {
                 continue;
@@ -218,4 +222,36 @@ fn rendezvous_with_a_small_body() {
         patched * 1e3
     );
     assert!((d.dv / patched - 1.0).abs() < 0.02);
+}
+
+/// Aerocapture at Mars on the 2033 Type I arc: the capture burn of 2.8
+/// km/s becomes a periapsis raise of ~0.08 km/s after a pass at 50 km,
+/// within the speed limit there.
+#[test]
+fn aerocapture_at_mars() {
+    let w = world();
+    let eph = Ephemeris::standard();
+    let (earth, mars) = (eph.lookup("earth").unwrap(), eph.lookup("mars").unwrap());
+    let leo = LowOrbit {
+        body: earth,
+        radius: 6_778.0,
+        inclination: None,
+    };
+    let rules = surface::rules(eph, mars).atmosphere.unwrap();
+    let (r, gm) = (eph.body(mars).radius, eph.body(mars).gm);
+    let pass = r + rules.capture_altitude;
+    let after = surface::after_aerocapture(gm, pass, r + 400.0);
+    let to = End::Atmosphere {
+        body: mars,
+        radius: pass,
+        after,
+        max_speed: rules.max_speed,
+    };
+    let (d0, d1) = (Epoch::from_ymd(2033, 4, 6), Epoch::from_ymd(2033, 10, 1));
+    let d = design(&w, End::Low(leo), to, d0, d1);
+    let b: Vec<f64> = d.burns.iter().map(|b| b.dv.length() * 1e3).collect();
+    println!("LEO to Mars by aerocapture: {b:.0?} m/s");
+    assert!((b[0] - 3_550.0).abs() < 15.0, "leaving LEO");
+    assert!((b[1] - after * 1e3).abs() < 1e-6);
+    assert!(after > 0.05 && after < 0.12, "{after}");
 }

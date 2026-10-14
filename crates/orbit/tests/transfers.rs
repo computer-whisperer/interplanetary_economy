@@ -315,3 +315,27 @@ fn between_station_orbits() {
         assert!(d.dv < 0.7, "{a} to {b}: {} km/s", d.dv);
     }
 }
+
+/// Back from the NRHO to LEO by aerocapture (a pass at 75 km, then a
+/// periapsis raise to 400 km), against the propulsive capture's ~3.1 km/s.
+#[test]
+fn nrho_to_leo_by_aerocapture() {
+    let w = world();
+    let eph = Ephemeris::standard();
+    let earth = w.leo.body;
+    let rules = orbit::surface::rules(eph, earth).atmosphere.unwrap();
+    let pass = eph.body(earth).radius + rules.capture_altitude;
+    let after = orbit::surface::after_aerocapture(eph.body(earth).gm, pass, w.leo.radius);
+    let nrho = station(&w, "nrho");
+    let to = End::Atmosphere {
+        body: earth,
+        radius: pass,
+        after,
+        max_speed: rules.max_speed,
+    };
+    let d = plan(&w, End::Orbit(&nrho), to, nrho.period_s() / DAY, 5.0);
+    let b = burns(&d);
+    println!("NRHO to LEO by aerocapture in 5 days: {b:.0?} m/s");
+    assert!((b.last().unwrap() - after * 1e3).abs() < 1e-6);
+    assert!(d.dv < 0.6, "{}", d.dv);
+}

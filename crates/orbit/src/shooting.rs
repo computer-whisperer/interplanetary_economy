@@ -76,6 +76,17 @@ pub enum End<'a> {
     /// with no burn: leaving the body's system on its way out (as a leg's
     /// end), arriving into it (as a start).
     Excess { body: BodyId, v_inf: DVec3 },
+    /// Through a body's atmosphere, for aero-capable ships (as a leg's end
+    /// only): the arrival's periapsis (of its vacuum conic) at `radius`,
+    /// where the pass brakes it, no faster than `max_speed` (km/s); `after`
+    /// is the propulsive Δv that follows (an aerocapture's periapsis raise,
+    /// an entry's terminal descent; see [`crate::surface`]).
+    Atmosphere {
+        body: BodyId,
+        radius: f64,
+        after: f64,
+        max_speed: f64,
+    },
 }
 
 /// The excess velocity of a hyperbola about a body of `gm` through `s` (a
@@ -208,6 +219,8 @@ pub enum Failure {
     Infeasible(f64),
     /// The path passes below this body's surface.
     Collision(BodyId),
+    /// A pass through an atmosphere faster than it survives (km/s).
+    TooFast(f64),
 }
 
 /// The unknowns' layout: the burn nodes' times, then each node's state,
@@ -555,6 +568,30 @@ impl<'a> Leg<'a> {
                     cost_state: [0.0, 0.0, 0.0, u.x, u.y, u.z],
                     cost_t: -u.dot(ba),
                     burn: join(dv),
+                })
+            }
+            End::Atmosphere {
+                body,
+                radius,
+                after,
+                ..
+            } => {
+                assert!(!leaving, "an atmosphere ends a leg");
+                let (br, bv, ba) = self.body(*body, epoch, t);
+                let (rho, nu) = (r - br, v - bv);
+                let dist = rho.length();
+                let rho_hat = rho / dist;
+                let cat = |a: DVec3, b: DVec3| [a.x, a.y, a.z, b.x, b.y, b.z];
+                Some(EndTerms {
+                    rows: vec![
+                        (dist - radius, cat(rho_hat, DVec3::ZERO), -rho_hat.dot(bv)),
+                        (rho.dot(nu), cat(nu, rho), -bv.dot(nu) - rho.dot(ba)),
+                    ],
+                    scales: vec![length, length * speed],
+                    cost: *after,
+                    cost_state: [0.0; 6],
+                    cost_t: 0.0,
+                    burn: *after * nu.normalize(),
                 })
             }
             End::Excess { body, v_inf } => {
@@ -1289,6 +1326,18 @@ impl<'a> Leg<'a> {
             }
         }
         let arrival = e.arrivals[last - 1];
+        if let End::Atmosphere {
+            body, max_speed, ..
+        } = self.to
+        {
+            let b = self
+                .field
+                .body_state(body, Epoch(epoch.0 + times[last] / SECONDS_PER_DAY));
+            let speed = (DVec3::new(arrival[3], arrival[4], arrival[5]) - b.v).length();
+            if speed > max_speed {
+                return Err(Failure::TooFast(speed));
+            }
+        }
         let end = self
             .end_terms(
                 &self.to,

@@ -61,12 +61,14 @@ pub fn periapsis(gm: f64, rp: f64, v_inf: DVec3, turn: f64, outgoing: bool) -> S
     }
 }
 
-/// What a seed's ends are: a low orbit about a planet (`body`, `radius`),
-/// a small body to meet, or an escape with an excess velocity (leaving the
-/// planet the leg starts at, or arriving at the one it ends at).
+/// What a seed's ends are: a low orbit about a planet, or a pass through
+/// its atmosphere (`body`, a periapsis radius), a small body to meet, or an
+/// escape with an excess velocity (leaving the planet the leg starts at, or
+/// arriving at the one it ends at).
 fn kind(end: &End) -> Option<(BodyId, Option<f64>)> {
     match end {
         End::Low(low) => Some((low.body, Some(low.radius))),
+        End::Atmosphere { body, radius, .. } => Some((*body, Some(*radius))),
         End::Body(b) => Some((*b, None)),
         End::Excess { body, .. } => Some((*body, None)),
         End::Orbit(_) => None,
