@@ -7,12 +7,11 @@ use damascene_core::prelude::*;
 use damascene_core::{HostDiagnostics, paint::rgba_f32_in};
 use damascene_wgpu::Runner;
 
-/// The scene and what it is drawn with.
+/// What the scene is drawn with.
 pub struct View {
     pub renderer: render::Renderer,
     pub target: Option<render::Target>,
     pub timer: Option<render::GpuTimer>,
-    pub scene: render::Scene,
 }
 
 impl View {
@@ -21,7 +20,6 @@ impl View {
             renderer: render::Renderer::new(device),
             target: None,
             timer: render::GpuTimer::new(device, queue),
-            scene: render::Scene::default(),
         }
     }
 }
@@ -44,7 +42,8 @@ pub struct Drawn {
     pub timings: Vec<render::Timings>,
 }
 
-/// Draws a frame of `app` at `viewport` (logical pixels) × `scale`.
+/// Draws a frame of `app`, with `scene` in its map view, at `viewport`
+/// (logical pixels) × `scale`.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     device: &wgpu::Device,
@@ -52,6 +51,7 @@ pub fn draw(
     ui: &mut Runner,
     app: &mut Shell,
     view: &mut View,
+    scene: &render::Scene,
     out: Output,
     viewport: Rect,
     scale: f32,
@@ -110,7 +110,7 @@ pub fn draw(
     if let Some(target) = &view.target {
         let writes = view.timer.as_ref().and_then(|t| t.scene_pass(measuring));
         view.renderer
-            .render(&mut encoder, target, &view.scene, writes);
+            .render(device, queue, &mut encoder, target, scene, writes);
     }
     if let Some(t) = &view.timer {
         t.after_scene(&mut encoder, measuring);
@@ -157,11 +157,12 @@ pub struct Shot {
     pub target: Option<(u32, u32)>,
 }
 
-/// Draws `app` offscreen at `width` × `height` pixels, with `scene`.
+/// Draws `app` offscreen at `width` × `height` pixels, with `scene` in
+/// its map view (its own if `None`).
 pub fn shot(
     gpu: &render::offscreen::Offscreen,
     app: &mut Shell,
-    scene: render::Scene,
+    scene: Option<render::Scene>,
     width: u32,
     height: u32,
 ) -> Shot {
@@ -172,7 +173,7 @@ pub fn shot(
     ui.set_theme(app.theme());
     ui.set_surface_size(width, height);
     let mut view = View::new(device, queue);
-    view.scene = scene;
+    let scene = scene.unwrap_or_else(|| app.scene());
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("offscreen frame"),
         size: wgpu::Extent3d {
@@ -198,7 +199,7 @@ pub fn shot(
             msaa: None,
         };
         if !draw(
-            device, queue, &mut ui, app, &mut view, out, viewport, 1.0, None,
+            device, queue, &mut ui, app, &mut view, &scene, out, viewport, 1.0, None,
         )
         .again
         {

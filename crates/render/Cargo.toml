@@ -4,5 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.34.1"
 pollster = "1.0"
 wgpu = "30"

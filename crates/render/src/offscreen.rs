@@ -129,13 +129,21 @@ mod tests {
         let mut timer = crate::GpuTimer::new(&gpu.device, &gpu.queue);
         let scene = Scene {
             background: [0.25, 1.5, 7.0],
+            ..Default::default()
         };
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let m = timer.as_mut().and_then(|t| t.begin(&mut encoder));
         let writes = timer.as_ref().and_then(|t| t.scene_pass(m));
-        renderer.render(&mut encoder, &target, &scene, writes);
+        renderer.render(
+            &gpu.device,
+            &gpu.queue,
+            &mut encoder,
+            &target,
+            &scene,
+            writes,
+        );
         if let Some(t) = &timer {
             t.after_scene(&mut encoder, m);
             t.end(&mut encoder, m);
@@ -185,7 +193,16 @@ mod tests {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             let m = timer.begin(&mut encoder);
             assert!(m.is_some(), "a free slot");
-            renderer.render(&mut encoder, target, &Scene::default(), timer.scene_pass(m));
+            let scene = Scene::default();
+            let writes = timer.scene_pass(m);
+            renderer.render(
+                &gpu.device,
+                &gpu.queue,
+                &mut encoder,
+                target,
+                &scene,
+                writes,
+            );
             timer.after_scene(&mut encoder, m);
             timer.end(&mut encoder, m);
             gpu.queue.submit(Some(encoder.finish()));

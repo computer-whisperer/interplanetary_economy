@@ -232,7 +232,8 @@ impl ApplicationHandler for Host {
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / scale / WHEEL_LINE,
                 };
                 if over_map(gfx) {
-                    app.camera.wheel(lines);
+                    let eph = app.eph;
+                    app.camera.wheel(eph, lines);
                 } else {
                     gfx.renderer.pointer_wheel(x, y, -lines * WHEEL_LINE);
                 }
@@ -360,6 +361,8 @@ impl Host {
         self.last_frame = Some(now);
         self.frame_index += 1;
         self.app.stats.frame_ms = Some(dt.as_secs_f32() * 1e3);
+        self.app.tick(dt.as_secs_f64());
+        let scene = self.app.scene();
         self.app.stats.output = gfx.color.output_luminance();
         let scale = gfx.window.scale_factor() as f32;
         let diagnostics = HostDiagnostics {
@@ -393,6 +396,7 @@ impl Host {
             &mut gfx.renderer,
             &mut self.app,
             view,
+            &scene,
             Output {
                 texture: &texture.texture,
                 view: &surface_view,

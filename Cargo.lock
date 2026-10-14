@@ -3168,6 +3168,8 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "render"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "glam 0.34.1",
  "pollster",
  "wgpu",
 ]
@@ -3272,6 +3274,8 @@ dependencies = [
  "damascene-core",
  "damascene-wgpu",
  "damascene-winit-wgpu",
+ "glam 0.34.1",
+ "orbit",
  "png",
  "pollster",
  "render",

@@ -81,9 +81,12 @@ cargo run --release -p sandbox -- --frames 600               # close after 600 f
 cargo run --release -p sandbox -- --screenshot shot.png      # one frame offscreen
 ```
 
-Right drag orbits the camera, middle drag pans, the wheel zooms (the
-camera is a stub until M1c step 3). `DAMASCENE_COLOR_DEBUG=1` prints the
-color negotiation with the compositor.
+The top bar picks the body the camera follows. Right drag orbits it, the
+wheel zooms (down to 10 km above its surface), space pauses the clock
+and `,` and `.` change its rate tenfold. `--focus ID --altitude KM
+--azimuth DEG --elevation DEG --date YYYY-MM-DD` set the starting view,
+for screenshots too. `DAMASCENE_COLOR_DEBUG=1` prints the color
+negotiation with the compositor.
 
 ## The `plan` command
 

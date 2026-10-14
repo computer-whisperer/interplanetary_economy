@@ -1,71 +1,24 @@
-//! The sandbox's UI (M1c.md, step 2 plan, item 5): a top bar, the map
-//! view, and a status line.
+//! The sandbox's UI (M1c.md, step 2 plan, item 5; step 3 plan, items 6
+//! and 7): a top bar with the focus and the clock, the map view, and a
+//! status line.
 
+use crate::bodies;
+use crate::camera::MapCamera;
+use crate::clock::Clock;
 use damascene_core::prelude::*;
 use damascene_core::surface::AppTexture;
+use orbit::ephem::{BodyId, Ephemeris};
+use orbit::time::Epoch;
 use render::Timings;
 
 /// The map view's key: input over it goes to the camera.
 pub const VIEWPORT_KEY: &str = "viewport";
 
-/// Stands in for the camera until step 3: accumulates what input asks
-/// of it. As in KSP's map view, a right drag orbits, a middle drag pans
-/// and the wheel zooms.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct CameraStub {
-    /// Degrees.
-    pub yaw: f32,
-    pub pitch: f32,
-    /// Logical pixels.
-    pub pan: (f32, f32),
-    /// Wheel lines in (positive) or out.
-    pub zoom: f32,
-    dragging: Option<(PointerButton, (f32, f32))>,
-}
+/// The focus select's key.
+const FOCUS_KEY: &str = "focus";
 
-impl CameraStub {
-    /// Degrees of orbit per logical pixel dragged.
-    const ORBIT: f32 = 0.3;
-
-    /// A press over the map view.
-    pub fn press(&mut self, button: PointerButton, at: (f32, f32)) {
-        if matches!(button, PointerButton::Secondary | PointerButton::Middle) {
-            self.dragging = Some((button, at));
-        }
-    }
-
-    /// The pointer moved; `true` if the camera did.
-    pub fn moved(&mut self, at: (f32, f32)) -> bool {
-        let Some((button, from)) = self.dragging else {
-            return false;
-        };
-        let (dx, dy) = (at.0 - from.0, at.1 - from.1);
-        match button {
-            PointerButton::Secondary => {
-                self.yaw = (self.yaw + dx * Self::ORBIT).rem_euclid(360.0);
-                self.pitch = (self.pitch - dy * Self::ORBIT).clamp(-90.0, 90.0);
-            }
-            _ => self.pan = (self.pan.0 + dx, self.pan.1 + dy),
-        }
-        self.dragging = Some((button, at));
-        true
-    }
-
-    pub fn release(&mut self, button: PointerButton) {
-        if self.dragging.is_some_and(|(b, _)| b == button) {
-            self.dragging = None;
-        }
-    }
-
-    /// Ends any drag: the window lost focus.
-    pub fn cancel(&mut self) {
-        self.dragging = None;
-    }
-
-    pub fn wheel(&mut self, lines: f32) {
-        self.zoom += lines;
-    }
-}
+/// The longest step of wall time a frame advances, s.
+const MAX_STEP_S: f64 = 0.25;
 
 /// What the status line reports.
 #[derive(Clone, Copy, Debug, Default)]
@@ -80,12 +33,80 @@ pub struct Stats {
     pub output: Option<(f32, f32)>,
 }
 
-#[derive(Default)]
 pub struct Shell {
+    pub eph: &'static Ephemeris,
     /// The scene's target, once its size is known.
     pub viewport: Option<AppTexture>,
-    pub camera: CameraStub,
+    pub camera: MapCamera,
+    pub clock: Clock,
     pub stats: Stats,
+    /// The bodies the focus select offers.
+    bodies: Vec<BodyId>,
+    focus_open: bool,
+}
+
+impl Shell {
+    /// Focused on Earth at `t`.
+    pub fn new(t: Epoch) -> Shell {
+        let eph = Ephemeris::standard();
+        let earth = eph.lookup("earth").expect("Earth is in the ephemeris");
+        Shell {
+            eph,
+            viewport: None,
+            camera: MapCamera::new(eph, earth),
+            clock: Clock::new(t, eph.span()),
+            stats: Stats::default(),
+            bodies: bodies::drawn(eph),
+            focus_open: false,
+        }
+    }
+
+    /// Advances the clock and the camera by `dt` seconds of wall time,
+    /// at most [`MAX_STEP_S`]: after a stall or a hidden window, time
+    /// resumes rather than leaping.
+    pub fn tick(&mut self, dt: f64) {
+        let dt = dt.min(MAX_STEP_S);
+        self.clock.tick(dt);
+        self.camera.tick(dt);
+    }
+
+    /// What the map view shows now.
+    pub fn scene(&self) -> render::Scene {
+        let (eph, t) = (self.eph, self.clock.t);
+        render::Scene {
+            camera: Some(self.camera.camera(eph, t)),
+            sun: eph.barycentric_position(eph.sun(), t),
+            spheres: self
+                .bodies
+                .iter()
+                .filter_map(|&b| bodies::sphere(eph, b, t))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn status(&self) -> String {
+        let ms = |x: Option<f32>| x.map_or("–".to_string(), |x| format!("{x:.2} ms"));
+        let frame = ms(self.stats.frame_ms);
+        let gpu = match (self.stats.timestamps, self.stats.gpu) {
+            (false, _) => "no GPU timestamps".to_string(),
+            (true, None) => "GPU –".to_string(),
+            (true, Some(t)) => format!("GPU scene {}, frame {}", ms(Some(t.scene)), ms(t.frame)),
+        };
+        format!("frame {frame} · {gpu}")
+    }
+
+    fn camera_text(&self) -> String {
+        let altitude = self.camera.altitude(self.eph);
+        let distance = if altitude < 1e6 {
+            format!("{altitude:.0} km")
+        } else if altitude < 3e7 {
+            format!("{:.2} million km", altitude / 1e6)
+        } else {
+            format!("{:.3} au", altitude / render::scene::AU_KM)
+        };
+        format!("{distance} above {}", self.eph.body(self.camera.focus).name)
+    }
 }
 
 impl App for Shell {
@@ -107,12 +128,26 @@ impl App for Shell {
         .key(VIEWPORT_KEY)
         .fill_size()
         .clip();
-        column([
+        let focus_name = self.eph.body(self.camera.focus).name.as_str();
+        let main = column([
             row([
                 text("Interplanetary sandbox").bold(),
+                text("Focus").muted().caption(),
+                select_trigger(FOCUS_KEY, focus_name).width(Size::Fixed(220.0)),
                 spacer(),
+                text(format!(
+                    "{} · {}",
+                    orbit::mission::when(self.clock.t),
+                    self.clock.rate_text()
+                ))
+                .caption()
+                .tabular_numerals(),
+                text("space pauses · , and . set the rate")
+                    .muted()
+                    .caption(),
                 text(output).muted().caption(),
             ])
+            .gap(tokens::SPACE_3)
             .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
             .align(Align::Center),
             map,
@@ -128,58 +163,53 @@ impl App for Shell {
             .align(Align::Center),
         ])
         .width(Size::Fill(1.0))
-        .height(Size::Fill(1.0))
+        .height(Size::Fill(1.0));
+        let mut layers = vec![main];
+        if self.focus_open {
+            // Small bodies exist from 2040, when their integration starts.
+            let options: Vec<(String, String)> = self
+                .bodies
+                .iter()
+                .filter(|&&b| self.eph.covers(b, self.clock.t))
+                .map(|&b| (self.eph.body(b).id.clone(), self.eph.body(b).name.clone()))
+                .collect();
+            layers.push(select_menu(FOCUS_KEY, options));
+        }
+        stack(layers).width(Size::Fill(1.0)).height(Size::Fill(1.0))
     }
 
-    fn on_event(&mut self, _event: UiEvent, _cx: &EventCx) {}
+    fn on_event(&mut self, event: UiEvent, _cx: &EventCx) {
+        if event.is_hotkey("pause") {
+            self.clock.paused = !self.clock.paused;
+        } else if event.is_hotkey("faster") {
+            self.clock.faster();
+        } else if event.is_hotkey("slower") {
+            self.clock.slower();
+        } else if event.is_click_or_activate(FOCUS_KEY) {
+            self.focus_open = !self.focus_open;
+        } else if event.is_click_or_activate(&format!("{FOCUS_KEY}:dismiss")) {
+            self.focus_open = false;
+        } else if matches!(event.kind, UiEventKind::Click | UiEventKind::Activate)
+            && let Some(id) = event.route_suffix(&format!("{FOCUS_KEY}:option"))
+            && let Some(b) = self.eph.lookup(id)
+        {
+            self.camera.focus_on(self.eph, b, self.clock.t);
+            self.focus_open = false;
+        }
+    }
+
+    fn hotkeys(&self) -> Vec<(KeyChord, String)> {
+        vec![
+            (
+                KeyChord::named(LogicalKey::Named(NamedKey::Space)),
+                "pause".into(),
+            ),
+            (KeyChord::vim('.'), "faster".into()),
+            (KeyChord::vim(','), "slower".into()),
+        ]
+    }
 
     fn theme(&self) -> Theme {
         Theme::damascene_dark()
-    }
-}
-
-impl Shell {
-    fn status(&self) -> String {
-        let ms = |x: Option<f32>| x.map_or("–".to_string(), |x| format!("{x:.2} ms"));
-        let frame = ms(self.stats.frame_ms);
-        let gpu = match (self.stats.timestamps, self.stats.gpu) {
-            (false, _) => "no GPU timestamps".to_string(),
-            (true, None) => "GPU –".to_string(),
-            (true, Some(t)) => format!("GPU scene {}, frame {}", ms(Some(t.scene)), ms(t.frame)),
-        };
-        format!("frame {frame} · {gpu}")
-    }
-
-    fn camera_text(&self) -> String {
-        let c = &self.camera;
-        format!(
-            "camera stub: yaw {:.0}°, pitch {:.0}°, pan ({:.0}, {:.0}), zoom {:+.0}",
-            c.yaw, c.pitch, c.pan.0, c.pan.1, c.zoom
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A right drag orbits, a middle drag pans, a left drag leaves the
-    /// camera alone (it picks, from step 5), and the wheel zooms.
-    #[test]
-    fn camera_stub_follows_the_buttons() {
-        let mut c = CameraStub::default();
-        c.press(PointerButton::Secondary, (100.0, 100.0));
-        assert!(c.moved((110.0, 90.0)));
-        c.release(PointerButton::Secondary);
-        assert_eq!((c.yaw, c.pitch), (3.0, 3.0));
-        c.press(PointerButton::Middle, (0.0, 0.0));
-        c.moved((5.0, -7.0));
-        c.release(PointerButton::Middle);
-        assert_eq!(c.pan, (5.0, -7.0));
-        c.press(PointerButton::Primary, (0.0, 0.0));
-        assert!(!c.moved((50.0, 50.0)));
-        c.wheel(-2.0);
-        assert_eq!(c.zoom, -2.0);
-        assert_eq!((c.yaw, c.pitch, c.pan), (3.0, 3.0, (5.0, -7.0)));
     }
 }

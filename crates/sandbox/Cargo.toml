@@ -8,6 +8,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 damascene-core = "0.8"
 damascene-wgpu = "0.8"
 damascene-winit-wgpu = "0.8"
+glam = "0.34.1"
+orbit = { path = "../orbit" }
 png = "0.18.1"
 pollster = "1.0"
 render = { path = "../render" }

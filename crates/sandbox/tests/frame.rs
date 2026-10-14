@@ -18,12 +18,13 @@ fn srgb(linear: f32) -> f32 {
 #[test]
 fn scene_shows_in_the_map_view() {
     let gpu = render::offscreen::Offscreen::new().expect("a GPU");
-    let mut app = Shell::default();
+    let mut app = Shell::new(orbit::time::Epoch::from_ymd(2045, 3, 1));
     let scene = render::Scene {
         background: [0.0, 0.5, 0.0],
+        ..Default::default()
     };
     let (w, h) = (640, 400);
-    let s = shot(&gpu, &mut app, scene, w, h);
+    let s = shot(&gpu, &mut app, Some(scene), w, h);
     let map = s.viewport.expect("the map view is laid out");
     println!("map view {map:?}, target {:?}", s.target);
     assert_eq!(s.target, Some((map.w.round() as u32, map.h.round() as u32)));

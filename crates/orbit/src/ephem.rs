@@ -582,6 +582,23 @@ impl Ephemeris {
         self.span
     }
 
+    /// Whether the body's state is known at `t`: within the DE440 tables'
+    /// span, and for a small body, within its integration (from 2040).
+    pub fn covers(&self, id: BodyId, t: Epoch) -> bool {
+        if t.0 < self.span.0.0 || t.0 > self.span.1.0 {
+            return false;
+        }
+        match &self.bodies[id.0].motion {
+            Motion::Integrated { epoch, path } => {
+                let (t0, t1) = path.span();
+                let s = (t.0 - epoch.0) * SECONDS_PER_DAY;
+                (t0..=t1).contains(&s)
+            }
+            Motion::Ellipse(el) => self.covers(el.center, t),
+            _ => true,
+        }
+    }
+
     /// Position relative to the solar-system barycenter: [`Self::barycentric`]
     /// without the velocity, for evaluating forces.
     pub fn barycentric_position(&self, id: BodyId, t: Epoch) -> DVec3 {

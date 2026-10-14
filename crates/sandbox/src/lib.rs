@@ -2,5 +2,8 @@
 //! plans played back come with step 4.
 
 pub mod app;
+pub mod bodies;
+pub mod camera;
+pub mod clock;
 pub mod frame;
 pub mod host;

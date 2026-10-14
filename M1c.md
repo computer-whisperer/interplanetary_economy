@@ -1,7 +1,39 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-14: steps 1 and 2 done; next, step 3 (scale: the
-camera, bodies and the Sun).
+Status, 2026-10-14: steps 1–3 done; next, step 4 (paths: trajectories
+drawn, frames, playback).
+
+- Step 3: the renderer draws the ephemeris's bodies as ray-cast spheres
+  in 64-bit positions, with a camera that follows a body. As built, see
+  the step 3 plan below.
+  - Gate item 2's check passes: a ship's marker in low lunar orbit lands
+    within 0.04–0.22 px of its 64-bit projection, the same to four
+    decimals at every distance from 100 km to 5 au (the dot's own
+    rasterization, no precision lost with scale).
+  - The Moon's limb from 100 and 10 km up sits within 0.18 px of the
+    horizon computed in 64 bits.
+  - Radiance: a lit center reads 0.49976 for 0.5, the Sun 46,208 for
+    46,239 (16-bit float rounding). Flux: a resolved sphere's pixels sum
+    to the same image integrated in f64 within 0.05%; a point carries
+    the distant sphere's flux within 0.2%, at the screen's center and
+    near its corner. (The distant-sphere formula itself runs 2–7% low
+    for spheres 40–200 px across: up close, less than a hemisphere is
+    visible.)
+  - At true brightness and exposure 1.0, the planets seen from afar are
+    far too faint to see, and only the Sun shows. Finding them is for
+    labels (step 5); exposure is step 6.
+  - Screenshots into 8-bit sRGB show steps one code apart across smooth
+    gradients (the Moon's surface from low orbit). The float swapchain
+    has none; dithering for SDR goes with step 6's tonemap.
+  - In a window, frames at the display's refresh (4.3–4.4 ms).
+  - A review (a sub-agent) checked the ray casting against an f64 one
+    over 396 setups (0.001 px). It found points near the screen's
+    corners up to 46% too faint (a pixel there subtends less sky);
+    a panic focusing an asteroid before 2040; a jump when refocusing
+    mid-flight; small bodies' first view inside the 10 km floor; and
+    the screenshot flags bypassing the camera's limits. All fixed, the
+    first three with tests. Also from it: spheres wholly off the screen
+    are culled, and a frame's step is capped at 0.25 s.
 
 - Step 2: `crates/render` (the scene target, the empty scene, GPU
   timers, a windowless device) and `crates/sandbox` (the window, the
@@ -517,3 +549,51 @@ Hushfold's procedural sky, polychora's 4D renderers and its vulkano glue.
    - Checks: the target's clear value reads back exactly; in the whole
      frame the viewport's rect shows the scene's color and the rest
      shows the UI; the timers report positive times where supported.
+
+### Step 3 plan (2026-10-14)
+
+1. **Positions.** The scene is described in 64-bit km in the
+   ephemeris's frame (solar-system barycentric, ecliptic J2000). The CPU
+   subtracts the eye's position and rotates into view space in 64 bits,
+   and only then hands 32-bit vectors to the GPU. Depth is reversed with
+   an infinite far plane (depth = near / distance, near at 1 m).
+2. **Spheres** are ray-cast in the fragment shader, not tessellated: the
+   silhouette is exact from 100 km above the Moon to a dot. A sphere's
+   quad covers the cone of rays that hit it (the whole screen when the
+   camera is close). Spheres wholly off the screen are culled. The ray's hit distance uses the camera's
+   altitude above the sphere, computed in 64 bits
+   (`t = h(2r + h) / (b + √(b² − h(2r + h)))`), which stays exact where
+   `b − √…` would cancel: looking straight down from low orbit. Depth is
+   written per pixel.
+3. **Light and units.** Linear radiance, 1.0 the radiance of a white
+   Lambertian surface under the Sun at 1 au (SDR white until step 6's
+   exposure). A body is Lambertian with its Bond albedo and a tint (NASA
+   fact sheets), lit at (1 au / its distance from the Sun)². The Sun is
+   a sphere of constant radiance (1 au / R☉)² ≈ 46,000. Limb darkening,
+   bloom, exposure and tonemapping are step 6.
+4. **Points.** A sphere under a pixel is drawn as a point carrying its
+   true flux: the disk-average radiance of a Lambertian sphere at its
+   phase angle, (2/3)·albedo·E·Φ(α), times its solid angle over the
+   point's. The flux is continuous where a sphere shrinks to a point,
+   anywhere on the screen: off the axis a pixel subtends pixel²·cos³θ.
+5. **Markers** for ships (step 4 uses them): a fixed size in pixels,
+   depth-tested against the bodies.
+6. **Camera** (`sandbox`): focused on a body and following it; right
+   drag orbits as a turntable about ecliptic north; the wheel zooms by
+   distance, from 10 km above the body's surface to 1e10 km. A new focus
+   is reached by a 0.6 s animation (position along the line between the
+   two moving bodies; distance in log space). The focus is picked from a
+   select in the top bar. Panning is dropped: the map view always looks
+   at something, as KSP's does.
+7. **Time.** A minimal clock so following can be seen: space pauses, `.`
+   and `,` change the rate by tenfold; the date and rate in the status
+   line. Step 4 builds playback.
+8. **Tests** (offscreen):
+   - Gate item 2's check: a marker in low lunar orbit lands within a
+     pixel of its position projected in 64 bits, with the camera 100 km
+     to 5 au away.
+   - The Moon's limb, seen from 100 km up, within a pixel of the
+     horizon computed in 64 bits.
+   - A lit sphere's center pixel has the radiance the units say, and
+     the Sun's disk its radiance.
+   - A point's summed flux matches the sphere it stands in for.
