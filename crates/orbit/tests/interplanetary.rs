@@ -9,7 +9,7 @@
 use orbit::ephem::Ephemeris;
 use orbit::gravity::Field;
 use orbit::interplanetary;
-use orbit::shooting::{End, Leg, LowOrbit};
+use orbit::shooting::{End, LowOrbit};
 use orbit::surface;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::transfer::Transfer;
@@ -33,53 +33,21 @@ fn world() -> World {
     }
 }
 
-/// The cheapest design over a few planes of the departure and arrival
+/// The cheapest design over the planes of the departure and arrival
 /// hyperbolas, with the dates fixed.
 fn design(w: &World, from: End, to: End, depart: Epoch, arrive: Epoch) -> orbit::shooting::Design {
-    let t1 = (arrive.0 - depart.0) * DAY;
-    let leg = Leg {
-        field: &w.global,
-        locals: &w.locals,
-        from,
-        to,
-        depart: Some(0.0),
-        arrive: Some(t1),
-        duration: None,
-        window: None,
-    };
-    let mut best: Option<orbit::shooting::Design> = None;
-    for a in 0..2 {
-        for b in 0..2 {
-            let turns = (
-                a as f64 * std::f64::consts::PI,
-                b as f64 * std::f64::consts::PI,
-            );
-            let Some(seed) = interplanetary::seed(&w.global, depart, &from, &to, 0.0, t1, turns)
-            else {
-                continue;
-            };
-            let clock = std::time::Instant::now();
-            match leg.design(&seed) {
-                Ok(d) => {
-                    println!(
-                        "turns {turns:.1?}: {:.4} km/s, burns {:.0?} m/s, {} iterations, {:.1} s",
-                        d.dv,
-                        d.burns
-                            .iter()
-                            .map(|b| b.dv.length() * 1e3)
-                            .collect::<Vec<_>>(),
-                        d.iterations,
-                        clock.elapsed().as_secs_f64()
-                    );
-                    if best.as_ref().is_none_or(|b| d.dv < b.dv) {
-                        best = Some(d);
-                    }
-                }
-                Err(e) => println!("turns {turns:.1?}: {e:?}"),
-            }
-        }
-    }
-    best.expect("a design")
+    let clock = std::time::Instant::now();
+    let d = interplanetary::plan(&w.global, &w.locals, from, to, depart, arrive).expect("a design");
+    println!(
+        "{:.4} km/s, burns {:.0?} m/s, {:.1} s",
+        d.dv,
+        d.burns
+            .iter()
+            .map(|b| b.dv.length() * 1e3)
+            .collect::<Vec<_>>(),
+        clock.elapsed().as_secs_f64()
+    );
+    d
 }
 
 #[test]

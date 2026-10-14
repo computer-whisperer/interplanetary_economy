@@ -490,26 +490,35 @@ across the span.
    each carried from the catalog by `continue_orbit`. A leg uses the
    piece that covers its window and duration. One continuous reference
    per station, which the game needs, is M1b's.
-4. **Re-planning** (`legs::replan`):
-   - The previous departure's design moves forward by whole revolutions
-     of the station end. Each node is carried with the Earth–Moon line:
+4. **Re-planning** (`legs::replan`, step 10b):
+   - An earlier departure's design moves later by whole revolutions of
+     the station end. Each node is carried with the Earth–Moon line:
      relative to the Moon near the Moon, to Earth near Earth, and in the
-     pulsating frame between. In the Mars system it is carried with
-     Phobos.
-   - It is then designed at the same duration. A route falls back to a
-     cold plan when re-planning fails.
-   - Measured by a probe (2026-10-13, 10 departures each):
-     - NRHO to low lunar orbit, 2–25 ms; LEO to low lunar orbit, ~15 ms;
-       both at the cold plan's Δv.
-     - Legs through lunar flybys, 0.04–0.6 s.
-     - NRHO to DRO, 0.01–0.1 s, but its designs are 15–40% worse than
-       the cold plan's, or fail.
-   - The cold plans were uneven in the same probe: one NRHO-to-low-orbit
-     date failed, and some dates came out 10–50% above their neighbors.
-5. **Cold plans** run at every fourth date (every 20 days). They measure
-   the playbook's reliability and design time, and are the yardstick for
-   re-planned Δv. Where both exist, the cheaper counts.
-6. **Escape by excess speed** (`End::Periapsis`): a periapsis at 200 km
+     pulsating frame between, blended across the zones (or with Phobos in
+     the Mars system).
+   - It is then designed at the same duration. Of a route's recent
+     designs, the one moved nearest a whole number of synodic months
+     (cheapest breaking ties) is tried first, then the next.
+   - Measured:
+     - NRHO to low lunar orbit: 10–20 ms per departure, at the cold
+       plan's Δv.
+     - L2 halo to LEO a synodic month on: 0.28 s, within 0.01% of the
+       cold plan.
+     - Shifted by half a month, legs that reach past the Moon may not
+       converge. There the seed's family of paths ends: closing the
+       seed's gaps in stages folds at λ ≈ 0.6.
+   - A route plans cold when re-planning fails.
+5. **Two measurements.**
+   - **Cold plans**, at departures every 5 days, each leaving within one
+     revolution. They give the playbook's reliability, its design time,
+     and Δv against published values.
+   - **Standing routes**, one per leg, with a departure each revolution
+     of the station (every 5 days between low orbits). The windows tile,
+     so each departure is a new ship. Each is re-planned from the route's
+     recent designs, and planned cold when that fails. They give the
+     re-planning time, how often it succeeds, and its Δv against the cold
+     plans.
+6. **Escape by excess speed** (`End::Hyperbola`, step 10a): a periapsis at 200 km
    where a burn along the velocity reaches the hyperbola's speed for the
    v∞ wanted. It is seeded as a low orbit there, so the lunar-flyby
    chains to perigee apply.

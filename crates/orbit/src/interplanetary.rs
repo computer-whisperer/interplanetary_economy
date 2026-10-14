@@ -15,9 +15,10 @@ use crate::gravity::Field;
 use crate::kepler::{self, State};
 use crate::lambert;
 use crate::linalg;
-use crate::shooting::{End, Path};
+use crate::shooting::{Design, End, Leg, Path};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
+use rayon::prelude::*;
 
 /// How long the seed follows each planet's hyperbola at least, s; the
 /// Lambert arc carries it between.
@@ -296,4 +297,39 @@ mod tests {
             }
         }
     }
+}
+
+/// Designs a leg between planetary systems leaving at `depart` and arriving
+/// at `arrive`, in `global` (a barycentric field) with arcs near a planet
+/// integrated in `locals` (fields centered on the planets): the cheapest
+/// design from [`seed`]s over the planes of both hyperbolas (each turned by
+/// half a revolution or not; the turn picks which side of the planet the
+/// periapsis lies on). `None` if none converges.
+pub fn plan(
+    global: &Field,
+    locals: &[Field],
+    from: End,
+    to: End,
+    depart: Epoch,
+    arrive: Epoch,
+) -> Option<Design> {
+    let t1 = (arrive.0 - depart.0) * SECONDS_PER_DAY;
+    let leg = Leg {
+        field: global,
+        locals,
+        from,
+        to,
+        depart: Some(0.0),
+        arrive: Some(t1),
+        duration: None,
+        window: None,
+    };
+    let half = std::f64::consts::PI;
+    [(0.0, 0.0), (0.0, half), (half, 0.0), (half, half)]
+        .par_iter()
+        .filter_map(|&turns| {
+            leg.design(&seed(global, depart, &from, &to, 0.0, t1, turns)?)
+                .ok()
+        })
+        .min_by(|a, b| a.dv.total_cmp(&b.dv))
 }
