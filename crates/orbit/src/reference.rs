@@ -16,7 +16,7 @@ use crate::ephem::{BodyId, Ephemeris};
 use crate::families::{Catalog, PeriodicOrbit};
 use crate::gravity::Field;
 use crate::integrate::{DenseStep, Dop853, Tolerance, Trajectory};
-use crate::linalg;
+use crate::linalg::{self, SparseRows};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
 
@@ -24,6 +24,11 @@ const TOL: Tolerance = Tolerance {
     rtol: 1e-12,
     atol: 1e-9,
 };
+
+/// Arcs count as continuous when no discontinuity exceeds this, scaled by
+/// the Earth–Moon distance and velocity units: ~4 m and 0.01 mm/s. Tighter
+/// is below the noise of integrating through an NRHO's perilune passes.
+const CONTINUOUS: f64 = 1e-8;
 
 /// The Earth–Moon rotating frame at one moment: Earth-centered axes with x
 /// toward the Moon and z along the Moon's orbital angular momentum, the
@@ -85,6 +90,7 @@ impl EarthMoonFrame {
 #[derive(Clone, Debug)]
 pub struct Reference {
     pub epoch: Epoch,
+    pub revolutions: usize,
     /// Patch points: (seconds after `epoch`, state).
     pub patches: Vec<(f64, [f64; 6])>,
     pub path: Trajectory<6>,
@@ -97,6 +103,11 @@ impl Reference {
 
     pub fn end(&self) -> Epoch {
         Epoch(self.epoch.0 + self.path.span().1 / SECONDS_PER_DAY)
+    }
+
+    /// Mean time per revolution, s.
+    pub fn period_s(&self) -> f64 {
+        self.path.span().1 / self.revolutions as f64
     }
 }
 
@@ -235,34 +246,36 @@ pub fn continue_orbit(
     for _ in 0..40 {
         let (ends, f) = arcs(&times, &states, true).ok_or(fail(residual))?;
         residual = f.iter().fold(0.0, |a: f64, x| a.max(x.abs()));
-        if residual < 1e-9 {
+        if residual < CONTINUOUS {
             break;
         }
         // Unknowns, scaled: the n + 1 states, then the epochs of patches 1
         // to n.
-        let m = 6 * n;
         let cols = 6 * (n + 1) + n;
         let epoch_col = |i: usize| 6 * (n + 1) + i - 1;
-        let mut jac = vec![0.0; m * cols];
+        let mut jac = SparseRows {
+            cols,
+            rows: Vec::with_capacity(6 * n),
+        };
         for i in 0..n {
             let end: [f64; 6] = ends[i][..6].try_into().unwrap();
             let rate_end = ode(times[i + 1], &end);
             let rate_start = ode(times[i], &states[i]);
             for r in 0..6 {
-                let row = (6 * i + r) * cols;
                 let phi = |c: usize| ends[i][6 + r * 6 + c];
-                for c in 0..6 {
-                    jac[row + 6 * i + c] = phi(c) * unit(c) / unit(r);
-                }
-                jac[row + 6 * (i + 1) + r] = -1.0;
-                jac[row + epoch_col(i + 1)] = rate_end[r] * cat.time_s / unit(r);
+                let mut row: Vec<(usize, f64)> = (0..6)
+                    .map(|c| (6 * i + c, phi(c) * unit(c) / unit(r)))
+                    .collect();
+                row.push((6 * (i + 1) + r, -1.0));
+                row.push((epoch_col(i + 1), rate_end[r] * cat.time_s / unit(r)));
                 if i > 0 {
                     let drift: f64 = (0..6).map(|c| phi(c) * rate_start[c]).sum();
-                    jac[row + epoch_col(i)] = -drift * cat.time_s / unit(r);
+                    row.push((epoch_col(i), -drift * cat.time_s / unit(r)));
                 }
+                jac.rows.push(row);
             }
         }
-        let step = linalg::min_norm(m, cols, &jac, &f).ok_or(fail(residual))?;
+        let step = linalg::min_norm_sparse(&jac, &f).ok_or(fail(residual))?;
         let mut size = 1.0;
         loop {
             let mut trial_states = states.clone();
@@ -287,7 +300,7 @@ pub fn continue_orbit(
             }
         }
     }
-    if residual >= 1e-9 {
+    if residual >= CONTINUOUS {
         return Err(fail(residual));
     }
     // The continuous trajectory over the kept revolutions, arc by arc.
@@ -300,6 +313,7 @@ pub fn continue_orbit(
     }
     Ok(Reference {
         epoch: start,
+        revolutions: revs,
         patches: times[..=kept]
             .iter()
             .copied()

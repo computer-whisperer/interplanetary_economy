@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–4 done; step 5 under way.
+Status, 2026-10-13: steps 1–5 done.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -56,6 +56,21 @@ Status, 2026-10-13: steps 1–4 done; step 5 under way.
   days); CR3BP time must follow the real Earth–Moon line's turning (JPL's
   fixed time unit is ~2% off the Moon's real rate); and patch epochs must
   be free (with fixed epochs the NRHO's perilune timing stalls Newton).
+  The shooting's normal equations are banded, so a banded Cholesky solve
+  makes long references cheap: a year of NRHO (56 revolutions) in 3.6 s.
+- Step 5d: station-keeping (`stationkeeping`): navigation errors of 1 km
+  and 1 cm/s (3σ, as in the NRHO studies) and 1% burn errors; at each
+  maneuver the ship targets the reference's position a horizon ahead
+  through its state transition matrix. The policy (every half or whole
+  revolution, aiming half, one or two ahead) is chosen per orbit as the
+  cheapest that holds within 500 km over 20 Monte Carlo runs: an NRHO
+  must not burn at perilune, a very unstable halo cannot aim two
+  revolutions ahead. Upkeep: NRHO 1.09 m/s per year (published 0.5–4),
+  L1 and L2 halos 3.2 and 4.3 (published 5.3–7.4, for ARTEMIS's Lissajous
+  orbits and navigation), DRO 0.64 (stable; the cost of correcting
+  navigation errors). Low lunar orbits and LEO show no upkeep yet: the
+  lunar gravity field and atmospheric drag are not modeled (a 100 km polar
+  lunar orbit costs ~75 m/s per year in practice).
 
 ## Why
 

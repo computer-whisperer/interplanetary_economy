@@ -13,6 +13,7 @@ pub mod kepler;
 pub mod lambert;
 pub mod linalg;
 pub mod reference;
+pub mod stationkeeping;
 pub mod time;
 pub mod transfer;
 pub mod windows;

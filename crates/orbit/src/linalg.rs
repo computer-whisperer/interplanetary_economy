@@ -63,6 +63,89 @@ pub fn min_norm(m: usize, n: usize, j: &[f64], f: &[f64]) -> Option<Vec<f64>> {
     )
 }
 
+/// A sparse matrix by rows: each row's (column, value) entries.
+#[derive(Clone, Debug)]
+pub struct SparseRows {
+    pub cols: usize,
+    pub rows: Vec<Vec<(usize, f64)>>,
+}
+
+/// [`min_norm`] for a sparse `j` whose rows touch columns only near their
+/// neighbors' (multiple shooting): `j jᵀ` is then banded, and a banded
+/// Cholesky factorization makes the cost linear in the number of rows.
+pub fn min_norm_sparse(j: &SparseRows, f: &[f64]) -> Option<Vec<f64>> {
+    let m = j.rows.len();
+    assert_eq!(f.len(), m);
+    // Which rows touch each column, and so the band of j jᵀ.
+    let mut touching: Vec<Vec<usize>> = vec![Vec::new(); j.cols];
+    for (r, row) in j.rows.iter().enumerate() {
+        for &(c, _) in row {
+            touching[c].push(r);
+        }
+    }
+    let bw = touching
+        .iter()
+        .filter(|t| !t.is_empty())
+        .map(|t| t.iter().max().unwrap() - t.iter().min().unwrap())
+        .max()
+        .unwrap_or(0);
+    // Lower band of a = j jᵀ: a[r][r - k] at band[r * (bw + 1) + k].
+    let width = bw + 1;
+    let mut band = vec![0.0; m * width];
+    let dense_row = |r: usize| {
+        let mut v = std::collections::BTreeMap::new();
+        for &(c, x) in &j.rows[r] {
+            *v.entry(c).or_insert(0.0) += x;
+        }
+        v
+    };
+    let rows: Vec<_> = (0..m).map(dense_row).collect();
+    for r in 0..m {
+        for k in 0..=bw.min(r) {
+            let s = r - k;
+            band[r * width + k] = rows[r]
+                .iter()
+                .filter_map(|(c, x)| rows[s].get(c).map(|y| x * y))
+                .sum();
+        }
+    }
+    // Cholesky: a = l lᵀ, l in the same band storage.
+    let at = |l: &[f64], r: usize, c: usize| l[r * width + (r - c)];
+    for c in 0..m {
+        let lo = c.saturating_sub(bw);
+        let d = band[c * width] - (lo..c).map(|k| at(&band, c, k).powi(2)).sum::<f64>();
+        if d <= 0.0 {
+            return None;
+        }
+        let d = d.sqrt();
+        band[c * width] = d;
+        for r in c + 1..(c + width).min(m) {
+            let lo = r.saturating_sub(bw);
+            let s: f64 = (lo..c).map(|k| at(&band, r, k) * at(&band, c, k)).sum();
+            band[r * width + (r - c)] = (band[r * width + (r - c)] - s) / d;
+        }
+    }
+    // Forward and back substitution for y, then dx = jᵀ y.
+    let mut y = f.to_vec();
+    for r in 0..m {
+        let lo = r.saturating_sub(bw);
+        let s: f64 = (lo..r).map(|k| at(&band, r, k) * y[k]).sum();
+        y[r] = (y[r] - s) / band[r * width];
+    }
+    for r in (0..m).rev() {
+        let hi = (r + width).min(m);
+        let s: f64 = (r + 1..hi).map(|k| at(&band, k, r) * y[k]).sum();
+        y[r] = (y[r] - s) / band[r * width];
+    }
+    let mut dx = vec![0.0; j.cols];
+    for (r, row) in j.rows.iter().enumerate() {
+        for &(c, x) in row {
+            dx[c] += x * y[r];
+        }
+    }
+    Some(dx)
+}
+
 /// `a b` for a: n×k and b: k×m.
 pub fn mul(n: usize, k: usize, m: usize, a: &[f64], b: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0; n * m];
@@ -97,6 +180,33 @@ mod tests {
         }
         let mut singular = vec![1.0, 2.0, 2.0, 4.0];
         assert!(solve(2, &mut singular, &mut [1.0, 2.0]).is_none());
+    }
+
+    /// The banded sparse solve agrees with the dense one on a shooting-like
+    /// system: each row touches its own block and the next.
+    #[test]
+    fn sparse_min_norm_matches_dense() {
+        let (m, n) = (12, 15);
+        let mut dense = vec![0.0; m * n];
+        let mut sparse = SparseRows {
+            cols: n,
+            rows: vec![Vec::new(); m],
+        };
+        for r in 0..m {
+            for c in [r, r + 1, r + 3] {
+                let v = 1.0 + ((r * 7 + c * 3) % 11) as f64 / 3.0;
+                dense[r * n + c] = v;
+                sparse.rows[r].push((c, v));
+            }
+        }
+        let f: Vec<f64> = (0..m).map(|r| (r as f64 * 0.37).sin()).collect();
+        let (a, b) = (
+            min_norm(m, n, &dense, &f).unwrap(),
+            min_norm_sparse(&sparse, &f).unwrap(),
+        );
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).abs() < 1e-12, "{a:?} vs {b:?}");
+        }
     }
 
     #[test]
