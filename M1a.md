@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-14: steps 1–8 done.
+Status, 2026-10-14: steps 1–8 done; step 9 started.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -185,6 +185,22 @@ Status, 2026-10-14: steps 1–8 done.
   values as found quoted gave an obliquity of 23.9°, not 25.19°). Low Mars
   orbit (300 km) to Phobos and back: 1,205 m/s each way in 2.2 hours,
   Hohmann's 1,206, seeded by Lambert arcs about Mars.
+
+- Step 9, so far: escapes from a station's orbit at a given excess
+  velocity, and captures into one (`legs::escape_seeds`, through `plan`):
+  fans followed until 1.5 million km from Earth, directly or dropping to a
+  low perigee (directly or by a powered lunar flyby, the chains the LEO
+  returns use) and burning there along the velocity to the excess speed
+  wanted. Measured from the L2 halo (14.5 days): burns up to 0.1 km/s
+  escape at 0.03–0.34 km/s; 0.3 km/s along Earth's heliocentric velocity
+  costs 255 m/s in 40 days; 1 km/s only directly, ~760–790 m/s (falling
+  from L2 to a perigee takes ~0.8 km/s without a flyby). Open: with the
+  lunar flyby to perigee, the asymptotes reached point 45–57° from a given
+  direction even over a month of departures (the perigee's place follows
+  the Moon's phase), so larger excess velocities in a chosen direction
+  need more: a second lunar flyby to turn the asymptote, multi-flyby
+  sequences as in McElrath et al., or a leg defined by excess speed alone.
+  Ballistic lunar transfers not started.
 
 ## Why
 
@@ -426,6 +442,21 @@ that the autopilot exports (step 11).
 10. The gate sweep.
 11. Route graph export; `crates/plan` reads it; rerun M2's central world
     to see where the hub goes.
+
+### Step 9 plan (2026-10-14)
+
+1. Escapes from station orbits at a given excess velocity, and captures
+   into them: fans from the orbit (backward for captures) followed until
+   the ship is ~1.5 million km from Earth, keeping those whose osculating
+   excess velocity there is near the one wanted (unpowered lunar flybys
+   come with the field); designed to `End::Excess`. Check: McElrath et
+   al. (2012), ~0.14 km/s from Earth–Moon L1/L2 to escape, lunar flybys
+   alone reaching C3 ≈ 2 km²/s² in ~2 months.
+2. Ballistic lunar transfers: LEO to lunar orbits in 3–4 months through
+   the Sun's tide (CAPSTONE flew one to the NRHO): the backward fans from
+   the station already reach LEO when let run that long; arcs far from
+   Earth and the Moon lengthen with the local dynamical time. Check: the
+   arrival burns against direct transfers', and published values.
 
 ### Step 8 plan (2026-10-13)
 

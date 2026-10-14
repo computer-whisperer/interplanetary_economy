@@ -339,3 +339,32 @@ fn nrho_to_leo_by_aerocapture() {
     assert!((b.last().unwrap() - after * 1e3).abs() < 1e-6);
     assert!(d.dv < 0.6, "{}", d.dv);
 }
+
+/// Escape from the L2 halo with a small excess velocity (0.3 km/s along
+/// Earth's heliocentric velocity), within 40 days: a burn from the orbit
+/// and the field's own pull out. (Measured 2026-10-14: 255 m/s.) Larger
+/// excess velocities in a given direction are open: see M1a.md, step 9.
+#[test]
+fn escape_from_l2_halo() {
+    let w = world();
+    let eph = Ephemeris::standard();
+    let earth = w.leo.body;
+    let s = station(&w, "l2");
+    let v_inf = 0.3
+        * eph
+            .system_state(earth, start().plus_days(40.0))
+            .v
+            .normalize();
+    let d = plan(
+        &w,
+        End::Orbit(&s),
+        End::Excess { body: earth, v_inf },
+        s.period_s() / DAY,
+        40.0,
+    );
+    println!(
+        "L2 halo to escape at 0.3 km/s in 40 days: {:.0?} m/s",
+        burns(&d)
+    );
+    assert!(d.dv < 0.4, "{}", d.dv);
+}

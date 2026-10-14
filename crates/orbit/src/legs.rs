@@ -17,7 +17,7 @@ use crate::ephem::BodyId;
 use crate::gravity::Field;
 use crate::integrate::{DenseStep, Dop853, Tolerance};
 use crate::reference::Reference;
-use crate::shooting::{Design, End, Leg, LowOrbit, Pass, Path};
+use crate::shooting::{Design, End, Leg, LowOrbit, Pass, Path, excess_velocity};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
 use rayon::prelude::*;
@@ -40,6 +40,19 @@ const FLYBY_CONE_COS: f64 = 0.5;
 
 /// Lowest lunar flyby, km above the mean radius (Artemis I flew 130 km).
 const FLYBY_ALTITUDE_KM: f64 = 100.0;
+
+/// Lowest burn at an Earth perigee, km above the mean radius (clear of
+/// the atmosphere).
+const PERIGEE_ALTITUDE_KM: f64 = 200.0;
+
+/// The lowest a powered pass of `body` may go, km above its mean radius.
+fn pass_altitude(eph: &crate::ephem::Ephemeris, body: BodyId) -> f64 {
+    if Some(body) == eph.lookup("earth") {
+        PERIGEE_ALTITUDE_KM
+    } else {
+        FLYBY_ALTITUDE_KM
+    }
+}
 
 /// Which way a transfer runs between the station's orbit and the low orbit.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -259,6 +272,9 @@ struct Link {
     origin: [f64; 6],
     burn: DVec3,
     end: f64,
+    /// The body whose periapsis the link starts at (a powered pass), for
+    /// all but a chain's first.
+    pass: Option<BodyId>,
 }
 
 /// A seed path for a transfer, with its estimated total Δv.
@@ -290,18 +306,25 @@ pub struct Search {
     pub designs: usize,
 }
 
-/// Seeds for transfers between `reference` and `low`, cheapest estimate
-/// first: direct ones, and via a lunar flyby when `search.flyby_sizes` is
-/// set. Fans fly in `light`, seeds again in `field`.
-pub fn seeds(
-    field: &Field,
+/// A chain of fan links from a station's orbit to a periapsis near a low
+/// orbit, with its estimated total Δv and the shot that ends it.
+struct Chain {
+    links: Vec<Link>,
+    estimate: f64,
+    end: Shot,
+}
+
+/// The chains from `reference` to a periapsis near `low` (within 3× its
+/// radius), in the fans' field: direct, and via a lunar flyby when
+/// `search.flyby_sizes` is set.
+fn chains(
     light: &Field,
     reference: &Reference,
     low: &LowOrbit,
     direction: Direction,
     search: &Search,
-) -> Vec<Seed> {
-    let eph = field.ephemeris();
+) -> Vec<Chain> {
+    let eph = light.ephemeris();
     let epoch = reference.epoch;
     let dir = direction.sign();
     let gm = eph.body(low.body).gm;
@@ -319,7 +342,7 @@ pub fn seeds(
         body: low.body,
         radii: (eph.body(low.body).radius, 3.0 * low.radius),
     };
-    let mut chains: Vec<(Vec<Link>, f64)> = Vec::new();
+    let mut chains: Vec<Chain> = Vec::new();
     for shot in fan(
         light,
         epoch,
@@ -334,8 +357,13 @@ pub fn seeds(
             origin,
             burn: shot.burn,
             end: shot.periapsis_at,
+            pass: None,
         };
-        chains.push((vec![link], estimate));
+        chains.push(Chain {
+            links: vec![link],
+            estimate,
+            end: shot,
+        });
     }
     let moon = eph.lookup("moon").unwrap();
     if !search.flyby_sizes.is_empty() && low.body != moon {
@@ -375,17 +403,42 @@ pub fn seeds(
                     origin,
                     burn: first.burn,
                     end: first.periapsis_at,
+                    pass: None,
                 },
                 Link {
                     at: first.periapsis_at,
                     origin: first.periapsis,
                     burn: shot.burn,
                     end: shot.periapsis_at,
+                    pass: Some(moon),
                 },
             ];
-            chains.push((links, estimate));
+            chains.push(Chain {
+                links,
+                estimate,
+                end: shot,
+            });
         }
     }
+    chains
+}
+
+/// Seeds for transfers between `reference` and `low`, cheapest estimate
+/// first: direct ones, and via a lunar flyby when `search.flyby_sizes` is
+/// set. Fans fly in `light`, seeds again in `field`.
+pub fn seeds(
+    field: &Field,
+    light: &Field,
+    reference: &Reference,
+    low: &LowOrbit,
+    direction: Direction,
+    search: &Search,
+) -> Vec<Seed> {
+    let epoch = reference.epoch;
+    let mut chains: Vec<(Vec<Link>, f64)> = chains(light, reference, low, direction, search)
+        .into_iter()
+        .map(|c| (c.links, c.estimate))
+        .collect();
     // Direct and flyby seeds alternate, each cheapest first: flybys win
     // the estimates at long durations, and would crowd out the direct
     // seeds that short ones need.
@@ -510,15 +563,22 @@ fn chain_path(field: &Field, epoch: Epoch, direction: Direction, links: &[Link])
             }
         }
     }
-    // Every burn node but the ends is a lunar flyby.
-    let moon = field.ephemeris().lookup("moon").unwrap();
+    // Every burn node but the ends starts a link at a powered pass.
+    let eph = field.ephemeris();
     let last = burns.len() - 1;
     let passes = (1..last)
         .filter(|&k| burns[k])
-        .map(|node| Pass {
-            node,
-            body: moon,
-            min_radius: field.ephemeris().body(moon).radius + FLYBY_ALTITUDE_KM,
+        .map(|node| {
+            let body = links
+                .iter()
+                .find(|l| l.at == times[node])
+                .and_then(|l| l.pass)
+                .expect("an inner burn node is a pass");
+            Pass {
+                node,
+                body,
+                min_radius: eph.body(body).radius + pass_altitude(eph, body),
+            }
         })
         .collect();
     Some(Path {
@@ -643,6 +703,7 @@ pub fn rendezvous_seeds(
                 origin,
                 burn,
                 end: tc,
+                pass: None,
             };
             Some((link, burn.length() + matching + miss / (tc - t)))
         })
@@ -749,6 +810,7 @@ pub fn low_seeds(
                 origin,
                 burn: DVec3::ZERO,
                 end: shot.periapsis_at,
+                pass: None,
             };
             (link, estimate)
         })
@@ -833,6 +895,158 @@ pub fn moon_seeds(
         }
     }
     out
+}
+
+/// Distance from Earth at which a fan counts a ship as escaped (or, flown
+/// backward, as arriving from beyond), km.
+const ESCAPED_KM: f64 = 1_500_000.0;
+
+/// When a ship at `state` at `t` (s after `epoch`), integrating forward
+/// (`dir` = 1) or backward (-1) for at most `span` s, gets [`ESCAPED_KM`]
+/// from `body`: the time and state. `None` if it does not, or hits a body.
+pub fn escape(
+    field: &Field,
+    epoch: Epoch,
+    t: f64,
+    state: [f64; 6],
+    dir: f64,
+    span: f64,
+    body: BodyId,
+) -> Option<(f64, [f64; 6])> {
+    let ode = field.ode(epoch);
+    let when = |t: f64| Epoch(epoch.0 + t / SECONDS_PER_DAY);
+    let mut run = Dop853::new(&ode, t, state, TOL);
+    let end = t + dir * span;
+    while run.t != end {
+        run.step_to(&ode, end).ok()?;
+        let r = DVec3::new(run.y[0], run.y[1], run.y[2]);
+        if field.inside(when(run.t), r).is_some() {
+            return None;
+        }
+        if (r - field.body_position(body, when(run.t))).length() > ESCAPED_KM {
+            return Some((run.t, run.y));
+        }
+    }
+    None
+}
+
+/// Seeds for escapes from a station's orbit with excess velocity `v_inf`
+/// about `body` (`Down`), or captures from one into it (`Up`, flown
+/// backward): a fan of burns from the orbit, each trajectory followed until
+/// [`ESCAPED_KM`] out, kept if its osculating excess velocity there is
+/// within `reach` (km/s) of `v_inf`; cheapest (burns plus that miss) first.
+/// Unpowered lunar flybys come with the field. Directly, small burns only
+/// reach small excess speeds (from an L2 halo, burns to 0.1 km/s reach
+/// 0.3 km/s), so the fan also drops to a low periapsis about `body` and
+/// burns there, along the velocity, to the excess speed wanted (Oberth's
+/// way), then flies out.
+#[allow(clippy::too_many_arguments)]
+pub fn escape_seeds(
+    field: &Field,
+    light: &Field,
+    reference: &Reference,
+    body: BodyId,
+    v_inf: DVec3,
+    direction: Direction,
+    search: &Search,
+    reach: f64,
+) -> Vec<Seed> {
+    let epoch = reference.epoch;
+    let dir = direction.sign();
+    let gm = field.ephemeris().body(body).gm;
+    let dirs = directions(search.directions);
+    let mut combos: Vec<(f64, DVec3)> = Vec::new();
+    for &t in &search.times {
+        for &size in &search.sizes {
+            combos.extend(dirs.iter().map(|&u| (t, size * u)));
+        }
+    }
+    // The excess velocity flown out to `ESCAPED_KM` from `s` at `t`, and
+    // when; `None` if it does not escape within what is left of the span.
+    let out = |t: f64, s: [f64; 6], left: f64| -> Option<(f64, DVec3)> {
+        let (te, se) = escape(light, epoch, t, s, dir, left, body)?;
+        let b = light.body_state(body, Epoch(epoch.0 + te / SECONDS_PER_DAY));
+        let rel = [
+            se[0] - b.r.x,
+            se[1] - b.r.y,
+            se[2] - b.r.z,
+            se[3] - b.v.x,
+            se[4] - b.v.y,
+            se[5] - b.v.z,
+        ];
+        Some((te, excess_velocity(gm, &rel, dir > 0.0)?))
+    };
+    let (shortest, longest) = search.durations;
+    let mut found: Vec<(Vec<Link>, f64)> = combos
+        .par_iter()
+        .filter_map(|&(t, burn)| {
+            let origin = reference.path.at(t);
+            let mut s = origin;
+            for i in 0..3 {
+                s[3 + i] += burn[i];
+            }
+            let (te, v) = out(t, s, longest)?;
+            let miss = (v - v_inf).length();
+            ((te - t).abs() >= shortest && miss < reach).then(|| {
+                let link = Link {
+                    at: t,
+                    origin,
+                    burn,
+                    end: te,
+                    pass: None,
+                };
+                (vec![link], burn.length() + miss)
+            })
+        })
+        .collect();
+    // Through a low periapsis (directly or after a lunar flyby, as the
+    // returns to LEO go), burning there.
+    let eph = field.ephemeris();
+    let perigee = LowOrbit {
+        body,
+        radius: eph.body(body).radius + pass_altitude(eph, body),
+        inclination: None,
+    };
+    let low_ones = chains(light, reference, &perigee, direction, search);
+    found.par_extend(low_ones.into_par_iter().filter_map(|chain| {
+        let shot = chain.end;
+        let t = chain.links[0].at;
+        let b = light.body_state(body, Epoch(epoch.0 + shot.periapsis_at / SECONDS_PER_DAY));
+        let p = shot.periapsis;
+        let nu = DVec3::new(p[3], p[4], p[5]) - b.v;
+        let wanted = (v_inf.length_squared() + 2.0 * gm / shot.radius).sqrt();
+        let kick = (wanted - nu.length()) * nu.normalize();
+        let mut s = p;
+        for i in 0..3 {
+            s[3 + i] += kick[i];
+        }
+        let left = longest - (shot.periapsis_at - t).abs();
+        let (te, v) = out(shot.periapsis_at, s, left)?;
+        let miss = (v - v_inf).length();
+        ((te - t).abs() >= shortest && miss < reach).then(|| {
+            let mut links = chain.links;
+            links.push(Link {
+                at: shot.periapsis_at,
+                origin: p,
+                burn: kick,
+                end: te,
+                pass: Some(body),
+            });
+            let burns: f64 = links.iter().map(|l| l.burn.length()).sum();
+            (links, burns + miss)
+        })
+    }));
+    found.sort_by(|a, b| a.1.total_cmp(&b.1));
+    found
+        .into_iter()
+        .filter_map(|(links, estimate)| {
+            Some(Seed {
+                path: chain_path(field, epoch, direction, &links)?,
+                estimate,
+            })
+        })
+        .take(search.designs)
+        .collect()
 }
 
 /// Seeds a plan designs, and the starting designs it carries to each
@@ -932,6 +1146,15 @@ pub fn plan(
     }
     let eph = field.ephemeris();
     let seeded: Vec<Seed> = match (&as_low(from), &as_low(to)) {
+        // Escapes from a station's orbit, and captures into one.
+        (End::Orbit(r), End::Excess { body, v_inf }) => {
+            let s = search(samples(r.epoch, window), true);
+            escape_seeds(field, light, r, *body, *v_inf, Direction::Down, &s, 0.5)
+        }
+        (End::Excess { body, v_inf }, End::Orbit(r)) => {
+            let s = search(samples(r.epoch, arrivals), true);
+            escape_seeds(field, light, r, *body, *v_inf, Direction::Up, &s, 0.5)
+        }
         // A low orbit and one of its planet's moons.
         (End::Low(l), End::Body(m)) if eph.parent(*m) == Some(l.body) => moon_seeds(
             field,
