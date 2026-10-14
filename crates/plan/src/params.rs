@@ -3,7 +3,7 @@
 
 use crate::calendar::{Calendar, DAYS_PER_YEAR};
 use orbit::ephem::{BodyKind, Ephemeris};
-use orbit::network::{Network, NodeId};
+use orbit::routes::{PlaceId, RouteGraph};
 use orbit::time::Epoch;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -358,7 +358,7 @@ pub struct ShipClass {
     pub propellant: Propellant,
     pub aero: bool,
     pub interplanetary: bool,
-    pub lands: Vec<NodeId>,
+    pub lands: Vec<PlaceId>,
     pub turnaround_days: f64,
 }
 
@@ -392,7 +392,7 @@ pub struct PropellantSpec {
 #[derive(Clone, Debug)]
 pub struct FacilityOption {
     pub id: String,
-    pub node: NodeId,
+    pub node: PlaceId,
     /// Per t/yr of rated output.
     pub output: Output,
     /// Equipment, t per t/yr of output.
@@ -437,7 +437,7 @@ pub struct DemandSegment {
 pub struct DemandCategory {
     pub id: String,
     pub what: Demanded,
-    pub nodes: Vec<NodeId>,
+    pub nodes: Vec<PlaceId>,
     pub segments: Vec<DemandSegment>,
     pub growth: f64,
 }
@@ -463,7 +463,7 @@ pub struct Scenario {
     pub budget_musd_per_year: f64,
     /// `(tonnes, usd_per_kg)` by cumulative sales.
     pub metal_steps: Vec<(f64, f64)>,
-    pub surfaces: Vec<NodeId>,
+    pub surfaces: Vec<PlaceId>,
     pub ships: Vec<ShipClass>,
     pub facilities: Vec<FacilityOption>,
     pub programs: Vec<Program>,
@@ -492,12 +492,13 @@ impl EconomyFile {
     pub fn scenario(
         &self,
         eph: &Ephemeris,
-        net: &Network,
+        graph: &RouteGraph,
         draw: &mut Draw,
         period_months: u32,
     ) -> Scenario {
         let node = |id: &str| {
-            net.lookup(id)
+            graph
+                .lookup(id)
                 .unwrap_or_else(|| panic!("economy.toml: unknown node {id:?}"))
         };
         let start: Epoch = self.start.parse().expect("economy.toml: start");
@@ -576,7 +577,7 @@ impl EconomyFile {
         }
 
         let mut asteroids = Vec::new();
-        for (_, n) in net.nodes() {
+        for (place, n) in graph.places() {
             let body = eph.body(n.system);
             let BodyKind::SmallBody {
                 spectral,
@@ -618,7 +619,7 @@ impl EconomyFile {
                 let grade = p.grade.sample(draw);
                 facilities.push(FacilityOption {
                     id: format!("{}@{}", p.id, n.id),
-                    node: net.lookup(&n.id).unwrap(),
+                    node: place,
                     output: p.output.into(),
                     alpha: alpha(&p.equipment_t_per_tpy, grade, draw),
                     grade,
@@ -786,8 +787,8 @@ mod tests {
     #[test]
     fn deposits_share_one_survey_and_leaner_ones_need_more_equipment() {
         let eph = Ephemeris::standard();
-        let net = Network::standard(&eph);
-        let sc = EconomyFile::standard().scenario(&eph, &net, &mut Draw::Central, 6);
+        let graph = crate::edges::standard(eph);
+        let sc = EconomyFile::standard().scenario(eph, &graph, &mut Draw::Central, 6);
         let mut ice: Vec<&FacilityOption> = sc
             .facilities
             .iter()

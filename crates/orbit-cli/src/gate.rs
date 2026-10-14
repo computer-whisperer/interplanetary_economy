@@ -93,6 +93,9 @@ enum Place {
     Station(usize),
     /// A hyperbola about Earth with this excess speed, periapsis at 200 km.
     Escape(f64),
+    /// LEO (400 km) by aerocapture: a pass through Earth's atmosphere whose
+    /// apogee reaches it, then a burn there.
+    LeoAero,
     /// Low Mars orbit, 300 km.
     Lmo,
     Phobos,
@@ -266,6 +269,22 @@ fn core_legs() -> Vec<LegSpec> {
             legs.push(leg(&format!("esc{v_inf}-{name}"), esc, place, days, None));
         }
     }
+    // At the route graph's LEO (400 km), the legs checked above at their
+    // publications' altitudes.
+    legs.push(leg("leo400-l1", leo, l1, 4.1, None));
+    legs.push(leg("l1-leo400", l1, leo, 4.1, None));
+    legs.push(leg("leo400-llo", leo, Place::Llo, 4.4, None));
+    legs.push(leg("llo-leo400", Place::Llo, leo, 4.4, None));
+    // Returns to LEO by aerocapture, as long as the propulsive ones.
+    for &(name, place, days) in &downs {
+        legs.push(leg(
+            &format!("{name}-leo-aero"),
+            place,
+            Place::LeoAero,
+            days,
+            None,
+        ));
+    }
     legs.push(leg("lmo-phobos", Place::Lmo, Place::Phobos, 0.0, None));
     legs.push(leg("phobos-lmo", Place::Phobos, Place::Lmo, 0.0, None));
     legs
@@ -316,6 +335,19 @@ impl Sweep {
                 inclination: Some(90f64.to_radians()),
             }),
             Place::Station(_) => End::Orbit(reference.expect("a reference")),
+            Place::LeoAero => {
+                let earth = eph.body(self.earth);
+                let air = surface::rules(eph, self.earth)
+                    .atmosphere
+                    .expect("Earth's atmosphere");
+                let pass = earth.radius + air.capture_altitude;
+                End::Atmosphere {
+                    body: self.earth,
+                    radius: pass,
+                    after: surface::after_aerocapture(earth.gm, pass, 6_778.0),
+                    max_speed: air.max_speed,
+                }
+            }
             Place::Escape(v_inf) => End::Hyperbola {
                 body: self.earth,
                 radius: eph.body(self.earth).radius + 200.0,

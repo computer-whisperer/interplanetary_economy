@@ -3,25 +3,25 @@
 use crate::edges::{self, Edge};
 use crate::params::{Draw, EconomyFile, Scenario};
 use orbit::ephem::Ephemeris;
-use orbit::network::Network;
+use orbit::routes::RouteGraph;
 
 /// The central draw, cut to its first `years` (quarterly), and its
 /// transport network.
-pub fn short(years: usize) -> (Network, Scenario, Vec<Edge>) {
+pub fn short(years: usize) -> (RouteGraph, Scenario, Vec<Edge>) {
     let eph = Ephemeris::standard();
-    let net = Network::standard(&eph);
-    let mut sc = EconomyFile::standard().scenario(&eph, &net, &mut Draw::Central, 3);
+    let graph = edges::standard(eph);
+    let mut sc = EconomyFile::standard().scenario(eph, &graph, &mut Draw::Central, 3);
     sc.cal.periods = years * 4;
     sc.launch_usd_per_kg.truncate(sc.cal.periods);
-    let mut all = edges::local_edges(&net, &sc.cal);
+    let mut all = edges::local_edges(&graph, &sc.cal);
     all.extend(edges::interplanetary_edges(
-        &eph,
-        &net,
+        eph,
+        &graph,
         &sc.cal,
-        &edges::routes(&eph, &net),
+        &edges::pairs(eph, &graph),
         6.0,
     ));
-    (net, sc, all)
+    (graph, sc, all)
 }
 
 /// The richest lunar ice deposit's plant option.

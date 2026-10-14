@@ -299,6 +299,30 @@ step 11 next, then M1c (M1c.md).
   from these sweeps, as tables; whether M1b flies ships per trip for the
   legs that pass is decided before M1b.
 
+- Step 11, so far (2026-10-14): `orbit::routes` and `orbit routes` export
+  the route graph (`data/routes.toml`: 31 places, 44 legs), and
+  `crates/plan` reads it and is back in the workspace (its 8 tests
+  pass). Added to the sweep, every 60 days over 2040–2075: returns to
+  LEO by aerocapture (1,097 of 1,100 converged; medians 410 m/s from the
+  DRO to 908 from low lunar orbit; M2's map had 770 from EML1 and 900
+  from low lunar orbit), and the legs flown from a publication's LEO
+  again from 400 km (880 of 880; 52–54 m/s cheaper). The fitted cost of
+  reaching a 200 km perigee from each station, before the burn there:
+  L1 halo 619 m/s, L2 halo 467, NRHO 504, DRO 401, low lunar orbit 897.
+  Escapes at 1 and 3 km/s agree to 1 m/s, as they must under step 9's
+  stand-in (the way down does not depend on v∞).
+  Blocked: M2's LP on this graph is 2.4× larger (180k columns; 6 places
+  in Earth's system now leave for other planets, against 2), and
+  HiGHS's interior point method makes no progress on it, falling back to
+  a simplex that had not finished after 10 minutes. Without the direct
+  legs between stations it solves (77 s per solve). The NRHO–DRO pair
+  alone breaks it, though neither of its two legs alone does, nor does
+  the L1–L2 pair. A cost of $0.1M per trip also makes it solve ($0.01M
+  does not). The likely cause: trips between stations that cost almost
+  nothing (on surplus lunar propellant) leave a large set of equally
+  good plans, which interior point methods handle badly. Solver
+  settings (bound scaling, presolve off, dualizing) did not help.
+
 ## Why
 
 M0 gives the game patched conics: heliocentric Lambert legs, and a fixed
@@ -539,6 +563,61 @@ that the autopilot exports (step 11).
 10. The gate sweep.
 11. Route graph export; `crates/plan` reads it; rerun M2's central world
     to see where the hub goes.
+
+### Step 11 plan (2026-10-14)
+
+M2's planner priced transport from a Δv map: fixed legs from standard
+tables, one station (EML1), and departures to other planets through
+"gateways" fitted by hand. Step 11 replaces that map with a route graph
+measured by the autopilot, then reruns M2's central world.
+
+1. **Places** (the graph's nodes): LEO (400 km), the four station
+   orbits of step 10 (L1 halo, L2 halo, NRHO, DRO), polar low lunar
+   orbit (100 km), the lunar south pole and a mare, low Mars orbit (300
+   km), Mars's surface, Phobos, and the 20 NEAs. EML1 is replaced by the
+   four stations. Earth's surface is not a place: as in M2, everything
+   from Earth is bought at LEO.
+2. **Legs within a system** take the median Δv of the step 10 sweep's
+   converged cold plans over 2040–2075, and the leg's duration (between
+   stations, the median of the durations chosen). The Δv has no trend
+   over the span (5-year medians within ~1%, up to ~15% between
+   stations), so one value per leg is enough. Added to the sweep:
+   returns to LEO by aerocapture from each station and low lunar orbit
+   (5 legs), and the legs the sweep flew from a publication's LEO (185
+   or 200 km) again from 400 km (4 legs). Landing and ascent come from
+   `surface`.
+3. **Legs between systems** stay priced by patched conics (the sweep
+   found n-body designs from LEO at 0.999× patched conics, median), with
+   each place's departure and arrival modeled as a **gateway**:
+   - a burn at a periapsis: Δv = A + √(v∞² + 2μ/r_p) − v_p, for LEO
+     (A = 0, the circular speed), low Mars orbit, the stations and low
+     lunar orbit (r_p = 200 km above Earth, v_p the parabolic speed, A
+     fitted to the sweep's escapes at 1 km/s and checked at 3 km/s;
+     captures from the sweep's captures), and Phobos (A the drop from its
+     orbit to a periapsis at low Mars orbit's radius, by patched conics,
+     unchecked in the sandbox);
+   - a rendezvous (Δv = v∞), for the NEAs;
+   - aerocapture into LEO and low Mars orbit, and entry to Mars's
+     surface, from `surface`'s rules and speed limits.
+   A gateway also carries its leg's duration (a station's escape takes
+   4–9 days).
+4. **`orbit::routes`** holds the graph: places, legs and gateways, and
+   their TOML form. **`orbit routes SWEEP...`** exports
+   `data/routes.toml` from sweep directories (`cold.csv`), and the file
+   is checked in with a header naming its source.
+5. **`crates/plan` reads the graph** in place of the deleted network,
+   and rejoins the workspace. Interplanetary edges: for each pair of
+   gateways in different systems with one end in Earth's, a porkchop
+   between their bodies with each cell priced by both gateways, and the
+   cheapest in each period kept (as before: at most `--max-dv`, dominated
+   departures dropped).
+6. **The hub.** M2 put propellant demand from Earth-departing traffic
+   at EML1. It goes at all four stations at one price: a stated
+   simplification, since the traffic would choose its station by its
+   own route.
+7. **Rerun M2's central world** (`plan solve`), and record where the
+   hub's propellant is delivered, the development path, and the plan's
+   value against M2's.
 
 ### Step 10 plan (2026-10-13)
 

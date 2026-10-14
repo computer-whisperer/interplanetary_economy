@@ -4,7 +4,7 @@
 use crate::edges::{Edge, EdgeKind};
 use crate::params::{PROPELLANTS, Propellant, Scenario, ShipClass};
 use highs::{Col, HighsModelStatus, Model, RowProblem, Sense, SolvedModel};
-use orbit::network::{Network, NodeId};
+use orbit::routes::{PlaceId, RouteGraph};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,20 +101,22 @@ pub struct Plan {
     pub bought: HashMap<Commodity, Vec<f64>>,
     /// Payload delivered, by demand category.
     pub served: Vec<Vec<f64>>,
+    /// The same at each of the category's nodes, [category][node][period].
+    pub delivered: Vec<Vec<Vec<f64>>>,
     /// Metals sold, t.
     pub metal_sold: Vec<f64>,
     /// Ships bought, by class.
     pub ships_bought: Vec<Vec<f64>>,
     /// Cargo moved from node to node, by commodity, t per period of
     /// departure.
-    pub shipped: HashMap<(NodeId, NodeId, Commodity), Vec<f64>>,
+    pub shipped: HashMap<(PlaceId, PlaceId, Commodity), Vec<f64>>,
     /// Capital spending (equipment, ships and programs), $M per period.
     pub capex: Vec<f64>,
     /// Spending on each program, $M per period.
     pub spend: Vec<Vec<f64>>,
     /// Marginal value of one more tonne at a node, by commodity, $/kg in the
     /// period's own money (undiscounted).
-    pub price: HashMap<(NodeId, Commodity), Vec<f64>>,
+    pub price: HashMap<(PlaceId, Commodity), Vec<f64>>,
 }
 
 /// Linear terms of one row, merged by column (HiGHS rejects duplicates).
@@ -149,7 +151,7 @@ pub struct Lp {
     t_n: usize,
     /// Discount factor of each period.
     disc: Vec<f64>,
-    nodes: Vec<NodeId>,
+    nodes: Vec<PlaceId>,
     first_balance_row: usize,
     buy_cols: Vec<(Commodity, usize, Col)>,
     metal_cols: Vec<(usize, Col)>,
@@ -168,11 +170,11 @@ pub struct Lp {
 }
 
 impl Lp {
-    pub fn new(sc: &Scenario, net: &Network, edges: &[Edge], verbose: bool) -> Lp {
+    pub fn new(sc: &Scenario, graph: &RouteGraph, edges: &[Edge], verbose: bool) -> Lp {
         let t_n = sc.cal.periods;
-        let nodes: Vec<NodeId> = net.nodes().map(|(id, _)| id).collect();
-        let leo = net.lookup("leo").expect("LEO is a node");
-        let earth_system = net.node(leo).system;
+        let nodes: Vec<PlaceId> = graph.places().map(|(id, _)| id).collect();
+        let leo = graph.lookup("leo").expect("LEO is a place");
+        let earth_system = graph.place(leo).system;
         let disc: Vec<f64> = (0..t_n).map(|p| sc.discount(p)).collect();
         let dt = sc.cal.period_years();
 
@@ -185,7 +187,7 @@ impl Lp {
                     .collect()
             })
             .collect();
-        let node_index: HashMap<NodeId, usize> =
+        let node_index: HashMap<PlaceId, usize> =
             nodes.iter().enumerate().map(|(k, &id)| (id, k)).collect();
         macro_rules! bal {
             ($n:expr, $c:expr, $p:expr) => {
@@ -349,7 +351,7 @@ impl Lp {
 
         // Fleet: ships at each node at the end of each period.
         let mut systems = Vec::new();
-        for (_, n) in net.nodes() {
+        for (_, n) in graph.places() {
             if !systems.contains(&n.system) {
                 systems.push(n.system);
             }
@@ -393,38 +395,35 @@ impl Lp {
         // start (including ships bought in the period).
         let mut ship_days: Vec<HashMap<(usize, usize), Terms>> =
             sc.ships.iter().map(|_| HashMap::new()).collect();
-        let sys_index = |n: NodeId| {
+        let sys_index = |n: PlaceId| {
             systems
                 .iter()
-                .position(|&s| s == net.node(n).system)
+                .position(|&s| s == graph.place(n).system)
                 .unwrap()
         };
 
         // Edges.
         let can_fly = |ship: &ShipClass, e: &Edge| -> bool {
-            match e.kind {
-                EdgeKind::Interplanetary => ship.interplanetary,
-                EdgeKind::Local { aero } => {
-                    (!aero || ship.aero)
-                        && [e.from, e.to]
-                            .iter()
-                            .all(|n| !sc.surfaces.contains(n) || ship.lands.contains(n))
+            (!e.aero || ship.aero)
+                && match e.kind {
+                    EdgeKind::Interplanetary => ship.interplanetary,
+                    EdgeKind::Local => [e.from, e.to]
+                        .iter()
+                        .all(|n| !sc.surfaces.contains(n) || ship.lands.contains(n)),
                 }
-            }
         };
         let mut edge_vars: Vec<EdgeVars> = Vec::new();
         for e in edges {
-            let inbound =
-                net.node(e.from).system != earth_system && net.node(e.to).system == earth_system;
-            let outbound =
-                net.node(e.from).system == earth_system && net.node(e.to).system != earth_system;
+            let system = |n: PlaceId| graph.place(n).system;
+            let inbound = system(e.from) != earth_system && system(e.to) == earth_system;
+            let outbound = system(e.from) == earth_system && system(e.to) != earth_system;
             for (k, ship) in sc.ships.iter().enumerate() {
                 if !can_fly(ship, e) {
                     continue;
                 }
                 let prop = sc.propellant(ship.propellant);
                 let r = (e.dv / prop.ve).exp() - 1.0;
-                if !ship.interplanetary && net.node(e.from).system != earth_system {
+                if !ship.interplanetary && system(e.from) != earth_system {
                     continue;
                 }
                 if r * ship.dry >= ship.tank {
@@ -477,7 +476,7 @@ impl Lp {
                 // Ships.
                 fleet_bal[k][node_index[&e.from]][e.leave].add(trips, -1.0);
                 fleet_bal[k][node_index[&e.to]][e.arrive].add(trips, 1.0);
-                if let EdgeKind::Local { .. } = e.kind {
+                if e.kind == EdgeKind::Local {
                     ship_days[k]
                         .entry((sys_index(e.from), e.leave))
                         .or_default()
@@ -489,7 +488,7 @@ impl Lp {
         for (k, rows) in ship_days.iter_mut().enumerate() {
             for (&(s, p), terms) in rows.iter_mut() {
                 if p > 0 {
-                    for (n, _) in net.nodes().filter(|&(n, _)| sys_index(n) == s) {
+                    for (n, _) in graph.places().filter(|&(n, _)| sys_index(n) == s) {
                         terms.add(fleet[k][node_index[&n]][p - 1], -sc.cal.period_days);
                     }
                 }
@@ -662,7 +661,7 @@ impl Lp {
             .iter()
             .map(|terms| terms.iter().map(|&(c, coef)| coef * val(c)).sum())
             .collect();
-        let mut shipped: HashMap<(NodeId, NodeId, Commodity), Vec<f64>> = HashMap::new();
+        let mut shipped: HashMap<(PlaceId, PlaceId, Commodity), Vec<f64>> = HashMap::new();
         for ev in &self.edge_vars {
             let e = &ev.edge;
             for &(c, x) in &ev.cargo {
@@ -684,6 +683,15 @@ impl Lp {
                 .map(|by_p| {
                     by_p.iter()
                         .map(|xs| xs.iter().map(|&x| val(x)).sum())
+                        .collect()
+                })
+                .collect(),
+            delivered: self
+                .served_cols
+                .iter()
+                .map(|by_p| {
+                    (0..by_p[0].len())
+                        .map(|k| by_p.iter().map(|xs| val(xs[k])).collect())
                         .collect()
                 })
                 .collect(),
@@ -715,24 +723,31 @@ mod tests {
 
     #[test]
     fn earth_propellant_costs_launch_plus_the_rocket_equation() {
-        let (net, mut sc, edges) = short(4);
+        let (graph, mut sc, edges) = short(4);
         sc.facilities.clear();
         let closed = vec![ProgramSetup::Closed; sc.programs.len()];
-        let plan = Lp::new(&sc, &net, &edges, false).solve(&sc, &closed);
+        let plan = Lp::new(&sc, &graph, &edges, false).solve(&sc, &closed);
         assert_eq!(plan.status, HighsModelStatus::Optimal);
         let price =
-            |node: &str, p: usize| plan.price[&(net.lookup(node).unwrap(), Commodity::Lox)][p];
+            |node: &str, p: usize| plan.price[&(graph.lookup(node).unwrap(), Commodity::Lox)][p];
         let at_leo = sc.launch_usd_per_kg[4] + sc.propellant_usd_per_kg;
         assert!(
             (price("leo", 4) - at_leo).abs() < 1e-3 * at_leo,
             "{}",
             price("leo", 4)
         );
-        // One tonne at EML1 costs at least the propellant that pushed it
-        // there with the better propellant (the ship's dry mass and return
-        // add more), and not much more than with methalox.
-        let r = |p: Propellant| (3.77 / sc.propellant(p).ve).exp();
-        let l1 = price("eml1", 4);
+        // One tonne at the L1 halo costs at least the propellant that pushed
+        // it there with the better propellant (the ship's dry mass and
+        // return add more), and not much more than with methalox.
+        let (leo, l1) = (graph.lookup("leo").unwrap(), graph.lookup("l1").unwrap());
+        let dv = graph
+            .legs()
+            .iter()
+            .find(|l| (l.from, l.to) == (leo, l1))
+            .expect("a leg from LEO to the L1 halo")
+            .dv;
+        let r = |p: Propellant| (dv / sc.propellant(p).ve).exp();
+        let l1 = price("l1", 4);
         assert!(
             l1 > r(Propellant::Hydrolox) * at_leo && l1 < 1.5 * r(Propellant::Methalox) * at_leo,
             "{l1} vs {} and {}",
@@ -743,7 +758,7 @@ mod tests {
 
     #[test]
     fn hydrogen_boils_off_in_storage() {
-        let (net, mut sc, edges) = short(4);
+        let (graph, mut sc, edges) = short(4);
         sc.facilities.clear();
         let closed = vec![ProgramSetup::Closed; sc.programs.len()];
         // Launch gets 10× dearer halfway: worth stockpiling hydrogen, unless
@@ -754,7 +769,7 @@ mod tests {
         }
         let mut bought_late = |boiloff: f64| {
             sc.propellants[Propellant::Hydrolox as usize].fuel_boiloff_per_day = boiloff;
-            let plan = Lp::new(&sc, &net, &edges, false).solve(&sc, &closed);
+            let plan = Lp::new(&sc, &graph, &edges, false).solve(&sc, &closed);
             assert_eq!(plan.status, HighsModelStatus::Optimal);
             plan.bought[&Commodity::Lh2][half..].iter().sum::<f64>()
         };
@@ -769,10 +784,10 @@ mod tests {
 
     #[test]
     fn plants_produce_only_after_building_and_within_their_deposit() {
-        let (net, mut sc, edges) = short(6);
+        let (graph, mut sc, edges) = short(6);
         let ice = richest_lunar_ice(&sc);
         sc.facilities[ice].reserve = Some(5000.0);
-        let plan = Lp::new(&sc, &net, &edges, false).solve(&sc, &free(&sc));
+        let plan = Lp::new(&sc, &graph, &edges, false).solve(&sc, &free(&sc));
         assert_eq!(plan.status, HighsModelStatus::Optimal);
         for (f, (caps, installs)) in sc
             .facilities
@@ -795,7 +810,7 @@ mod tests {
 
     #[test]
     fn funded_programs_are_paid_in_full_before_their_plants() {
-        let (net, mut sc, edges) = short(8);
+        let (graph, mut sc, edges) = short(8);
         let ice = richest_lunar_ice(&sc);
         let needs = sc.facilities[ice].programs.clone();
         assert_eq!(needs.len(), 2, "lunar ice needs a technology and a survey");
@@ -812,7 +827,7 @@ mod tests {
                 }
             })
             .collect();
-        let mut lp = Lp::new(&sc, &net, &edges, false);
+        let mut lp = Lp::new(&sc, &graph, &edges, false);
         let plan = lp.solve(&sc, &setup);
         assert_eq!(plan.status, HighsModelStatus::Optimal);
         for (k, installs) in plan.installed.iter().enumerate() {
@@ -845,7 +860,7 @@ mod tests {
         // Re-solving the same LP with another setup agrees with a fresh LP.
         let free_setup = free(&sc);
         let again = lp.solve(&sc, &free_setup);
-        let fresh = Lp::new(&sc, &net, &edges, false).solve(&sc, &free_setup);
+        let fresh = Lp::new(&sc, &graph, &edges, false).solve(&sc, &free_setup);
         assert!(
             (again.objective - fresh.objective).abs() < 1e-6 * fresh.objective.abs(),
             "{} vs {}",

@@ -22,12 +22,13 @@ the 3D map view ([M1c.md](M1c.md)); done: the M2 kill-test
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
   parameters, and a sweep that classifies the plans' development paths.
-  Out of the workspace: it reads the Δv network that M1a step 1 deleted,
-  and M1a step 11 rewires it to the autopilot's flown legs.
+  It prices transport from the route graph (`data/routes.toml`, M1a step
+  11).
 - `data/` — game data: JPL's DE440 ephemeris for 2025–2080 (`de440.bin`),
   the candidate asteroids, Phobos and Deimos (`moons.toml`), the Earth–Moon
-  periodic-orbit families (`orbits.toml`), and the economy (`economy.toml`,
-  with sources).
+  periodic-orbit families (`orbits.toml`), the route graph the autopilot
+  measured (`routes.toml`, written by `orbit routes`), and the economy
+  (`economy.toml`, with sources).
 - `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
   then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
   Horizons fixtures the tests check it against (`fixtures.sh`).
@@ -51,6 +52,8 @@ cargo run --release -p orbit-cli -- bodies                 # planets and candida
 cargo run --release -p orbit-cli -- windows earth mars     # Mars windows, 2040–2076
 cargo run --release -p orbit-cli -- calendar --from earth --max-v-inf 4
 cargo run --release -p orbit-cli -- porkchop earth mars --start 2041-06-01 --end 2042-03-01 --png pc.png
+cargo run --release -p orbit-cli -- gate OUT --every 12      # M1a's gate sweep (hours)
+cargo run --release -p orbit-cli -- routes OUT...            # data/routes.toml from sweeps
 ```
 
 Transfers are ranked by total excess speed (v∞ at departure plus v∞ at
@@ -58,9 +61,6 @@ arrival). Units are km/s for speeds and days for time; dates are
 `YYYY-MM-DD` (TDB).
 
 ## The `plan` command
-
-Out of the workspace until M1a step 11 (see above); build it from
-`crates/plan` once it is back.
 
 ```sh
 cargo run --release -p plan -- solve                 # central values of every parameter

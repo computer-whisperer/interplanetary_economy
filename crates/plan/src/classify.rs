@@ -3,7 +3,7 @@
 use crate::model::{Commodity, MUSD_PER_USD_T, Plan};
 use crate::params::Scenario;
 use orbit::ephem::Ephemeris;
-use orbit::network::Network;
+use orbit::routes::RouteGraph;
 use std::fmt;
 
 /// Where propellant comes from.
@@ -69,8 +69,8 @@ impl Classification {
 }
 
 /// The in-space source a facility's site belongs to.
-pub fn source_of(eph: &Ephemeris, net: &Network, sc: &Scenario, facility: usize) -> Source {
-    let system = eph.body(net.node(sc.facilities[facility].node).system);
+pub fn source_of(eph: &Ephemeris, graph: &RouteGraph, sc: &Scenario, facility: usize) -> Source {
+    let system = eph.body(graph.place(sc.facilities[facility].node).system);
     match system.id.as_str() {
         "earth" => Source::Moon,
         "mars" => Source::Mars,
@@ -80,9 +80,14 @@ pub fn source_of(eph: &Ephemeris, net: &Network, sc: &Scenario, facility: usize)
 
 /// The programs that plants at `source` need. Panics if that would leave a
 /// plant elsewhere buildable.
-pub fn programs_of(eph: &Ephemeris, net: &Network, sc: &Scenario, source: Source) -> Vec<bool> {
+pub fn programs_of(
+    eph: &Ephemeris,
+    graph: &RouteGraph,
+    sc: &Scenario,
+    source: Source,
+) -> Vec<bool> {
     let at_source: Vec<bool> = (0..sc.facilities.len())
-        .map(|k| source_of(eph, net, sc, k) == source)
+        .map(|k| source_of(eph, graph, sc, k) == source)
         .collect();
     let mut allowed = vec![false; sc.programs.len()];
     for (f, _) in sc.facilities.iter().zip(&at_source).filter(|(_, at)| **at) {
@@ -105,7 +110,7 @@ pub fn programs_of(eph: &Ephemeris, net: &Network, sc: &Scenario, source: Source
 /// `opening_years`.
 pub fn classify(
     eph: &Ephemeris,
-    net: &Network,
+    graph: &RouteGraph,
     sc: &Scenario,
     plan: &Plan,
     path_years: f64,
@@ -122,7 +127,7 @@ pub fn classify(
         .map(|c| plan.bought[c][..path_end].iter().sum::<f64>())
         .sum();
     let sources: Vec<usize> = (0..sc.facilities.len())
-        .map(|k| source_of(eph, net, sc, k) as usize)
+        .map(|k| source_of(eph, graph, sc, k) as usize)
         .collect();
     let mut opening_musd = [0.0; 4];
     for (k, f) in sc.facilities.iter().enumerate() {

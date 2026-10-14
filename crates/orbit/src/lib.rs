@@ -15,6 +15,7 @@ pub mod lambert;
 pub mod legs;
 pub mod linalg;
 pub mod reference;
+pub mod routes;
 pub mod shooting;
 pub mod stationkeeping;
 pub mod surface;

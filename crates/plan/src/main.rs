@@ -3,7 +3,7 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use orbit::ephem::Ephemeris;
-use orbit::network::Network;
+use orbit::routes::RouteGraph;
 use plan::classify::{Classification, SOURCES, Source, classify, programs_of, source_of};
 use plan::edges::{self, Edge};
 use plan::model::{Commodity, Lp, Plan, ProgramSetup};
@@ -97,8 +97,8 @@ struct Planned {
 }
 
 struct World {
-    eph: Ephemeris,
-    net: Network,
+    eph: &'static Ephemeris,
+    graph: RouteGraph,
     econ: EconomyFile,
 }
 
@@ -107,10 +107,10 @@ impl World {
         let mut draw = seed.map_or(Draw::Central, Draw::seeded);
         let mut sc = self
             .econ
-            .scenario(&self.eph, &self.net, &mut draw, opts.months);
+            .scenario(self.eph, &self.graph, &mut draw, opts.months);
         for &(src, factor) in &opts.alpha {
             for k in 0..sc.facilities.len() {
-                if source_of(&self.eph, &self.net, &sc, k) == src {
+                if source_of(self.eph, &self.graph, &sc, k) == src {
                     sc.facilities[k].alpha *= factor;
                 }
             }
@@ -123,19 +123,19 @@ impl World {
 
     /// The transport network is the same for every draw.
     fn edges(&self, sc: &Scenario, opts: &Opts) -> Vec<Edge> {
-        let mut all = edges::local_edges(&self.net, &sc.cal);
+        let mut all = edges::local_edges(&self.graph, &sc.cal);
         all.extend(edges::interplanetary_edges(
-            &self.eph,
-            &self.net,
+            self.eph,
+            &self.graph,
             &sc.cal,
-            &edges::routes(&self.eph, &self.net),
+            &edges::pairs(self.eph, &self.graph),
             opts.max_dv,
         ));
         all
     }
 
     fn plan(&self, sc: &Scenario, edges: &[Edge], opts: &Opts, verbose: bool) -> Planned {
-        let mut lp = Lp::new(sc, &self.net, edges, verbose);
+        let mut lp = Lp::new(sc, &self.graph, edges, verbose);
         if opts.free {
             return Planned {
                 best: search::free(&mut lp, sc),
@@ -147,7 +147,7 @@ impl World {
             SOURCES[1..]
                 .iter()
                 .map(|&src| {
-                    let allowed = programs_of(&self.eph, &self.net, sc, src);
+                    let allowed = programs_of(self.eph, &self.graph, sc, src);
                     let out = search::optimise(&mut lp, sc, &allowed);
                     let objective = (out.plan.status == highs::HighsModelStatus::Optimal)
                         .then_some(out.plan.objective);
@@ -162,8 +162,8 @@ impl World {
 
     fn classify(&self, sc: &Scenario, plan: &Plan, opts: &Opts) -> Classification {
         classify(
-            &self.eph,
-            &self.net,
+            self.eph,
+            &self.graph,
             sc,
             plan,
             opts.path_years,
@@ -175,10 +175,10 @@ impl World {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let eph = Ephemeris::standard();
-    let net = Network::standard(&eph);
+    let graph = edges::standard(eph);
     let world = World {
         eph,
-        net,
+        graph,
         econ: EconomyFile::standard(),
     };
     match cli.cmd {
@@ -269,7 +269,7 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
             decade(b, 2)
         );
     }
-    for (d, s) in sc.demand.iter().zip(&plan.served) {
+    for ((d, s), at) in sc.demand.iter().zip(&plan.served).zip(&plan.delivered) {
         println!(
             "  served {:<20} {:>9.0} {:>9.0} {:>9.0}",
             d.id,
@@ -277,6 +277,17 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
             decade(s, 1),
             decade(s, 2)
         );
+        if d.nodes.len() > 1 && d.nodes.len() < 10 {
+            for (n, v) in d.nodes.iter().zip(at) {
+                println!(
+                    "    at {:<20} {:>9.0} {:>9.0} {:>9.0}",
+                    w.graph.place(*n).id,
+                    decade(v, 0),
+                    decade(v, 1),
+                    decade(v, 2)
+                );
+            }
+        }
     }
     println!(
         "  metal sold           {:>9.0} {:>9.0} {:>9.0}",
@@ -290,8 +301,8 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
     for ((from, to, c), v) in flows.into_iter().take(20) {
         println!(
             "  {:<16} → {:<16} {:<10} {:>9.0} {:>9.0} {:>9.0}",
-            w.net.node(*from).id,
-            w.net.node(*to).id,
+            w.graph.place(*from).id,
+            w.graph.place(*to).id,
             format!("{c:?}"),
             decade(v, 0),
             decade(v, 1),
@@ -322,16 +333,19 @@ fn solve(w: &World, seed: Option<u64>, opts: &Opts) -> Result<()> {
     println!("marginal value, $/kg (2040, 2045, 2055, 2070):");
     for (node, c) in [
         ("leo", Commodity::Lox),
-        ("eml1", Commodity::Lox),
-        ("eml1", Commodity::Ch4),
-        ("eml1", Commodity::Lh2),
+        ("l1", Commodity::Lox),
+        ("l2", Commodity::Lox),
+        ("nrho", Commodity::Lox),
+        ("dro", Commodity::Lox),
+        ("nrho", Commodity::Ch4),
+        ("nrho", Commodity::Lh2),
         ("llo", Commodity::Lox),
         ("moon-south-pole", Commodity::Lox),
         ("moon-south-pole", Commodity::Payload),
         ("lmo", Commodity::Lox),
         ("mars-surface", Commodity::Payload),
     ] {
-        let v = &plan.price[&(w.net.lookup(node).unwrap(), c)];
+        let v = &plan.price[&(w.graph.lookup(node).unwrap(), c)];
         println!(
             "  {:<16} {:<8} {:>8.0} {:>8.0} {:>8.0} {:>8.0}",
             node,

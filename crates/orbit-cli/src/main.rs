@@ -2,6 +2,7 @@
 
 mod gate;
 mod porkchop_png;
+mod routes;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
@@ -82,6 +83,14 @@ enum Cmd {
         /// Plan cold at every n-th departure date only.
         #[arg(long, default_value_t = 1)]
         every: usize,
+    },
+    /// The route graph (M1a.md, step 11) from gate sweeps' cold plans.
+    Routes {
+        /// Directories of `orbit gate` output (their cold.csv).
+        #[arg(required = true)]
+        sweeps: Vec<PathBuf>,
+        #[arg(long, default_value = "data/routes.toml")]
+        out: PathBuf,
     },
 }
 
@@ -209,6 +218,7 @@ fn main() -> Result<()> {
             },
             &out,
         ),
+        Cmd::Routes { sweeps, out } => routes::run(&sweeps, &out),
     }
 }
 

@@ -341,11 +341,13 @@ years = { median = 10.0, sigma = 0.3 }
 # at EML1; Sercel 2016: ~400 t/yr at the top of the well. ULA's offers were
 # for LOX/LH2 (Kutter 2016: $3,000/kg in LEO, $500/kg on the lunar surface);
 # Starship refuels with methalox. Split at L1 50/50 (hydrolox 30–80%)
-# [guess].
+# [guess]. Offered at every station orbit at one price (M1a step 11): a
+# simplification, since the traffic would choose its station by its own
+# route.
 id = "hub-propellant"
 what = "propellant"
 split = { methalox = 0.5, hydrolox = 0.5 }
-nodes = ["eml1"]
+nodes = ["l1", "l2", "nrho", "dro"]
 ref_tpy = { median = 400.0, sigma = 0.7 }
 ref_usd_per_kg = 1000.0
 elasticity = 1.5
