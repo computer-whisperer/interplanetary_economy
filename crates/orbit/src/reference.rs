@@ -85,11 +85,12 @@ impl EarthMoonFrame {
     }
 }
 
-/// A trajectory in the full model, Earth-centered, km and km/s, with time in
-/// seconds after `epoch`.
+/// A trajectory in the full model, km and km/s, relative to `center` (the
+/// solar-system barycenter if `None`), with time in seconds after `epoch`.
 #[derive(Clone, Debug)]
 pub struct Reference {
     pub epoch: Epoch,
+    pub center: Option<BodyId>,
     pub revolutions: usize,
     /// Patch points: (seconds after `epoch`, state).
     pub patches: Vec<(f64, [f64; 6])>,
@@ -313,6 +314,7 @@ pub fn continue_orbit(
     }
     Ok(Reference {
         epoch: start,
+        center: field.center(),
         revolutions: revs,
         patches: times[..=kept]
             .iter()

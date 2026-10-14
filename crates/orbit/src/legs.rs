@@ -900,6 +900,7 @@ pub fn plan(
     let shift = (epoch.0 - seed_epoch.0) * SECONDS_PER_DAY;
     let leg = Leg {
         field,
+        locals: &[],
         from,
         to,
         depart: None,

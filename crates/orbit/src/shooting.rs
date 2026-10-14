@@ -129,7 +129,13 @@ impl Path {
 /// it may leave (s after the seed's epoch).
 #[derive(Clone, Copy)]
 pub struct Leg<'a> {
+    /// The field, whose origin the path's states are measured from.
     pub field: &'a Field<'a>,
+    /// Fields centered on bodies (with the same bodies as `field`): an arc
+    /// starting within one's center's sphere of influence integrates in it.
+    /// Near LEO, a barycentric frame's coordinates (~1.5e8 km) leave ~15 cm
+    /// of noise per step, far above what continuity there asks.
+    pub locals: &'a [Field<'a>],
     pub from: End<'a>,
     pub to: End<'a>,
     pub depart: Option<f64>,
@@ -191,11 +197,16 @@ struct Layout {
     time: Vec<f64>,
     /// Close passes, and whether each is held at its floor.
     passes: Vec<(Pass, bool)>,
+    /// Each arc's frame: an index into the leg's local fields, or the
+    /// leg's field.
+    frames: Vec<Option<usize>>,
 }
 
 impl Layout {
-    /// The layout for `path`, whose nodes are at `positions`.
-    fn new(field: &Field, path: &Path, positions: &[DVec3]) -> Layout {
+    /// The layout for `path`, whose nodes are at `positions`, with arcs in
+    /// the first of `locals` whose center's sphere of influence their first
+    /// node is in.
+    fn new(field: &Field, locals: &[Field], path: &Path, positions: &[DVec3]) -> Layout {
         let n = path.times.len();
         assert!(n >= 2 && path.states.len() == n - 1 && path.burns.len() == n);
         assert!(path.burns[0] && path.burns[n - 1], "the ends are burns");
@@ -234,6 +245,17 @@ impl Layout {
             // flyby is too rigid to linearize, and continuation's restores
             // failed (LEO to DRO, measured 2026-10-13).
             passes: path.passes.iter().map(|&p| (p, false)).collect(),
+            frames: (0..n - 1)
+                .map(|k| {
+                    let when = Epoch(path.epoch.0 + path.times[k] / SECONDS_PER_DAY);
+                    locals.iter().position(|l| {
+                        let c = l.center().expect("local fields have centers");
+                        let eph = field.ephemeris();
+                        (positions[k] - field.body_position(c, when)).length()
+                            < eph.sphere_of_influence(c, when)
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -363,6 +385,25 @@ impl<'a> Leg<'a> {
         (b.r, b.v, a)
     }
 
+    /// The position and velocity of the origin of a frame centered on
+    /// `center` (the solar-system barycenter if `None`) relative to the
+    /// field's origin at `t`.
+    fn origin_of(&self, center: Option<BodyId>, epoch: Epoch, t: f64) -> (DVec3, DVec3) {
+        let when = Epoch(epoch.0 + t / SECONDS_PER_DAY);
+        match (center, self.field.center()) {
+            (c, f) if c == f => (DVec3::ZERO, DVec3::ZERO),
+            (Some(c), _) => {
+                let s = self.field.body_state(c, when);
+                (s.r, s.v)
+            }
+            (None, Some(f)) => {
+                let s = self.field.ephemeris().barycentric(f, when);
+                (-s.r, -s.v)
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+
     /// `end`'s conditions on the ship's state `s` at `t`, with rows scaled
     /// by `length` and `speed`; `None` outside a reference orbit's span.
     /// `leaving` says the ship leaves the end there.
@@ -386,8 +427,19 @@ impl<'a> Leg<'a> {
                 if tau < lo || tau > hi {
                     return None;
                 }
+                // The reference's state in the leg's field's frame, and its
+                // acceleration there.
+                let (or, ov) = self.origin_of(reference.center, epoch, t);
                 let x = reference.path.at(tau);
-                let a = self.field.ode(reference.epoch)(tau, &x);
+                let x = [
+                    x[0] + or.x,
+                    x[1] + or.y,
+                    x[2] + or.z,
+                    x[3] + ov.x,
+                    x[4] + ov.y,
+                    x[5] + ov.z,
+                ];
+                let a = self.field.ode(epoch)(t, &x);
                 let (rr, vr, ar) = (
                     DVec3::new(x[0], x[1], x[2]),
                     DVec3::new(x[3], x[4], x[5]),
@@ -460,6 +512,99 @@ impl<'a> Leg<'a> {
         }
     }
 
+    /// Arc `k`'s field, and the state of its origin relative to the leg's
+    /// field's origin at `t` with that state's rate (zero for the leg's own
+    /// field).
+    fn frame(
+        &self,
+        layout: &Layout,
+        epoch: Epoch,
+        k: usize,
+        t: f64,
+    ) -> (&Field<'a>, [f64; 6], [f64; 6]) {
+        match layout.frames[k] {
+            None => (self.field, [0.0; 6], [0.0; 6]),
+            Some(i) => {
+                let local = &self.locals[i];
+                let (r, v, a) = self.body(local.center().unwrap(), epoch, t);
+                (
+                    local,
+                    [r.x, r.y, r.z, v.x, v.y, v.z],
+                    [v.x, v.y, v.z, a.x, a.y, a.z],
+                )
+            }
+        }
+    }
+
+    /// Arc `k` from `x` at `t0` to `t1`, integrated in its frame: the end
+    /// (in the leg's field's frame) and, if asked, the state transition
+    /// matrix (the same in either frame). `None` if it fails or passes
+    /// below a body's surface.
+    #[allow(clippy::too_many_arguments)]
+    fn arc(
+        &self,
+        layout: &Layout,
+        epoch: Epoch,
+        k: usize,
+        t0: f64,
+        x: &[f64; 6],
+        t1: f64,
+        derivs: bool,
+    ) -> Option<[f64; 42]> {
+        let (field, b0, _) = self.frame(layout, epoch, k, t0);
+        let (_, b1, _) = self.frame(layout, epoch, k, t1);
+        let above = |t: f64, y: &[f64]| {
+            field
+                .inside(
+                    Epoch(epoch.0 + t / SECONDS_PER_DAY),
+                    DVec3::new(y[0], y[1], y[2]),
+                )
+                .is_none()
+        };
+        let mut y = [0.0; 42];
+        for d in 0..6 {
+            y[d] = x[d] - b0[d];
+        }
+        if derivs {
+            let ode_stm = field.ode_stm(epoch);
+            for d in 0..6 {
+                y[6 + d * 7] = 1.0;
+            }
+            let mut run = Dop853::new(&ode_stm, t0, y, TOL);
+            while run.t != t1 {
+                run.step_to(&ode_stm, t1).ok()?;
+                if !above(run.t, &run.y) {
+                    return None;
+                }
+            }
+            y = run.y;
+        } else {
+            let ode = field.ode(epoch);
+            let start: [f64; 6] = y[..6].try_into().unwrap();
+            let mut run = Dop853::new(&ode, t0, start, TOL);
+            while run.t != t1 {
+                run.step_to(&ode, t1).ok()?;
+                if !above(run.t, &run.y) {
+                    return None;
+                }
+            }
+            y[..6].copy_from_slice(&run.y);
+        }
+        for d in 0..6 {
+            y[d] += b1[d];
+        }
+        Some(y)
+    }
+
+    /// The rate of a state `s` (in the leg's field's frame) at `t` under arc
+    /// `k`'s field: its rate in the arc's frame plus the frame's.
+    fn rate(&self, layout: &Layout, epoch: Epoch, k: usize, t: f64, s: &[f64; 6]) -> [f64; 6] {
+        let (field, b, db) = self.frame(layout, epoch, k, t);
+        let local: [f64; 6] = std::array::from_fn(|d| s[d] - b[d]);
+        let f = field.ode(epoch)(t, &local);
+        std::array::from_fn(|d| f[d] + db[d])
+    }
+
     /// The constraints and cost at `z`; `None` where the arcs cannot be
     /// integrated, the nodes are out of order, or an end leaves its
     /// reference orbit's span. A departure outside the window adds a
@@ -471,47 +616,13 @@ impl<'a> Leg<'a> {
         }
 
         let states = layout.states(z);
-        let ode = self.field.ode(epoch);
-        let ode_stm = self.field.ode_stm(epoch);
         let arcs = layout.nodes - 1;
         // Each arc's end and, with derivatives, its state transition matrix;
         // none if an arc passes below a body's surface (with point masses,
         // the field would sling it through).
-        let above = |t: f64, y: &[f64]| {
-            self.field
-                .inside(
-                    Epoch(epoch.0 + t / SECONDS_PER_DAY),
-                    DVec3::new(y[0], y[1], y[2]),
-                )
-                .is_none()
-        };
         let mut ends: Vec<[f64; 42]> = Vec::with_capacity(arcs);
         for k in 0..arcs {
-            let mut y = [0.0; 42];
-            y[..6].copy_from_slice(&states[k]);
-            if derivs {
-                for d in 0..6 {
-                    y[6 + d * 7] = 1.0;
-                }
-                let mut run = Dop853::new(&ode_stm, times[k], y, TOL);
-                while run.t != times[k + 1] {
-                    run.step_to(&ode_stm, times[k + 1]).ok()?;
-                    if !above(run.t, &run.y) {
-                        return None;
-                    }
-                }
-                y = run.y;
-            } else {
-                let mut run = Dop853::new(&ode, times[k], states[k], TOL);
-                while run.t != times[k + 1] {
-                    run.step_to(&ode, times[k + 1]).ok()?;
-                    if !above(run.t, &run.y) {
-                        return None;
-                    }
-                }
-                y[..6].copy_from_slice(&run.y);
-            }
-            ends.push(y);
+            ends.push(self.arc(layout, epoch, k, times[k], &states[k], times[k + 1], derivs)?);
         }
         let arrival = |k: usize| -> [f64; 6] { ends[k - 1][..6].try_into().unwrap() };
         let n = layout.unknowns();
@@ -537,9 +648,9 @@ impl<'a> Leg<'a> {
             let phi = |r: usize, c: usize| ends[j][6 + r * 6 + c];
             let through: [f64; 6] = std::array::from_fn(|c| (0..6).map(|r| g[r] * phi(r, c)).sum());
             d_state(row, j, &through);
-            let f_end = ode(times[k], &arrival(k));
+            let f_end = self.rate(layout, epoch, j, times[k], &arrival(k));
             d_time(row, k, (0..6).map(|r| g[r] * f_end[r]).sum());
-            let f_start = ode(times[j], &states[j]);
+            let f_start = self.rate(layout, epoch, j, times[j], &states[j]);
             d_time(
                 row,
                 j,
@@ -714,7 +825,7 @@ impl<'a> Leg<'a> {
             .chain([&run.y])
             .map(|s| DVec3::new(s[0], s[1], s[2]))
             .collect();
-        let mut layout = Layout::new(self.field, seed, &positions);
+        let mut layout = Layout::new(self.field, self.locals, seed, &positions);
         // An active set: passes below their floors are held there, and a
         // departure the penalty did not keep inside the window at its nearer
         // edge (a hard edge alone let a search drift days away, too far to
@@ -1050,9 +1161,11 @@ impl<'a> Leg<'a> {
         let times = layout.times(z);
         let states = layout.states(z);
         let last = layout.nodes - 1;
-        let ode = self.field.ode(epoch);
         for k in 0..last {
-            let mut run = Dop853::new(&ode, times[k], states[k], TOL);
+            let (field, b, _) = self.frame(layout, epoch, k, times[k]);
+            let ode = field.ode(epoch);
+            let start: [f64; 6] = std::array::from_fn(|d| states[k][d] - b[d]);
+            let mut run = Dop853::new(&ode, times[k], start, TOL);
             let mut steps = Vec::new();
             run.advance_dense(&ode, times[k + 1], &mut steps)
                 .map_err(|_| Failure::Infeasible(0.0))?;
@@ -1061,7 +1174,7 @@ impl<'a> Leg<'a> {
                     let t = step.t0 + step.h * i as f64 / 8.0;
                     let s = step.at(t);
                     let when = Epoch(epoch.0 + t / SECONDS_PER_DAY);
-                    if let Some(b) = self.field.inside(when, DVec3::new(s[0], s[1], s[2])) {
+                    if let Some(b) = field.inside(when, DVec3::new(s[0], s[1], s[2])) {
                         return Err(Failure::Collision(b));
                     }
                 }
@@ -1277,6 +1390,7 @@ mod tests {
         };
         let leg = Leg {
             field: &field,
+            locals: &[],
             from: low(r1),
             to: low(r2),
             depart: Some(0.0),
@@ -1346,6 +1460,7 @@ mod tests {
             run.advance_dense(&ode, 30_000.0, &mut steps).unwrap();
             Reference {
                 epoch,
+                center: Some(earth),
                 revolutions: 1,
                 patches: Vec::new(),
                 path: crate::integrate::Trajectory::new(steps),
@@ -1354,6 +1469,7 @@ mod tests {
         let (inner, outer) = (circle(r1, 0.0), circle(r2, phase));
         let leg = Leg {
             field: &field,
+            locals: &[],
             from: End::Orbit(&inner),
             to: End::Orbit(&outer),
             depart: None,
@@ -1420,12 +1536,14 @@ mod tests {
             .unwrap();
         let target = Reference {
             epoch,
+            center: Some(earth),
             revolutions: 1,
             patches: Vec::new(),
             path: crate::integrate::Trajectory::new(steps),
         };
         let leg = Leg {
             field: &field,
+            locals: &[],
             from: End::Low(LowOrbit {
                 body: earth,
                 radius: 6_778.0,
@@ -1461,15 +1579,94 @@ mod tests {
             .map(|s| DVec3::new(s[0], s[1], s[2]))
             .chain([target.path.at(3.1 * 86_400.0)].map(|s| DVec3::new(s[0], s[1], s[2])))
             .collect();
-        let layout = Layout::new(&field, &path, &positions);
+        let layout = Layout::new(&field, &[], &path, &positions);
+        assert_derivatives(&leg, &layout, epoch, &layout.pack(&path));
+    }
+
+    /// The same leg with its nodes barycentric and its arcs integrated about
+    /// Earth (a local frame), toward a station orbit recorded about Earth.
+    #[test]
+    fn derivatives_through_a_local_frame() {
+        let eph = Ephemeris::standard();
+        let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
+        let global = Field::all(eph, None).with_oblateness();
+        let locals = [Field::all(eph, Some(earth)).with_oblateness()];
+        let epoch = Epoch::from_ymd(2045, 3, 1);
+        let ode = locals[0].ode(epoch);
+        let m = locals[0].body_state(moon, epoch);
+        let near = [
+            m.r.x + 20_000.0,
+            m.r.y,
+            m.r.z + 5_000.0,
+            m.v.x,
+            m.v.y + 0.3,
+            m.v.z,
+        ];
+        let target = flown(&locals[0], epoch, 0.0, 10.0 * 86_400.0, near);
+        let leg = Leg {
+            field: &global,
+            locals: &locals,
+            from: End::Low(LowOrbit {
+                body: earth,
+                radius: 6_778.0,
+                inclination: Some(0.5),
+            }),
+            to: End::Orbit(&target),
+            depart: Some(100.0),
+            arrive: None,
+            duration: Some(3.0 * 86_400.0),
+            window: None,
+        };
+        let barycentric = |t: f64, s: [f64; 6]| -> [f64; 6] {
+            let e = eph.barycentric(earth, Epoch(epoch.0 + t / SECONDS_PER_DAY));
+            [
+                s[0] + e.r.x,
+                s[1] + e.r.y,
+                s[2] + e.r.z,
+                s[3] + e.v.x,
+                s[4] + e.v.y,
+                s[5] + e.v.z,
+            ]
+        };
+        let start = [6_800.0, 300.0, 200.0, 0.4, 10.6, 1.5];
+        let mut run = Dop853::new(&ode, 100.0, start, TOL);
+        let times = [100.0, 40_000.0, 150_000.0, 3.1 * 86_400.0];
+        let mut states = vec![barycentric(times[0], start)];
+        for &t in &times[1..3] {
+            run.advance_to(&ode, t).unwrap();
+            let mut s = run.y;
+            s[4] += 0.01;
+            states.push(barycentric(t, s));
+        }
+        let path = Path {
+            epoch,
+            times: times.to_vec(),
+            states,
+            burns: vec![true, true, false, true],
+            passes: Vec::new(),
+        };
+        let end = barycentric(times[3], target.path.at(times[3]));
+        let positions: Vec<DVec3> = path
+            .states
+            .iter()
+            .chain([&end])
+            .map(|s| DVec3::new(s[0], s[1], s[2]))
+            .collect();
+        let layout = Layout::new(&global, &locals, &path, &positions);
+        assert!(
+            layout.frames.iter().all(|f| *f == Some(0)),
+            "{:?}",
+            layout.frames
+        );
         assert_derivatives(&leg, &layout, epoch, &layout.pack(&path));
     }
 
     /// Central differences of every constraint row and the cost against the
-    /// analytic derivatives, at steps of 1e-5 and 1e-7 (scaled), either of
-    /// which may match: the larger misses by its truncation at a LEO node
-    /// (68 m there), the smaller by the integrator's step-size noise on arcs
-    /// near the Moon.
+    /// analytic derivatives, at steps of 1e-5, 1e-6 and 1e-7 (scaled), any
+    /// of which may match: the largest misses by its truncation at a LEO
+    /// node (68 m there), the smallest by the integrator's step-size noise
+    /// on arcs near the Moon, or by rounding in barycentric coordinates
+    /// (~0.03 mm at Earth's distance from the Sun).
     fn assert_derivatives(leg: &Leg, layout: &Layout, epoch: Epoch, z: &[f64]) {
         let e = leg.evaluate(layout, epoch, z, true).unwrap();
         let differences = |h: f64| -> Vec<(f64, Vec<f64>)> {
@@ -1488,26 +1685,25 @@ mod tests {
                 })
                 .collect()
         };
-        let (coarse, fine) = (differences(1e-5), differences(1e-7));
+        let steps = [differences(1e-5), differences(1e-6), differences(1e-7)];
         let err = |analytic: f64, numeric: f64| (analytic - numeric).abs() / (1.0 + numeric.abs());
         let mut worst = 0.0f64;
         for j in 0..z.len() {
-            let mut check = |analytic: f64, a: f64, b: f64, what: &str| {
-                let e = err(analytic, a).min(err(analytic, b));
+            let mut check = |analytic: f64, numeric: [f64; 3], what: &str| {
+                let e = numeric
+                    .iter()
+                    .map(|&n| err(analytic, n))
+                    .fold(f64::INFINITY, f64::min);
                 worst = worst.max(e);
                 assert!(
                     e < 1e-4,
-                    "{what}, unknown {j}: analytic {analytic:e}, differences {a:e}, {b:e}"
+                    "{what}, unknown {j}: analytic {analytic:e}, differences {numeric:?}"
                 );
             };
-            check(e.grad[j], coarse[j].0, fine[j].0, "cost");
+            check(e.grad[j], steps.each_ref().map(|d| d[j].0), "cost");
             for r in 0..e.c.len() {
-                check(
-                    e.jac[r][j],
-                    coarse[j].1[r],
-                    fine[j].1[r],
-                    &format!("row {r}"),
-                );
+                let numeric = steps.each_ref().map(|d| d[j].1[r]);
+                check(e.jac[r][j], numeric, &format!("row {r}"));
             }
         }
         println!("worst relative difference {worst:e}");
@@ -1521,6 +1717,7 @@ mod tests {
         run.advance_dense(&ode, t1, &mut steps).unwrap();
         Reference {
             epoch,
+            center: field.center(),
             revolutions: 1,
             patches: Vec::new(),
             path: crate::integrate::Trajectory::new(steps),
@@ -1588,10 +1785,11 @@ mod tests {
             .chain([&after.y])
             .map(|s| DVec3::new(s[0], s[1], s[2]))
             .collect();
-        let mut layout = Layout::new(&field, &path, &positions);
+        let mut layout = Layout::new(&field, &[], &path, &positions);
         layout.passes[0].1 = true;
         let leg = Leg {
             field: &field,
+            locals: &[],
             from: End::Orbit(&station),
             to: End::Low(LowOrbit {
                 body: moon,
@@ -1649,9 +1847,10 @@ mod tests {
             .chain([&run.y])
             .map(|s| DVec3::new(s[0], s[1], s[2]))
             .collect();
-        let layout = Layout::new(&field, &path, &positions);
+        let layout = Layout::new(&field, &[], &path, &positions);
         let leg = Leg {
             field: &field,
+            locals: &[],
             from: End::Low(LowOrbit {
                 body: earth,
                 radius: 6_778.0,

@@ -570,6 +570,21 @@ impl Ephemeris {
         }
     }
 
+    /// Radius of the body's planetary system's sphere of influence about the
+    /// Sun (Laplace's: a (m/M)^(2/5), osculating a), km. Panics for the Sun.
+    pub fn sphere_of_influence(&self, id: BodyId, t: Epoch) -> f64 {
+        let system: f64 = match self.bodies[id.0].motion {
+            Motion::Earth | Motion::Moon => self
+                .bodies
+                .iter()
+                .filter(|b| matches!(b.motion, Motion::Earth | Motion::Moon))
+                .map(|b| b.gm)
+                .sum(),
+            _ => self.bodies[id.0].gm,
+        };
+        self.elements(id, t).a * (system / self.bodies[self.sun.0].gm).powf(0.4)
+    }
+
     /// Synodic period of two bodies, in days (infinite for equal periods).
     pub fn synodic_period_days(&self, a: BodyId, b: BodyId, t: Epoch) -> f64 {
         let n = |id: BodyId| self.elements(id, t).mean_motion * SECONDS_PER_DAY;
