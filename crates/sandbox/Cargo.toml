@@ -1,0 +1,15 @@
+[package]
+name = "sandbox"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+damascene-core = "0.8"
+damascene-wgpu = "0.8"
+damascene-winit-wgpu = "0.8"
+png = "0.18.1"
+pollster = "1.0"
+render = { path = "../render" }
+wgpu = "30"
+winit = "0.30"

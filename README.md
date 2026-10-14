@@ -20,6 +20,12 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   mission plans: chains of legs, each designed from where and when the
   last arrived, with paths sampled for drawing (`mission`, `track`).
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
+- `crates/render` — the map view's renderer ([M1c.md](M1c.md)): a scene
+  drawn in linear HDR into a texture, GPU timers, and a windowless device
+  for tests.
+- `crates/sandbox` — the creative sandbox: the map view in a window, its
+  UI on [damascene](https://github.com/computer-whisperer/damascene)
+  0.8, HDR output where the compositor offers it.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
   parameters, and a sweep that classifies the plans' development paths.
@@ -66,6 +72,18 @@ designed (`--tracks` writes the sampled paths as CSV). The format is in
 Transfers are ranked by total excess speed (v∞ at departure plus v∞ at
 arrival). Units are km/s for speeds and days for time; dates are
 `YYYY-MM-DD` (TDB).
+
+## The `sandbox` command
+
+```sh
+cargo run --release -p sandbox                              # the map view
+cargo run --release -p sandbox -- --frames 600               # close after 600 frames, print timings
+cargo run --release -p sandbox -- --screenshot shot.png      # one frame offscreen
+```
+
+Right drag orbits the camera, middle drag pans, the wheel zooms (the
+camera is a stub until M1c step 3). `DAMASCENE_COLOR_DEBUG=1` prints the
+color negotiation with the compositor.
 
 ## The `plan` command
 

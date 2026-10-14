@@ -1,7 +1,35 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-14: step 1 done; next, step 2 (the host and an empty
-scene).
+Status, 2026-10-14: steps 1 and 2 done; next, step 3 (scale: the
+camera, bodies and the Sun).
+
+- Step 2: `crates/render` (the scene target, the empty scene, GPU
+  timers, a windowless device) and `crates/sandbox` (the window, the
+  shell UI on damascene 0.8, and `sandbox --screenshot`/`--frames`).
+  As built, see the step 2 plan below.
+  - The host is ours, on damascene's exported host layers: they
+    negotiated HDR with the compositor on the development machine (an
+    `Rgba16Float` scRGB swapchain, 203-nit reference white, 400-nit
+    peak: headroom 1.97×). The scene's linear values pass through to
+    it; tonemapping to the headroom is step 6.
+  - Three runs of 300 frames of the empty scene with the UI. Two got
+    frames every 4.4–4.6 ms on average (the display's refresh, under
+    Fifo), with 0.4–0.9 ms of GPU time each. The third, its window
+    placed elsewhere by the compositor, got frames every 50 ms, 3.2 ms
+    of GPU time, and a headroom of 1.23×. An idle GPU's clocks swing its
+    times by several fold, so gate item 3 is measured under load.
+  - Tests: the scene target reads back exactly, HDR values included
+    (1.5 and 7.0); offscreen, the scene's color fills the map view's
+    rect and the bars around it show the UI; the target follows the map
+    view's size; timestamps time a frame.
+  - Left out of our host, for now: AccessKit, the clipboard and primary
+    selection, touch and pinch, the soft keyboard, file drops, and the
+    app's announcement, link and plot requests, which the stock host
+    wires and the sandbox does not need yet.
+  - A review (a sub-agent) found the timer reporting an older frame as
+    the latest when several finished at once, and a camera drag left
+    running when the button came up outside the window; both fixed, the
+    first with a test.
 
 - Step 1: mission plans (`data/missions/`, `orbit::mission`), the places
   they name (`data/places.toml`, `orbit::places`, which `orbit gate` and
@@ -41,7 +69,8 @@ scene).
     (197 m/s to change), reported and not flown. It can be much worse:
     the same trip from 2033-03-30 leaves low lunar orbit in a plane 166°
     off (3.2 km/s), and a departure for Mars on arrival in LEO is 85°
-    off.
+    off. Decided 2026-10-14: it stays reported through M1c and is fixed
+    before M1b (DESIGN.md, Milestones).
   - Long stays in a low orbit are sampled ~2,900 times a day, so a wait
     through a synodic period in LEO would be ~2 million samples. Step 4's
     lines will need a lighter form for long coasts.
@@ -245,8 +274,13 @@ recorded in `data/`, as with the economy's sources.
     `unsafe` anyway.
 - **UI:** damascene 0.8 for panels, tables, plots and text, in our own
   host on winit.
-  - Damascene's stock runner (`damascene-winit-wgpu`) always clears the
-    frame and offers no hook for our passes.
+  - Damascene's stock host (`damascene-winit-wgpu`) creates its device
+    with no optional features, so no GPU timestamps, and passes only
+    primary-button drags to the app. (It does have hooks for app
+    textures, `gpu_setup` and `before_paint`; corrected 2026-10-14.)
+    Our host is built from the layers it exports for custom hosts
+    (`host::gfx::WindowGfx`, `host::color`, `host::input`), which
+    include its HDR negotiation.
   - The scene renders into an `Rgba16Float` texture shown by a damascene
     `surface()` widget, so panels, menus and popovers layer over the map
     correctly. Damascene encodes the output.
@@ -268,7 +302,7 @@ recorded in `data/`, as with the economy's sources.
 
 | From | Piece | Changes |
 |---|---|---|
-| volumetric | Host glue: one device, the scene in a texture under a damascene widget, input routing (~300 lines, `volumetric_ui_v2/src/host.rs`, `session.rs`) | 16-bit float target; drop the file, settings and job plumbing |
+| volumetric | Host glue: one device, the scene in a texture under a damascene widget, input routing (~300 lines, `volumetric_ui_v2/src/host.rs`, `session.rs`) | The pattern only, on damascene 0.8's host layers (volumetric's host is on 0.6 and hard-codes an sRGB swapchain); 16-bit float target |
 | volumetric | Line pipeline (~600, `volumetric_renderer/src/pipelines/line.rs`) | Clip at the near plane (it doesn't: segments passing behind the camera draw wrong); camera-relative positions; joins |
 | volumetric | Offscreen render and pixel-test harness (~1,700, `offscreen.rs`, `frame_tests.rs`) | New test scenes |
 | volumetric | Orbit camera with animated refocus (~1,460, `camera.rs`, `navigation.rs`) | 64-bit eye and target; follow a moving body; zoom from 100 km to 1e10 km; reversed depth |
@@ -291,7 +325,7 @@ Hushfold's procedural sky, polychora's 4D renderers and its vulkano glue.
    its position projected in 64 bits.
 3. A plan with a ship on every Mars window from 2040 to 2075 plays at a
    month per second at the display's refresh rate on the development
-   machine (Radeon RX 6800 class), measured by GPU timestamps.
+   machine (Radeon RX 6900 XT, Mesa RADV), measured by GPU timestamps.
 4. On an HDR output the Sun and sunlit limbs use the headroom. On SDR the
    same scene tonemaps without clipping bands.
 5. Re-planning an edited leg meets M1a's times (≤ 0.1 s re-planning,
@@ -433,3 +467,53 @@ Hushfold's procedural sky, polychora's 4D renderers and its vulkano glue.
    CSV, for looking at shapes before the view exists.
 7. **Missions** in `data/missions/`: the crew rotation above, and the
    legs M1a checked against published values (gate item 1).
+
+### Step 2 plan (2026-10-14)
+
+1. **Crates.**
+   - `crates/render`, wgpu only: the scene target (`Rgba16Float`, linear,
+     1.0 the SDR reference white, sized to the viewport), a reversed-Z
+     `Depth32Float` buffer for step 3, the empty scene (cleared to
+     space's black), GPU timers, and an offscreen device for tests.
+   - `crates/sandbox`, the `sandbox` binary: the host, the damascene app,
+     and the frame function that the window and the tests share.
+2. **Host.** Our own winit loop, built from damascene-winit-wgpu 0.8's
+   host layers: `WindowGfx` for the surface, damascene's renderer, MSAA
+   and the color negotiation (including live renegotiation when the
+   window moves between outputs); `host::input` for mapping events.
+   - The device requests timestamp queries, inside encoders too, when
+     the adapter has them.
+   - The app asks for `ColorPreferences::hdr_extended()`, so an HDR
+     output gets an scRGB float swapchain, and SDR an 8-bit sRGB one.
+3. **Frame.** One encoder and one submit per frame:
+   - build the UI, with the scene target shown by a `surface()` keyed
+     `viewport`, and prepare it;
+   - read the viewport's rect; if its size in pixels changed,
+     reallocate the target (the tree shows the new one from the next
+     frame, so a resize draws one more frame);
+   - render the scene into the target, then the UI, which composites
+     it.
+   The same function draws into the swapchain or into an offscreen
+   texture.
+4. **Input.** A press over the viewport (damascene's hover target is
+   within `viewport`) goes to the camera, and to damascene too (a click
+   on the map still takes focus from a text field); the wheel over it
+   goes to the camera alone; everything else goes to damascene. In step 2 the camera is a stub that accumulates
+   orbit, pan and zoom and shows them; step 3 builds the real one. As
+   in KSP's map view: right drag orbits, middle drag pans, the wheel
+   zooms, a left click picks (step 5).
+5. **Shell UI.** A top bar (title, whether HDR is active, the output's
+   headroom), the viewport filling the rest, and a status line: frame
+   time, GPU time for the scene and the whole frame, the camera stub.
+6. **GPU timers.** Timestamps at the frame's start, after the scene and
+   after the UI (inside the encoder where the device allows; otherwise
+   around the scene pass only). They are read back through a ring of
+   three buffers, so measuring never stalls the pipeline.
+7. **Offscreen harness.** A windowless device runs the same frame
+   function.
+   - Tests render the scene alone (read back as linear floats) and the
+     whole frame (UI and scene, 8-bit sRGB).
+   - `sandbox --screenshot PATH` writes the whole frame as a PNG.
+   - Checks: the target's clear value reads back exactly; in the whole
+     frame the viewport's rect shows the scene's color and the rest
+     shows the UI; the timers report positive times where supported.

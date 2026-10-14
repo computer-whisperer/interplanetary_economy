@@ -411,6 +411,9 @@ Around the map, minimal and information-dense:
     2040–2075 plays at a month per second at the display's refresh rate.
     HDR outputs use their headroom.
 - **M1b, headless sim core** on the sandbox.
+  - First, legs leaving a low orbit the ship arrived in start from its
+    own orbit (decided 2026-10-14): until then the planner reports the
+    jump and does not fly it (M1c.md, step 1).
   - Places, commodities, facilities, ships, rocket-equation costing,
     missions and standing routes flown by the autopilot.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.

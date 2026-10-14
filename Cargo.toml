@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/orbit", "crates/orbit-cli", "crates/plan"]
+members = ["crates/orbit", "crates/orbit-cli", "crates/plan", "crates/render", "crates/sandbox"]
 
 [workspace.package]
 edition = "2024"
@@ -10,3 +10,29 @@ version = "0.1.0"
 # Debug assertions and overflow checks stay on.
 [profile.test]
 opt-level = 2
+
+# Damascene's text rasterization and shaping, optimized in dev builds:
+# unoptimized, its startup glyph warmup takes ~19 s (damascene's README,
+# "Dev-profile overrides"). Leaf dependencies that compile once.
+[profile.dev.package.fdsm]
+opt-level = 3
+[profile.dev.package.fdsm-ttf-parser]
+opt-level = 3
+[profile.dev.package.nalgebra]
+opt-level = 3
+[profile.dev.package.simba]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3
+[profile.dev.package.cosmic-text]
+opt-level = 3
+[profile.dev.package.swash]
+opt-level = 3
+[profile.dev.package.skrifa]
+opt-level = 3
+[profile.dev.package.zeno]
+opt-level = 3
+[profile.dev.package.fontdb]
+opt-level = 3

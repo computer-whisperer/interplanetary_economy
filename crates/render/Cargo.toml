@@ -1,0 +1,8 @@
+[package]
+name = "render"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pollster = "1.0"
+wgpu = "30"
