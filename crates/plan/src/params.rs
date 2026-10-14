@@ -165,6 +165,9 @@ struct ShipRow {
     #[serde(default)]
     lands: Vec<String>,
     turnaround_days: f64,
+    /// Flights before the ship is worn out.
+    life_flights: f64,
+    ops_musd_per_trip: Dist,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]
@@ -360,6 +363,9 @@ pub struct ShipClass {
     pub interplanetary: bool,
     pub lands: Vec<PlaceId>,
     pub turnaround_days: f64,
+    /// What each trip costs, $M: the wear (the price over the ship's life
+    /// in flights) and flight operations.
+    pub trip_musd: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -513,20 +519,24 @@ impl EconomyFile {
             .map(|p| l0 * (l1 / l0).powf(p as f64 / (cal.periods - 1) as f64))
             .collect();
 
-        let ships = self
+        let mut ships: Vec<ShipClass> = self
             .ship
             .iter()
-            .map(|s| ShipClass {
-                id: s.id.clone(),
-                dry: s.dry_t,
-                tank: s.propellant_t,
-                cargo: s.cargo_t,
-                price_musd: s.price_musd.sample(draw),
-                propellant: s.propellant,
-                aero: s.aero,
-                interplanetary: s.interplanetary,
-                lands: s.lands.iter().map(|n| node(n)).collect(),
-                turnaround_days: s.turnaround_days,
+            .map(|s| {
+                let price_musd = s.price_musd.sample(draw);
+                ShipClass {
+                    id: s.id.clone(),
+                    dry: s.dry_t,
+                    tank: s.propellant_t,
+                    cargo: s.cargo_t,
+                    price_musd,
+                    propellant: s.propellant,
+                    aero: s.aero,
+                    interplanetary: s.interplanetary,
+                    lands: s.lands.iter().map(|n| node(n)).collect(),
+                    turnaround_days: s.turnaround_days,
+                    trip_musd: price_musd / s.life_flights,
+                }
             })
             .collect();
 
@@ -743,6 +753,9 @@ impl EconomyFile {
         ];
         for (k, reserve) in reserves {
             facilities[k].reserve = Some(reserve.sample(draw));
+        }
+        for (ship, row) in ships.iter_mut().zip(&self.ship) {
+            ship.trip_musd += row.ops_musd_per_trip.sample(draw);
         }
 
         Scenario {

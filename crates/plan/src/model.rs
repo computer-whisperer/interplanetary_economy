@@ -429,7 +429,7 @@ impl Lp {
                 if r * ship.dry >= ship.tank {
                     continue;
                 }
-                let trips = pb.add_column(0.0, 0.0..);
+                let trips = pb.add_column(-disc[e.leave] * ship.trip_musd, 0.0..);
                 let mut cargo = Vec::new();
                 for c in COMMODITIES {
                     let allowed = match c {

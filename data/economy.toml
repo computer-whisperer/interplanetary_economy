@@ -61,6 +61,14 @@ musd_per_year = { low = 10000.0, high = 30000.0 }
 steps = [[500.0, 50000.0], [1500.0, 36000.0], [3000.0, 21000.0], [10000.0, 7000.0], [1e6, 2000.0]]
 price_factor = { median = 1.0, sigma = 0.5 }
 
+# Each trip costs wear and flight operations (M1a step 11): the ship's price
+# over its life in flights, 50 for every class [ext: Falcon 9 Block 5 was
+# designed for 10 flights between refurbishments, the Shuttle orbiters for
+# 100], plus $0.5M of operations per trip (mission control and turnaround
+# over days to weeks) [guess]. Without them, trips between stations on
+# surplus lunar propellant cost almost nothing and the LP's interior point
+# method fails.
+
 [[ship]]
 # Starship-class. Cost: no audited figure; $30M / $80M / $250M low /
 # central / high [ext from Musk 2019 and second-hand ~$100M reports].
@@ -74,6 +82,8 @@ aero = true
 interplanetary = true
 lands = ["mars-surface"]
 turnaround_days = 5.0
+life_flights = 50.0
+ops_musd_per_trip = { median = 0.5, sigma = 1.0 }
 
 [[ship]]
 # Cislunar lander/tanker: no heat shield, no interplanetary capability
@@ -86,6 +96,8 @@ price_musd = { median = 40.0, sigma = 0.6 }
 propellant = "methalox"
 lands = ["moon-south-pole", "moon-mare"]
 turnaround_days = 3.0
+life_flights = 50.0
+ops_musd_per_trip = { median = 0.5, sigma = 1.0 }
 
 [[ship]]
 # Reusable hydrolox lander/tanker. Blue Moon Mk2: 16 t dry, ~29–40 t
@@ -101,6 +113,8 @@ price_musd = { median = 45.0, sigma = 0.6 }
 propellant = "hydrolox"
 lands = ["moon-south-pole", "moon-mare"]
 turnaround_days = 3.0
+life_flights = 50.0
+ops_musd_per_trip = { median = 0.5, sigma = 1.0 }
 
 [[ship]]
 # Reusable cislunar tug with an aerobrake for LEO returns. NASA JSC 1985
@@ -115,6 +129,8 @@ price_musd = { median = 27.0, sigma = 0.6 }
 propellant = "hydrolox"
 aero = true
 turnaround_days = 3.0
+life_flights = 50.0
+ops_musd_per_trip = { median = 0.5, sigma = 1.0 }
 
 # Plants: equipment t per t/yr of output = plant + ore / grade, where ore is
 # equipment per t/yr of ore handled and grade is product per ore mass.
