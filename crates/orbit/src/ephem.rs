@@ -30,6 +30,25 @@ const SMALL_BODY_TOLERANCE: Tolerance = Tolerance {
 /// angle between this module's frame and the ICRF equator.
 pub const OBLIQUITY_J2000: f64 = 84_381.448 / 3_600.0 * std::f64::consts::PI / 180.0;
 
+/// Mean radii of the massive bodies, km: IAU WGCCRE 2015 (Archinal et al.
+/// 2018).
+const MEAN_RADIUS_KM: [(&str, f64); 10] = [
+    ("sun", 695_700.0),
+    ("mercury", 2_439.4),
+    ("venus", 6_051.8),
+    ("earth", 6_371.0),
+    ("moon", 1_737.4),
+    ("mars", 3_389.5),
+    ("jupiter", 69_911.0),
+    ("saturn", 58_232.0),
+    ("uranus", 25_362.0),
+    ("neptune", 24_622.0),
+];
+
+/// The Moon's equator is inclined 1.543° to the ecliptic (Cassini's
+/// second law; IAU WGCCRE 2015), cos and sin.
+const MOON_EQUATOR_TO_ECLIPTIC: (f64, f64) = (0.999_637_397_9, 0.026_927_175_3);
+
 /// A body's identity in an [`Ephemeris`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BodyId(usize);
@@ -41,6 +60,9 @@ pub struct Body {
     pub kind: BodyKind,
     /// Gravitational parameter, km³/s²; zero for small bodies.
     pub gm: f64,
+    /// Mean radius, km (IAU); for small bodies, half the diameter where
+    /// known, else zero.
+    pub radius: f64,
     /// Oblateness, where the game models it.
     pub figure: Option<Figure>,
     motion: Motion,
@@ -282,6 +304,7 @@ impl Ephemeris {
                 name,
                 kind,
                 gm,
+                radius: MEAN_RADIUS_KM.iter().find(|(b, _)| *b == id).unwrap().1,
                 figure: None,
                 motion,
             });
@@ -311,13 +334,14 @@ impl Ephemeris {
                 series(naif),
             );
         }
-        // Earth's mean pole of J2000 is the ICRF z axis; precession moves it
-        // ~0.7° over 2025–2080, which this ignores.
+        // Earth's mean pole of J2000 is the ICRF z axis, (0, sin ε, cos ε) in
+        // the ecliptic frame; precession moves it ~0.7° over 2025–2080, which
+        // this ignores.
         let earth = bodies.iter_mut().find(|b| b.id == "earth").unwrap();
         earth.figure = Some(Figure {
             j2: de.constant("J2E"),
             radius: de.constant("RE"),
-            pole: DVec3::new(0.0, -OBLIQUITY_J2000.sin(), OBLIQUITY_J2000.cos()),
+            pole: DVec3::new(0.0, OBLIQUITY_J2000.sin(), OBLIQUITY_J2000.cos()),
         });
 
         let emb = de.series_index(3, 0);
@@ -374,6 +398,7 @@ impl Ephemeris {
                     h_mag: row.h_mag,
                 },
                 gm: 0.0,
+                radius: row.diameter_km.map_or(0.0, |d| d / 2.0),
                 figure: None,
                 motion: Motion::Integrated { epoch, path },
             });
@@ -501,6 +526,25 @@ impl Ephemeris {
         };
         Elements::from_state(self.system_state(id, t), self.bodies[self.sun.0].gm + gm)
             .unwrap_or_else(|| panic!("{} is not on a heliocentric ellipse", body.id))
+    }
+
+    /// The body's spin axis, where the game knows it: Earth's from its
+    /// figure; the Moon's by Cassini's laws, which DE440's librations follow
+    /// to ~0.1°: its pole, its orbit's pole and the ecliptic pole are
+    /// coplanar, with the ecliptic pole between the other two and 1.543°
+    /// from the Moon's.
+    pub fn pole(&self, id: BodyId, t: Epoch) -> Option<DVec3> {
+        match self.bodies[id.0].motion {
+            Motion::Moon => {
+                let earth = self.lookup("earth").unwrap();
+                let (e, m) = (self.barycentric(earth, t), self.barycentric(id, t));
+                let normal = (m.r - e.r).cross(m.v - e.v).normalize();
+                let away = DVec3::new(normal.x, normal.y, 0.0).normalize();
+                let (cos, sin) = MOON_EQUATOR_TO_ECLIPTIC;
+                Some(cos * DVec3::Z - sin * away)
+            }
+            _ => self.bodies[id.0].figure.map(|f| f.pole),
+        }
     }
 
     /// Synodic period of two bodies, in days (infinite for equal periods).

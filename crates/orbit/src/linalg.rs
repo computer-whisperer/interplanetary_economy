@@ -6,8 +6,13 @@
 /// `a` is n×n, `b` becomes `x`. `None` if `a` is singular to working
 /// precision.
 pub fn solve(n: usize, a: &mut [f64], b: &mut [f64]) -> Option<()> {
+    solve_many(n, 1, a, b)
+}
+
+/// [`solve`] for `k` right-hand sides at once: `b` is n×k and becomes `x`.
+pub fn solve_many(n: usize, k: usize, a: &mut [f64], b: &mut [f64]) -> Option<()> {
     assert_eq!(a.len(), n * n);
-    assert_eq!(b.len(), n);
+    assert_eq!(b.len(), n * k);
     let scale = a.iter().fold(0.0f64, |m, x| m.max(x.abs()));
     for col in 0..n {
         let pivot = (col..n)
@@ -17,27 +22,90 @@ pub fn solve(n: usize, a: &mut [f64], b: &mut [f64]) -> Option<()> {
             return None;
         }
         if pivot != col {
-            for k in 0..n {
-                a.swap(col * n + k, pivot * n + k);
+            for c in 0..n {
+                a.swap(col * n + c, pivot * n + c);
             }
-            b.swap(col, pivot);
+            for c in 0..k {
+                b.swap(col * k + c, pivot * k + c);
+            }
         }
         let p = a[col * n + col];
         for row in col + 1..n {
             let f = a[row * n + col] / p;
             if f != 0.0 {
-                for k in col..n {
-                    a[row * n + k] -= f * a[col * n + k];
+                for c in col..n {
+                    a[row * n + c] -= f * a[col * n + c];
                 }
-                b[row] -= f * b[col];
+                for c in 0..k {
+                    b[row * k + c] -= f * b[col * k + c];
+                }
             }
         }
     }
     for row in (0..n).rev() {
-        let s: f64 = (row + 1..n).map(|k| a[row * n + k] * b[k]).sum();
-        b[row] = (b[row] - s) / a[row * n + row];
+        for c in 0..k {
+            let s: f64 = (row + 1..n).map(|j| a[row * n + j] * b[j * k + c]).sum();
+            b[row * k + c] = (b[row * k + c] - s) / a[row * n + row];
+        }
     }
     Some(())
+}
+
+/// `m` linearly independent columns of the m×n matrix `a` (m ≤ n), by
+/// Gaussian elimination with threshold pivoting: each pivot is the largest
+/// entry among the columns of lowest `rank` whose entries reach 1% of the
+/// largest remaining, so low-rank columns are chosen first while pivots stay
+/// well conditioned. `None` if `a`'s rank is less than m.
+pub fn independent_columns(m: usize, n: usize, a: &[f64], rank: &[u8]) -> Option<Vec<usize>> {
+    assert_eq!(a.len(), m * n);
+    assert_eq!(rank.len(), n);
+    let mut w = a.to_vec();
+    let scale = w.iter().fold(0.0f64, |s, x| s.max(x.abs()));
+    let mut rows: Vec<usize> = (0..m).collect();
+    let mut chosen = Vec::with_capacity(m);
+    let mut free = vec![true; n];
+    for _ in 0..m {
+        let largest = rows
+            .iter()
+            .flat_map(|&r| (0..n).filter(|&c| free[c]).map(move |c| (r, c)))
+            .fold(0.0f64, |s, (r, c)| s.max(w[r * n + c].abs()));
+        if largest <= 1e-14 * scale {
+            return None;
+        }
+        // (row index, column), best by rank, then size.
+        let mut best: Option<(usize, usize)> = None;
+        for (ri, &r) in rows.iter().enumerate() {
+            for c in (0..n).filter(|&c| free[c]) {
+                let x = w[r * n + c].abs();
+                if x < 0.01 * largest {
+                    continue;
+                }
+                let better = match best {
+                    None => true,
+                    Some((bi, bc)) => {
+                        let bx = w[rows[bi] * n + bc].abs();
+                        (rank[c], -x) < (rank[bc], -bx)
+                    }
+                };
+                if better {
+                    best = Some((ri, c));
+                }
+            }
+        }
+        let (ri, c) = best.unwrap();
+        let r = rows.swap_remove(ri);
+        for &o in &rows {
+            let f = w[o * n + c] / w[r * n + c];
+            if f != 0.0 {
+                for j in 0..n {
+                    w[o * n + j] -= f * w[r * n + j];
+                }
+            }
+        }
+        free[c] = false;
+        chosen.push(c);
+    }
+    Some(chosen)
 }
 
 /// The smallest `dx` with `j dx = f`, for `j` m×n with full row rank
@@ -180,6 +248,25 @@ mod tests {
         }
         let mut singular = vec![1.0, 2.0, 2.0, 4.0];
         assert!(solve(2, &mut singular, &mut [1.0, 2.0]).is_none());
+    }
+
+    /// Columns 0 and 2 repeat each other; the chosen columns are
+    /// independent, and low-ranked ones come first.
+    #[test]
+    fn chooses_independent_columns() {
+        let a = [1.0, 0.0, 2.0, 1.0, 2.0, 0.0, 4.0, 3.0];
+        let cols = independent_columns(2, 4, &a, &[0; 4]).unwrap();
+        assert!(!(cols.contains(&0) && cols.contains(&2)), "{cols:?}");
+        assert!(independent_columns(2, 2, &[1.0, 2.0, 2.0, 4.0], &[0; 2]).is_none());
+        // Column 2 has the largest entries, but ranked last it stays out
+        // while others will do.
+        let b = [1.0, 0.0, 2.0, 0.0, 1.0, 2.0];
+        assert!(independent_columns(2, 3, &b, &[0; 3]).unwrap().contains(&2));
+        assert!(
+            !independent_columns(2, 3, &b, &[0, 0, 1])
+                .unwrap()
+                .contains(&2)
+        );
     }
 
     /// The banded sparse solve agrees with the dense one on a shooting-like

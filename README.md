@@ -10,8 +10,11 @@ sandbox and autopilot ([M1a.md](M1a.md)); done: the M2 kill-test
 - `crates/orbit` — the n-body sandbox ([M1a.md](M1a.md)): ephemerides
   (DE440, integrated asteroids), the integrator and gravity field, the
   Earth–Moon three-body model and its periodic-orbit families, reference
-  orbits carried into the full model, station-keeping and upkeep, and
-  Lambert transfers between bodies with their porkchop grids and windows.
+  orbits carried into the full model, station-keeping and upkeep,
+  transfer design in the full field (multiple shooting and Δv
+  minimization, `shooting`) with transfers between station orbits and low
+  orbits seeded by fans (`legs`), and Lambert transfers between bodies
+  with their porkchop grids and windows.
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden

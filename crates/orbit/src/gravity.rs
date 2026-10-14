@@ -55,6 +55,55 @@ impl<'a> Field<'a> {
         Self::new(eph, center, &massive)
     }
 
+    pub fn ephemeris(&self) -> &'a Ephemeris {
+        self.eph
+    }
+
+    /// The body at the origin; `None` for the solar-system barycenter.
+    pub fn center(&self) -> Option<BodyId> {
+        self.center
+    }
+
+    /// The bodies whose pull this field includes, the center first.
+    pub fn bodies(&self) -> impl Iterator<Item = BodyId> + '_ {
+        self.center
+            .into_iter()
+            .chain(self.others.iter().map(|&(b, _)| b))
+    }
+
+    /// The state of `body` relative to this field's origin.
+    pub fn body_state(&self, body: BodyId, t: Epoch) -> State {
+        let b = self.eph.barycentric(body, t);
+        match self.center {
+            Some(c) => {
+                let o = self.eph.barycentric(c, t);
+                State {
+                    r: b.r - o.r,
+                    v: b.v - o.v,
+                }
+            }
+            None => b,
+        }
+    }
+
+    /// The position of `body` relative to this field's origin.
+    pub fn body_position(&self, body: BodyId, t: Epoch) -> DVec3 {
+        let b = self.eph.barycentric_position(body, t);
+        match self.center {
+            Some(c) => b - self.eph.barycentric_position(c, t),
+            None => b,
+        }
+    }
+
+    /// Whether a ship at `r` at `t` is below the surface of one of the
+    /// field's bodies.
+    pub fn inside(&self, t: Epoch, r: DVec3) -> Option<BodyId> {
+        self.bodies().find(|&b| {
+            let radius = self.eph.body(b).radius;
+            radius > 0.0 && (r - self.body_position(b, t)).length_squared() < radius * radius
+        })
+    }
+
     /// Includes the J2 oblateness of the bodies that have a figure.
     pub fn with_oblateness(mut self) -> Self {
         self.oblate = true;
@@ -90,13 +139,16 @@ impl<'a> Field<'a> {
     }
 
     /// The gravity gradient ∂a/∂r at `r` (from the center), for the state
-    /// transition matrix: point masses only. Leaving out J2 and relativity
-    /// only slows Newton's method a little (its residuals use the full
-    /// model).
+    /// transition matrix: point masses and J2. Relativity is left out; it
+    /// would only slow Newton's method a little (residuals use the full
+    /// model). In LEO, leaving out J2 made sensitivities over a few hours
+    /// ~20% wrong.
     pub fn gradient(&self, t: Epoch, r: DVec3) -> [[f64; 3]; 3] {
         let origin = self.center.map(|c| self.eph.barycentric_position(c, t));
         let mut g = [[0.0; 3]; 3];
-        let mut add = |gm: f64, d: DVec3| {
+        // The pull of mass `gm` at offset `d` from the ship, and of body
+        // `b`'s J2 on a ship at `rho` from it.
+        let point = |g: &mut [[f64; 3]; 3], gm: f64, d: DVec3| {
             let r2 = d.length_squared();
             let r3 = r2 * r2.sqrt();
             let d = d.to_array();
@@ -107,12 +159,22 @@ impl<'a> Field<'a> {
                 }
             }
         };
-        if self.center.is_some() {
-            add(self.center_gm, -r);
+        let oblate = |g: &mut [[f64; 3]; 3], b: BodyId, rho: DVec3| {
+            let o = self.oblateness_gradient(b, rho);
+            for (row, o) in g.iter_mut().zip(o) {
+                for (v, o) in row.iter_mut().zip(o) {
+                    *v += o;
+                }
+            }
+        };
+        if let Some(c) = self.center {
+            point(&mut g, self.center_gm, -r);
+            oblate(&mut g, c, r);
         }
         for &(b, gm) in &self.others {
             let d = self.eph.barycentric_position(b, t) - origin.unwrap_or(DVec3::ZERO);
-            add(gm, d - r);
+            point(&mut g, gm, d - r);
+            oblate(&mut g, b, r - d);
         }
         g
     }
@@ -151,6 +213,29 @@ impl<'a> Field<'a> {
         let k =
             -1.5 * fig.j2 * self.eph.body(b).gm * fig.radius * fig.radius / (r2 * r2 * r2.sqrt());
         k * ((1.0 - 5.0 * z * z / r2) * rho + 2.0 * z * fig.pole)
+    }
+
+    /// ∂/∂rho of [`Self::oblateness`]. With K = k/|rho|⁵, z = rho·pole and
+    /// w = (1 - 5z²/rho²) rho + 2z pole, the acceleration is K w.
+    fn oblateness_gradient(&self, b: BodyId, rho: DVec3) -> [[f64; 3]; 3] {
+        let Some(fig) = self.eph.body(b).figure.filter(|_| self.oblate) else {
+            return [[0.0; 3]; 3];
+        };
+        let s = rho.length_squared();
+        let z = rho.dot(fig.pole);
+        let k = -1.5 * fig.j2 * self.eph.body(b).gm * fig.radius * fig.radius / (s * s * s.sqrt());
+        let f = 1.0 - 5.0 * z * z / s;
+        let w = (f * rho + 2.0 * z * fig.pole).to_array();
+        let (rho, p) = (rho.to_array(), fig.pole.to_array());
+        let mut g = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                let df = -10.0 * z * p[j] / s + 10.0 * z * z * rho[j] / (s * s);
+                g[i][j] = -5.0 * k * rho[j] * w[i] / s
+                    + k * (if i == j { f } else { 0.0 } + rho[i] * df + 2.0 * p[i] * p[j]);
+            }
+        }
+        g
     }
 
     /// The Sun's relativistic correction for a ship at `r`, `v` (from the

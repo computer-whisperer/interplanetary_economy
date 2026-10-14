@@ -97,62 +97,95 @@ impl<const N: usize> Dop853<N> {
         self.advance(&rhs, t_end, Some(out))
     }
 
+    /// One accepted step toward `t_end` (not past it), for watching a run
+    /// as it goes.
+    pub fn step_to(
+        &mut self,
+        rhs: impl Fn(f64, &[f64; N]) -> [f64; N],
+        t_end: f64,
+    ) -> Result<(), StepTooSmall> {
+        self.one_step(&rhs, t_end, None)
+    }
+
+    /// One accepted step toward `t_end` (not past it), returning its
+    /// interpolant: for stopping at an event, such as a periapsis.
+    pub fn step(
+        &mut self,
+        rhs: impl Fn(f64, &[f64; N]) -> [f64; N],
+        t_end: f64,
+    ) -> Result<DenseStep<N>, StepTooSmall> {
+        let mut out = Vec::with_capacity(1);
+        self.one_step(&rhs, t_end, Some(&mut out))?;
+        Ok(out.pop().unwrap())
+    }
+
     fn advance(
         &mut self,
         rhs: &impl Fn(f64, &[f64; N]) -> [f64; N],
         t_end: f64,
         mut out: Option<&mut Vec<DenseStep<N>>>,
     ) -> Result<(), StepTooSmall> {
+        while self.t != t_end {
+            self.one_step(rhs, t_end, out.as_deref_mut())?;
+        }
+        Ok(())
+    }
+
+    /// One accepted step toward `t_end`, after as many rejected attempts as
+    /// the error control needs.
+    fn one_step(
+        &mut self,
+        rhs: &impl Fn(f64, &[f64; N]) -> [f64; N],
+        t_end: f64,
+        out: Option<&mut Vec<DenseStep<N>>>,
+    ) -> Result<(), StepTooSmall> {
         let dir = if t_end >= self.t { 1.0 } else { -1.0 };
         let mut h_abs = match self.h_abs {
             Some(h) => h,
             None => self.initial_step(rhs, t_end, dir),
         };
-        while self.t != t_end {
-            let min_step = 10.0 * (self.t.abs().next_up() - self.t.abs());
-            h_abs = h_abs.max(min_step);
-            let mut rejected = false;
-            loop {
-                if h_abs < min_step {
-                    return Err(StepTooSmall { t: self.t });
-                }
-                let mut t_new = self.t + dir * h_abs;
-                let clamped = dir * (t_new - t_end) > 0.0;
-                if clamped {
-                    t_new = t_end;
-                }
-                let h = t_new - self.t;
-                let (y_new, f_new, k) = self.attempt(rhs, h);
-                let error = self.error_norm(&k, &y_new, h);
-                let factor = SAFETY / eighth_root(error);
-                if error < 1.0 {
-                    let mut grow = if error == 0.0 {
-                        MAX_FACTOR
-                    } else {
-                        factor.min(MAX_FACTOR)
-                    };
-                    if rejected {
-                        grow = grow.min(1.0);
-                    }
-                    // A step cut short to land on t_end says nothing about
-                    // the step size: keep the one proposed for the next call.
-                    if !clamped {
-                        h_abs = h.abs() * grow;
-                    }
-                    if let Some(out) = out.as_deref_mut() {
-                        out.push(self.dense_step(rhs, h, &k, y_new));
-                    }
-                    (self.t, self.y, self.f) = (t_new, y_new, f_new);
-                    self.steps += 1;
-                    break;
-                }
-                h_abs = h.abs() * factor.max(MIN_FACTOR);
-                rejected = true;
-                self.rejected += 1;
+        let min_step = 10.0 * (self.t.abs().next_up() - self.t.abs());
+        h_abs = h_abs.max(min_step);
+        let mut rejected = false;
+        loop {
+            if h_abs < min_step {
+                return Err(StepTooSmall { t: self.t });
             }
+            let mut t_new = self.t + dir * h_abs;
+            let clamped = dir * (t_new - t_end) > 0.0;
+            if clamped {
+                t_new = t_end;
+            }
+            let h = t_new - self.t;
+            let (y_new, f_new, k) = self.attempt(rhs, h);
+            let error = self.error_norm(&k, &y_new, h);
+            let factor = SAFETY / eighth_root(error);
+            if error < 1.0 {
+                let mut grow = if error == 0.0 {
+                    MAX_FACTOR
+                } else {
+                    factor.min(MAX_FACTOR)
+                };
+                if rejected {
+                    grow = grow.min(1.0);
+                }
+                // A step cut short to land on t_end says nothing about the
+                // step size: keep the one proposed for the next call.
+                if !clamped {
+                    h_abs = h.abs() * grow;
+                }
+                if let Some(out) = out {
+                    out.push(self.dense_step(rhs, h, &k, y_new));
+                }
+                (self.t, self.y, self.f) = (t_new, y_new, f_new);
+                self.steps += 1;
+                self.h_abs = Some(h_abs);
+                return Ok(());
+            }
+            h_abs = h.abs() * factor.max(MIN_FACTOR);
+            rejected = true;
+            self.rejected += 1;
         }
-        self.h_abs = Some(h_abs);
-        Ok(())
     }
 
     /// One step of size `h`: the new state, its derivative, and all stages

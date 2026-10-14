@@ -1,6 +1,6 @@
 # M1a — N-body sandbox and autopilot
 
-Status, 2026-10-13: steps 1–5 done.
+Status, 2026-10-13: steps 1–5 done; step 6 in progress.
 
 - Step 1: the Δv network and its gateways are deleted; `crates/orbit` keeps
   Lambert arcs between bodies, porkchops and windows, ranked by total excess
@@ -71,6 +71,36 @@ Status, 2026-10-13: steps 1–5 done.
   navigation errors). Low lunar orbits and LEO show no upkeep yet: the
   lunar gravity field and atmospheric drag are not modeled (a 100 km polar
   lunar orbit costs ~75 m/s per year in practice).
+
+- Step 6, so far: `shooting` designs a path in the full field: nodes
+  joined by integrated arcs, burns at some of them, ends on a station's
+  reference orbit or at the apsis of a low circular orbit (LEO, plane
+  free; low lunar orbit, plane free or at a set inclination). Minimum-norm
+  Newton steps make it continuous; the generalized reduced gradient then
+  minimizes total Δv over the few free unknowns, re-solving continuity at
+  each trial point so every iterate is flyable. What mattered, measured:
+  each node scaled by the body pulling hardest there (one Earth–Moon scale
+  left LEO problems unsolvable); J2 in the state transition matrix
+  (without it LEO sensitivities were ~20% off); a feasible path rather
+  than SQP (9 iterations against 51 on a Hohmann rendezvous); times and
+  inner-burn velocities as the free unknowns (stiff LEO velocities stalled
+  the search); a Hessian from differences, measured again when a step
+  shows the curvature has moved (it grows ~700× along a flyby burn); and
+  lunar flybys as periapsis burns no lower than 100 km, held there when
+  the search goes lower. Total Δv falls slowly with duration (a few m/s
+  per day), so legs are designed at set durations, reached by continuation
+  from the free optimum (steps of 0.25 days, halved when one fails).
+  `legs` seeds them: fans of burns from the station's orbit (backward in
+  time for arrivals) to a periapsis about the low orbit's body, or to a
+  lunar flyby and then, with a burn within 60° of the velocity there, on
+  to the low orbit; fans fly in the Sun–Earth–Moon field in parallel (~0.8
+  s). Against Whitley & Martinez (2016): NRHO to polar 100 km lunar orbit
+  in 0.5 days, 681 m/s (730); LEO to the NRHO by powered flyby, after the
+  3.09 km/s leaving LEO, 402 m/s in 5.1 days (428.5) and 396 in 5.4 (409);
+  back to LEO, 398 m/s in 5 days before the capture burn (411.5, to entry
+  interface). Earth's pole had been mirrored through the ecliptic (Earth's
+  J2 was 47° off; harmless at lunar distances, not in LEO); the Moon's
+  pole, by Cassini's laws, is within 0.07° of the IAU's.
 
 ## Why
 
