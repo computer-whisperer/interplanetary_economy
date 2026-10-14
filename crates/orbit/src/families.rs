@@ -124,6 +124,20 @@ impl Catalog {
         self.families.iter().find(|f| f.id == id)
     }
 
+    /// The sample of family `id` whose period is nearest `days`.
+    pub fn nearest(&self, id: &str, days: f64) -> Option<&Member> {
+        self.family(id)?.members.iter().min_by(|a, b| {
+            (self.days(a.orbit) - days)
+                .abs()
+                .total_cmp(&(self.days(b.orbit) - days).abs())
+        })
+    }
+
+    /// An orbit's period, days.
+    pub fn days(&self, orbit: PeriodicOrbit) -> f64 {
+        orbit.period * self.time_s / crate::time::SECONDS_PER_DAY
+    }
+
     /// The member at position `u` along a family, from 0 to the number of
     /// samples less one: the catalog sample at whole `u`, and between two
     /// samples their interpolation, corrected to a periodic orbit holding the

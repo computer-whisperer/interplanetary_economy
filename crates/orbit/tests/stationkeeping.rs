@@ -17,25 +17,11 @@
 //! navigation errors on a stable orbit.
 
 use orbit::ephem::Ephemeris;
-use orbit::families::{Catalog, Member};
+use orbit::families::Catalog;
 use orbit::gravity::Field;
 use orbit::reference::continue_orbit;
 use orbit::stationkeeping::{Errors, upkeep};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
-
-fn nearest<'a>(cat: &'a Catalog, family: &str, days: f64) -> &'a Member {
-    let to_days = |m: &Member| m.orbit.period * cat.time_s / SECONDS_PER_DAY;
-    cat.family(family)
-        .unwrap()
-        .members
-        .iter()
-        .min_by(|a, b| {
-            (to_days(a) - days)
-                .abs()
-                .total_cmp(&(to_days(b) - days).abs())
-        })
-        .unwrap()
-}
 
 #[test]
 fn upkeep_matches_published_ranges() {
@@ -50,7 +36,7 @@ fn upkeep_matches_published_ranges() {
         ("L2 halo", "l2-halo-north", 14.5, 8, 2.5, 10.0),
         ("DRO", "dro", 14.0, 8, 0.0, 1.0),
     ] {
-        let m = nearest(cat, family, days);
+        let m = cat.nearest(family, days).unwrap();
         let reference = continue_orbit(eph, &field, cat, m.orbit, start, revs, 16).unwrap();
         let u = upkeep(&field, &reference, Errors::TYPICAL, 20).unwrap();
         let period = reference.period_s();

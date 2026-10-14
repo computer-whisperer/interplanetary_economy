@@ -1,7 +1,56 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-13: planned. Starts when M1a closes (its steps 10 and
-11), before M1b.
+Status, 2026-10-14: step 1 done; next, step 2 (the host and an empty
+scene).
+
+- Step 1: mission plans (`data/missions/`, `orbit::mission`), the places
+  they name (`data/places.toml`, `orbit::places`, which `orbit gate` and
+  `orbit routes` now read too: the regenerated `routes.toml` is
+  byte-identical), paths sampled for drawing (`orbit::track`), and
+  `orbit mission FILE`. As built, see the step 1 plan below.
+  - Gate item 1, its first half (drawing waits for the view): the legs
+    M1a checked against published values fly as
+    `data/missions/published.toml`, 18 ships, all in 44 s on 24 cores.
+    Their Δv matches M1a's designs to a few m/s (the Mars handbook
+    departures 3,576 / 3,550 / 3,523 / 3,583 m/s, 2000 SG344 4,038,
+    Phobos 1,205 each way, NRHO to low lunar orbit 684).
+  - A sensitivity: a station's reference is rebuilt for each visit, from
+    its start, and a leg's design depends on it. With a longer reference
+    for the NRHO visit (an earlier build), the same NRHO leg found
+    another local minimum: 795 m/s, with a 286 m/s departure burn
+    against 31.
+  - The crew rotation (LEO, 24 days in the NRHO, a week at the south
+    pole, home by aerocapture): 9,343 m/s over 51.5 days, designed in
+    10 s. In the earlier build its leg from low lunar orbit back to the
+    NRHO found no design in its first window, which is why windows are
+    retried. Probed, every start within a band of a few hours failed
+    (all 8 seeds), and quarter-day starts around it all converged: the
+    step 10 sweep's 2% for this leg (216 of 220 dates).
+  - Shapes, plotted from `--tracks`: the outbound and return legs
+    swing either side of the Earth–Moon line, the NRHO's stays retrace
+    their loop in the rotating frame, with perilune ~3,000 km over the
+    north pole and apolune ~70,000 km south. Consecutive drawn items
+    meet exactly, except a stay in low lunar orbit coasted back and
+    forth over 8 days (7 m).
+  - Samples: ~31 s apart in LEO, 6 hours in cruise; between them,
+    Hermite interpolation stays within 0.1 m of the integration in LEO
+    (the test's bound; theory says 3 cm).
+  - Known gap, as planned: arriving in a low orbit and leaving it again,
+    the next leg starts from its own orbit. LEO to low lunar orbit and
+    back: the return leaves 3,494 km from the ship, in a plane 6.9° off
+    (197 m/s to change), reported and not flown. It can be much worse:
+    the same trip from 2033-03-30 leaves low lunar orbit in a plane 166°
+    off (3.2 km/s), and a departure for Mars on arrival in LEO is 85°
+    off.
+  - Long stays in a low orbit are sampled ~2,900 times a day, so a wait
+    through a synodic period in LEO would be ~2 million samples. Step 4's
+    lines will need a lighter form for long coasts.
+  - Stays in a station orbit cost the upkeep simulated on the visit's
+    reference, from 4 runs: 0.5–1.9 m/s per year for the NRHO across
+    visits (step 5d's 1.09 came from 20), and none on references under 4
+    revolutions (an L2 halo visit of a revolution and a half).
+  - A review (a sub-agent) found the jump at a junction lost when the
+    leg left the moment the ship arrived; fixed, with a test.
 
 ## Why
 
@@ -65,15 +114,15 @@ wait = 30                       # days in the NRHO, kept by station-keeping
 to = { surface = "moon/south-pole" }
 ```
 
-The format above is a sketch; step 1 settles it. Plans live in
-`data/missions/`.
+The format above was the first sketch; step 1 settled it (Step 1 plan,
+item 2: a plan holds ships). Plans live in `data/missions/`.
 
 Missing from the engine today:
 
 - **One entry point for every leg kind.** `legs::plan` designs legs
-  within a planetary system. Legs between systems are designed only by a
-  helper inside `tests/interplanetary.rs`, which tries a few hyperbola
-  planes; that moves into the library behind the same entry point.
+  within a planetary system at given durations, and
+  `interplanetary::plan` legs between systems at given dates; nothing
+  picks the dates, or chooses between the two.
 - **Chaining.** Each leg starts where and when the previous one ended. A
   wait coasts in the station orbit with station-keeping
   (`stationkeeping`).
@@ -284,3 +333,103 @@ Hushfold's procedural sky, polychora's 4D renderers and its vulkano glue.
 7. Editing: a leg's window or duration, re-planned in place; loading and
    saving plans.
 8. The gate.
+
+### Step 1 plan (2026-10-14)
+
+1. **Places** (`data/places.toml`, `orbit::places`): the places ships
+   go, by the ids the route graph uses (`leo`, `l1`, `nrho`, `llo`,
+   `moon-south-pole`, `lmo`, `phobos`, ...), each defined physically: a
+   low circular orbit (body, altitude above the mean radius or radius,
+   inclination or a free plane; LEO is 6,778 km, 400 km above the
+   equator, as the gate flew it), a
+   station orbit (a catalog family and the period wanted; the nearest
+   member), a small body or moon to meet, or a body's surface. Every
+   small body in the ephemeris is a place by its id. Today these
+   definitions are spread over `orbit gate` and `orbit routes`; both
+   read the file instead.
+2. **The format** (`data/missions/*.toml`, `orbit::mission`). A plan
+   holds ships, since the gate's plans do (a ship on every Mars window):
+
+   ```toml
+   name = "Gateway crew rotation"
+
+   [[ship]]
+   name = "Orion"
+   start = { at = "leo", epoch = "2045-03-01" }
+
+   [[ship.leg]]
+   to = "nrho"
+   days = [5.0]        # durations offered, days; the cheapest flies
+
+   [[ship.leg]]
+   wait = 30           # days
+
+   [[ship.leg]]
+   to = "llo"
+   days = [0.5]
+
+   [[ship.leg]]
+   to = "moon-south-pole"
+   ```
+
+   - A place is an id or written out:
+     `{ low = "earth", altitude = 200 }`,
+     `{ station = "l2-halo-south", period = 6.57 }`,
+     `{ body = "2000-sg344" }`, `{ surface = "moon" }`.
+   - `aero = true`: arrive through the atmosphere, by aerocapture into
+     a low orbit or entry to the surface.
+   - `window = ["2045-03-01", "2045-03-31"]` bounds the departure.
+     Without one, the window opens when the ship is ready (arrived,
+     plus any waits) and lasts as gate's did: a revolution of the
+     station left or reached, 5 days between low orbits about Earth and
+     the Moon, a day in Mars's system; between planets, a synodic
+     period (at most 3 years), so the leg takes the next window.
+   - `days` is required within a system. Between planets it is
+     optional; without it the leg takes the cheapest date and duration
+     by patched conics in the window.
+3. **One entry point** (`mission::Planner`) by the kinds of the two
+   ends:
+   - a low orbit and its body's surface: an event priced by `surface`
+     (landing, ascent, entry);
+   - within a system: `legs::plan`, in the field gate used for that
+     system. A window where no design converges is tried again opened
+     a quarter of its length later, up to three windows, and the leg
+     says so: the gate sweep converged most legs on 98–100% of dates,
+     and one bad window should not end a chain;
+   - between systems: the cheapest dates by patched conics, each cell
+     priced for the actual ends, then `interplanetary::plan`, trying
+     the next-cheapest dates when one fails. Station orbits as ends
+     between planets wait for step 9's open part: an error says to fly
+     through LEO.
+4. **Chaining.** Each leg leaves from where and when the last arrived.
+   - A ship in a station orbit follows one reference per visit, built
+     before the leg that arrives, long enough for the stay and the leg
+     that leaves. A stay there costs that reference's upkeep
+     (`stationkeeping::upkeep`) per day.
+   - A ship in a low orbit coasts in the system's field.
+   - After an aerocapture the ship coasts up to the low orbit's radius
+     and circularizes there, so the path is drawn without a jump. The
+     speed leaving the pass is aimed in the field so the apoapsis is at
+     the low orbit's radius (half a Keplerian period missed it by 12 km
+     at Mars, from its J2).
+   - Known gap: a leg leaving a low orbit picks its own plane and phase
+     (the node is free in `End::Low`), so after arriving in one the next
+     departure does not start from the ship's own orbit. The planner
+     reports the jump at each such junction (km, and the plane change
+     it would take); fixing it is playbook work (departures from a set
+     plane). Leaving after a launch or an ascent, the plane is free in
+     fact: launch timing picks it.
+5. **Paths for drawing** (`orbit::track`): a design records each arc's
+   integration frame, and `Leg::track` integrates its arcs again with
+   dense output. Samples go every 2° of the motion about the body
+   pulling hardest, and at most 6 hours apart (~30 s in LEO, a few hours
+   in cruise), with velocities, so that cubic Hermite interpolation
+   between them stays well under a meter in LEO. Stays are sampled the
+   same way. Burns, flyby periapses, passes and surface events are
+   markers.
+6. **`orbit mission FILE`** prints each item as it is designed: the leg,
+   its dates, Δv per burn and in total, the options offered, the time
+   taken, and why a leg failed. `--tracks DIR` writes the samples as
+   CSV, for looking at shapes before the view exists.
+7. **Missions** in `data/missions/`: the crew rotation above, and the
+   legs M1a checked against published values (gate item 1).

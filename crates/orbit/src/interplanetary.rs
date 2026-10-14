@@ -89,8 +89,8 @@ fn kind(end: &End) -> Option<(BodyId, Option<f64>)> {
 /// ends, for a leg with one), and at each end the burn between it and the
 /// excess velocity there: a low orbit's at periapsis, the propulsive part
 /// of a pass through an atmosphere, a small body's excess speed, none at an
-/// escape or capture. `None` where the ends are not of those kinds or the
-/// Lambert problem has no solution.
+/// escape or capture. `None` where the ends are not of those kinds, the
+/// Lambert problem has no solution, or a pass is faster than it survives.
 pub fn patched(field: &Field, from: &End, to: &End, depart: Epoch, arrive: Epoch) -> Option<f64> {
     let eph = field.ephemeris();
     let excess = |end: &End| match end {
@@ -112,7 +112,12 @@ pub fn patched(field: &Field, from: &End, to: &End, depart: Epoch, arrive: Epoch
             let gm = eph.body(low.body).gm;
             Some((v * v + 2.0 * gm / low.radius).sqrt() - (gm / low.radius).sqrt())
         }
-        End::Atmosphere { after, .. } => Some(*after),
+        End::Atmosphere {
+            body,
+            radius,
+            after,
+            max_speed,
+        } => ((v * v + 2.0 * eph.body(*body).gm / radius).sqrt() <= *max_speed).then_some(*after),
         End::Body(_) => Some(v),
         End::Excess { .. } => Some(0.0),
         End::Orbit(_) | End::Hyperbola { .. } => None,

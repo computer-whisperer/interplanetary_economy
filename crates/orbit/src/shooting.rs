@@ -22,10 +22,11 @@
 
 use crate::ephem::BodyId;
 use crate::gravity::Field;
-use crate::integrate::{Dop853, Tolerance};
+use crate::integrate::{Dop853, Tolerance, Trajectory};
 use crate::linalg;
 use crate::reference::Reference;
 use crate::time::{Epoch, SECONDS_PER_DAY};
+use crate::track::Track;
 use glam::DVec3;
 
 const TOL: Tolerance = Tolerance {
@@ -212,6 +213,9 @@ pub struct Design {
     pub dv: f64,
     /// Search iterations taken.
     pub iterations: usize,
+    /// Each arc's frame: an index into the leg's local fields, or the
+    /// leg's own field ([`Leg::track`] integrates them again).
+    pub frames: Vec<Option<usize>>,
 }
 
 impl Design {
@@ -380,20 +384,28 @@ impl Layout {
 }
 
 /// The distance at `r` (at `t`, s after `epoch`) from the body that pulls
-/// hardest, and the circular speed there. In a body-centered field the Sun
-/// is left out unless it is the center: its pull is nearly uniform there,
-/// and the center's own fall toward it cancels it.
+/// hardest ([`hardest`]), and the circular speed there.
 fn local_scales(field: &Field, epoch: Epoch, t: f64, r: DVec3) -> (f64, f64) {
+    let (b, d) = hardest(field, Epoch(epoch.0 + t / SECONDS_PER_DAY), r);
+    (d, (field.ephemeris().body(b).gm / d).sqrt())
+}
+
+/// The body that pulls hardest at `r` (relative to `field`'s origin) at
+/// `t`, and the distance from it. In a body-centered field the Sun is left
+/// out unless it is the center: its pull is nearly uniform there, and the
+/// center's own fall toward it cancels it.
+pub(crate) fn hardest(field: &Field, t: Epoch, r: DVec3) -> (BodyId, f64) {
     let eph = field.ephemeris();
-    let when = Epoch(epoch.0 + t / SECONDS_PER_DAY);
     let first = field.bodies().next();
-    let (gm, d) = field
+    field
         .bodies()
         .filter(|&b| b != eph.sun() || first == Some(b) || field.center().is_none())
-        .map(|b| (eph.body(b).gm, (r - field.body_state(b, when).r).length()))
-        .max_by(|a, b| (a.0 / (a.1 * a.1)).total_cmp(&(b.0 / (b.1 * b.1))))
-        .expect("the field has bodies");
-    (d, (gm / d).sqrt())
+        .map(|b| (b, (r - field.body_state(b, t).r).length()))
+        .max_by(|a, b| {
+            let pull = |(b, d): (BodyId, f64)| eph.body(b).gm / (d * d);
+            pull(*a).total_cmp(&pull(*b))
+        })
+        .expect("the field has bodies")
 }
 
 /// Constraint values and total Δv at the unknowns, with their derivatives
@@ -670,7 +682,17 @@ impl<'a> Leg<'a> {
         k: usize,
         t: f64,
     ) -> (&Field<'a>, [f64; 6], [f64; 6]) {
-        match layout.frames[k] {
+        self.frame_of(layout.frames[k], epoch, t)
+    }
+
+    /// [`Self::frame`] for a frame by its index in the local fields.
+    fn frame_of(
+        &self,
+        frame: Option<usize>,
+        epoch: Epoch,
+        t: f64,
+    ) -> (&Field<'a>, [f64; 6], [f64; 6]) {
+        match frame {
             None => (self.field, [0.0; 6], [0.0; 6]),
             Some(i) => {
                 let local = &self.locals[i];
@@ -1401,7 +1423,35 @@ impl<'a> Leg<'a> {
             },
             burns,
             iterations,
+            frames: layout.frames.clone(),
         })
+    }
+
+    /// `design`'s path sampled for drawing (see [`Track`]), relative to the
+    /// leg's field's origin: each arc integrated again in its frame, from
+    /// the state leaving its first node to the state reaching its last.
+    /// `self` must have the field and local fields `design` was made with.
+    pub fn track(&self, design: &Design) -> Option<Track> {
+        let path = &design.path;
+        let epoch = path.epoch;
+        let mut track = Track::new(self.field.center(), epoch);
+        for (k, start) in path.states.iter().enumerate() {
+            let (t0, t1) = (path.times[k], path.times[k + 1]);
+            let frame = design.frames[k];
+            let (field, b, _) = self.frame_of(frame, epoch, t0);
+            let ode = field.ode(epoch);
+            let local: [f64; 6] = std::array::from_fn(|d| start[d] - b[d]);
+            let mut run = Dop853::new(&ode, t0, local, TOL);
+            let mut steps = Vec::new();
+            run.advance_dense(&ode, t1, &mut steps).ok()?;
+            let arc = Trajectory::new(steps);
+            track.extend(self.field, t0, t1, |t| {
+                let (_, b, _) = self.frame_of(frame, epoch, t);
+                let s = arc.at(t);
+                std::array::from_fn(|d| s[d] + b[d])
+            });
+        }
+        Some(track)
     }
 }
 

@@ -551,6 +551,16 @@ impl Ephemeris {
         }
     }
 
+    /// The planet whose system the body is in: Earth for the Moon, Mars for
+    /// Phobos; a planet or small body is its own.
+    pub fn system(&self, id: BodyId) -> BodyId {
+        match &self.bodies[id.0].motion {
+            Motion::Moon => self.lookup("earth").expect("Earth is in the ephemeris"),
+            Motion::Ellipse(el) => el.center,
+            _ => id,
+        }
+    }
+
     pub fn lookup(&self, id: &str) -> Option<BodyId> {
         self.bodies.iter().position(|b| b.id == id).map(BodyId)
     }

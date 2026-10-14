@@ -1,0 +1,40 @@
+# A crew rotation through the NRHO with a sortie to the lunar south pole
+# (M1c.md's sketch).
+
+name = "Gateway crew rotation"
+
+[[ship]]
+name = "Crew vehicle"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 20
+
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 7
+
+[[ship.leg]]
+to = "llo"
+
+[[ship.leg]]
+to = "nrho"
+days = [0.5]
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true

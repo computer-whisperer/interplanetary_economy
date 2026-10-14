@@ -1,0 +1,167 @@
+# The legs M1a checked against published values (M1a.md, steps 6-8), one
+# ship each, as `tests/transfers.rs` and `tests/interplanetary.rs` fly
+# them. Notes give the published value and what it counts.
+
+name = "Published legs"
+
+[[ship]]
+name = "NRHO to low lunar orbit"
+start = { at = "nrho", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+note = "Whitley & Martinez 2016: 730 m/s"
+
+[[ship]]
+name = "L2 halo to low lunar orbit"
+start = { at = "l2", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "llo"
+days = [3.0]
+note = "Whitley & Martinez 2016: 800 m/s"
+
+[[ship]]
+name = "DRO to low lunar orbit"
+start = { at = "dro", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "llo"
+days = [4.0]
+note = "Whitley & Martinez 2016: 830 m/s"
+
+[[ship]]
+name = "LEO to NRHO"
+start = { at = "leo", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "nrho"
+days = [5.1]
+note = "Whitley & Martinez 2016: 428.5 m/s after leaving LEO"
+
+[[ship]]
+name = "NRHO to LEO"
+start = { at = "nrho", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+note = "Whitley & Martinez 2016: 411.5 m/s before the capture burn"
+
+[[ship]]
+name = "L2 halo round trip"
+start = { at = "leo", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "l2"
+days = [6.5]
+[[ship.leg]]
+to = "leo"
+days = [6.5]
+note = "Whitley & Martinez 2016: 811 m/s for the round trip, less the LEO burns"
+
+[[ship]]
+name = "LEO (200 km) to L1 halo"
+start = { at = { low = "earth", radius = 6578.0 }, epoch = "2045-03-01" }
+[[ship.leg]]
+to = "l1"
+days = [4.1]
+note = "arXiv 2502.11694, table 5: 3,660 m/s"
+
+[[ship]]
+name = "LEO to DRO"
+start = { at = "leo", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "dro"
+days = [9.0]
+note = "Artemis I plan: 344 m/s after leaving LEO"
+
+[[ship]]
+name = "Leaving a 185 km LEO for the Moon"
+start = { at = { low = "earth", radius = 6563.0 }, epoch = "2045-03-01" }
+[[ship.leg]]
+to = "llo"
+days = [4.4]
+note = "Lunar Prospector: 3,142 m/s leaving LEO"
+
+[[ship]]
+name = "Low lunar orbit round trip"
+start = { at = "leo", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+[[ship.leg]]
+to = "leo"
+days = [3.5]
+note = "1,800+ m/s for the round trip, less the LEO burns"
+
+[[ship]]
+name = "NRHO to LEO by aerocapture"
+start = { at = "nrho", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+name = "Low Mars orbit to Phobos and back"
+start = { at = "lmo", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "phobos"
+days = [0.093]
+note = "Hohmann: 1,206 m/s each way"
+[[ship.leg]]
+to = "lmo"
+days = [0.093]
+
+# The NASA handbook's Mars departures (Burke, Falck & McGuire,
+# NASA/TM-2010-216764), on its dates, to a 400 km Mars orbit.
+
+[[ship]]
+name = "Mars 2031, Type I"
+start = { at = "leo", epoch = "2031-01-28" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2031-01-28", "2031-01-28"]
+days = [190]
+note = "handbook C3 9.00 km²/s²: 3,584 m/s leaving LEO"
+
+[[ship]]
+name = "Mars 2033, Type I"
+start = { at = "leo", epoch = "2033-04-06" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2033-04-06", "2033-04-06"]
+days = [178]
+note = "handbook C3 8.412 km²/s²: 3,558 m/s leaving LEO"
+
+[[ship]]
+name = "Mars 2033, Type II"
+start = { at = "leo", epoch = "2033-04-28" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2033-04-28", "2033-04-28"]
+days = [274]
+note = "handbook C3 7.781 km²/s²: 3,529 m/s leaving LEO"
+
+[[ship]]
+name = "Mars 2043, Type II"
+start = { at = "leo", epoch = "2043-11-15" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2043-11-15", "2043-11-15"]
+days = [306]
+note = "handbook C3 8.969 km²/s²: 3,582 m/s leaving LEO"
+
+[[ship]]
+name = "Mars 2033 by aerocapture"
+start = { at = "leo", epoch = "2033-04-06" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2033-04-06", "2033-04-06"]
+days = [178]
+aero = true
+
+[[ship]]
+name = "LEO to 2000 SG344"
+start = { at = "leo", epoch = "2066-10-26" }
+[[ship.leg]]
+to = "2000-sg344"
+window = ["2066-10-26", "2066-10-26"]
+days = [324]
+note = "patched conics: 4,021 m/s"

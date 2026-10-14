@@ -1,25 +1,11 @@
 //! Catalog orbits carried into the full model.
 
 use orbit::ephem::Ephemeris;
-use orbit::families::{Catalog, Member};
+use orbit::families::Catalog;
 use orbit::gravity::Field;
 use orbit::integrate::{Dop853, Tolerance};
 use orbit::reference::{EarthMoonFrame, continue_orbit};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
-
-fn nearest<'a>(cat: &'a Catalog, family: &str, days: f64) -> &'a Member {
-    let to_days = |m: &Member| m.orbit.period * cat.time_s / SECONDS_PER_DAY;
-    cat.family(family)
-        .unwrap()
-        .members
-        .iter()
-        .min_by(|a, b| {
-            (to_days(a) - days)
-                .abs()
-                .total_cmp(&(to_days(b) - days).abs())
-        })
-        .unwrap()
-}
 
 #[test]
 fn frame_round_trip() {
@@ -27,7 +13,7 @@ fn frame_round_trip() {
     let cat = Catalog::standard();
     let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
     let frame = EarthMoonFrame::at(eph, earth, moon, Epoch::from_ymd(2045, 3, 1));
-    let s = nearest(cat, "l2-halo-south", 6.57).orbit.state;
+    let s = cat.nearest("l2-halo-south", 6.57).unwrap().orbit.state;
     let back = frame.to_rotating(cat.system.mu, &frame.to_inertial(cat.system.mu, &s));
     for i in 0..6 {
         assert!((back[i] - s[i]).abs() < 1e-12, "{back:?} vs {s:?}");
@@ -50,7 +36,7 @@ fn orbits_continue_into_the_full_model() {
         ("l1-halo-north", 12.0),
         ("dro", 14.0),
     ] {
-        let m = nearest(cat, family, days);
+        let m = cat.nearest(family, days).unwrap();
         let reference = continue_orbit(eph, &field, cat, m.orbit, start, 6, 16).unwrap();
         // The CR3BP orbit's range of distances from the Moon.
         let ode = cat.system.ode();

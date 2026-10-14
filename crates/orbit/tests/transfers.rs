@@ -28,7 +28,7 @@
 //! The orbits' sizes differ from the papers' where those are not given.
 
 use orbit::ephem::Ephemeris;
-use orbit::families::{Catalog, Member};
+use orbit::families::Catalog;
 use orbit::gravity::Field;
 use orbit::integrate::{Dop853, Tolerance};
 use orbit::legs;
@@ -45,20 +45,6 @@ const TOLERANCE: Tolerance = Tolerance {
 
 fn start() -> Epoch {
     Epoch::from_ymd(2045, 3, 1)
-}
-
-fn nearest<'a>(cat: &'a Catalog, family: &str, days: f64) -> &'a Member {
-    let to_days = |m: &Member| m.orbit.period * cat.time_s / DAY;
-    cat.family(family)
-        .unwrap()
-        .members
-        .iter()
-        .min_by(|a, b| {
-            (to_days(a) - days)
-                .abs()
-                .total_cmp(&(to_days(b) - days).abs())
-        })
-        .unwrap()
 }
 
 struct World {
@@ -108,7 +94,7 @@ fn station_for(w: &World, which: &str, span: f64) -> Reference {
     };
     let cat = Catalog::standard();
     let revs = (span / days).ceil() as usize;
-    let m = nearest(cat, family, days);
+    let m = cat.nearest(family, days).unwrap();
     continue_orbit(
         Ephemeris::standard(),
         &w.field,

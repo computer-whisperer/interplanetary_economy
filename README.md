@@ -1,10 +1,9 @@
 # Interplanetary economy
 
 A game about developing the solar system's economy under real orbital
-mechanics. Design: [DESIGN.md](DESIGN.md). Current milestone: the n-body
-sandbox and autopilot ([M1a.md](M1a.md)); next, the creative sandbox and
-the 3D map view ([M1c.md](M1c.md)); done: the M2 kill-test
-([M2.md](M2.md)).
+mechanics. Design: [DESIGN.md](DESIGN.md). Current milestone: the creative sandbox
+and the 3D map view ([M1c.md](M1c.md)); done: the n-body sandbox and
+autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
 
 ## Layout
 
@@ -16,8 +15,10 @@ the 3D map view ([M1c.md](M1c.md)); done: the M2 kill-test
   minimization, `shooting`), cislunar legs between station orbits and low
   orbits seeded by fans (`legs::plan`), legs between planetary systems
   seeded by patched conics (`interplanetary`), landing, ascent and
-  atmospheric passes (`surface`), and Lambert transfers between bodies
-  with their porkchop grids and windows.
+  atmospheric passes (`surface`), Lambert transfers between bodies with
+  their porkchop grids and windows, the places ships go (`places`), and
+  mission plans: chains of legs, each designed from where and when the
+  last arrived, with paths sampled for drawing (`mission`, `track`).
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
@@ -26,9 +27,10 @@ the 3D map view ([M1c.md](M1c.md)); done: the M2 kill-test
   11).
 - `data/` — game data: JPL's DE440 ephemeris for 2025–2080 (`de440.bin`),
   the candidate asteroids, Phobos and Deimos (`moons.toml`), the Earth–Moon
-  periodic-orbit families (`orbits.toml`), the route graph the autopilot
-  measured (`routes.toml`, written by `orbit routes`), and the economy
-  (`economy.toml`, with sources).
+  periodic-orbit families (`orbits.toml`), the places ships go
+  (`places.toml`), mission plans (`missions/`), the route graph the
+  autopilot measured (`routes.toml`, written by `orbit routes`), and the
+  economy (`economy.toml`, with sources).
 - `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
   then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
   Horizons fixtures the tests check it against (`fixtures.sh`).
@@ -54,7 +56,12 @@ cargo run --release -p orbit-cli -- calendar --from earth --max-v-inf 4
 cargo run --release -p orbit-cli -- porkchop earth mars --start 2041-06-01 --end 2042-03-01 --png pc.png
 cargo run --release -p orbit-cli -- gate OUT --every 12      # M1a's gate sweep (hours)
 cargo run --release -p orbit-cli -- routes OUT...            # data/routes.toml from sweeps
+cargo run --release -p orbit-cli -- mission data/missions/gateway-rotation.toml --tracks OUT
 ```
+
+`mission` designs each ship's legs in turn and prints each as it is
+designed (`--tracks` writes the sampled paths as CSV). The format is in
+[M1c.md](M1c.md), step 1 plan; places are in `data/places.toml`.
 
 Transfers are ranked by total excess speed (v∞ at departure plus v∞ at
 arrival). Units are km/s for speeds and days for time; dates are

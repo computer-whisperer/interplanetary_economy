@@ -1,0 +1,77 @@
+# The places ships go, by the ids that mission plans (data/missions/) and
+# the route graph (data/routes.toml) use. Every small body in the
+# ephemeris is a place too, by its id.
+#
+# A place is one of:
+#   low = BODY, altitude = KM (above the mean radius) or radius = KM
+#       [, inclination = DEGREES]
+#       a circular orbit; without an inclination its plane is free (launch
+#       timing picks it); the node is always free
+#   station = FAMILY, period = DAYS
+#       the member of an Earth–Moon family (data/orbits.toml) whose period
+#       is nearest
+#   body = BODY      meeting a small body or a moon
+#   surface = BODY   resting on its surface, reached from a low orbit
+
+[[place]]
+id = "leo"
+name = "Low Earth orbit"
+low = "earth"
+radius = 6778.0  # 400 km above the equator
+
+[[place]]
+id = "l1"
+name = "Earth–Moon L1 halo"
+station = "l1-halo-north"
+period = 12.0
+
+[[place]]
+id = "l2"
+name = "Earth–Moon L2 halo"
+station = "l2-halo-north"
+period = 14.5
+
+[[place]]
+id = "nrho"
+name = "Near-rectilinear halo orbit"
+station = "l2-halo-south"
+period = 6.57
+
+[[place]]
+id = "dro"
+name = "Distant retrograde orbit"
+station = "dro"
+period = 14.0
+
+[[place]]
+id = "llo"
+name = "Low lunar orbit"
+low = "moon"
+altitude = 100.0
+inclination = 90.0
+
+[[place]]
+id = "moon-south-pole"
+name = "Lunar south pole"
+surface = "moon"
+
+[[place]]
+id = "moon-mare"
+name = "Lunar mare"
+surface = "moon"
+
+[[place]]
+id = "lmo"
+name = "Low Mars orbit"
+low = "mars"
+altitude = 300.0
+
+[[place]]
+id = "mars-surface"
+name = "Mars surface"
+surface = "mars"
+
+[[place]]
+id = "phobos"
+name = "Phobos"
+body = "phobos"

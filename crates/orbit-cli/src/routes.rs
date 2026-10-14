@@ -6,24 +6,18 @@
 
 use anyhow::{Context, Result, bail};
 use orbit::ephem::{BodyId, BodyKind, Ephemeris};
+use orbit::places::Places;
 use orbit::routes::{Escape, Gateway, Leg, Pass, Place, PlaceId, RouteGraph};
 use orbit::surface;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The stations, with low lunar orbit, by the sweep's names.
-const STATIONS: [(&str, &str); 4] = [
-    ("l1", "Earth–Moon L1 halo"),
-    ("l2", "Earth–Moon L2 halo"),
-    ("nrho", "Near-rectilinear halo orbit"),
-    ("dro", "Distant retrograde orbit"),
-];
+/// The stations, by their ids in `data/places.toml` and the sweep's leg
+/// names.
+const STATIONS: [&str; 4] = ["l1", "l2", "nrho", "dro"];
 
-/// The gate's places, km: LEO's radius, the altitudes of low lunar orbit,
-/// low Mars orbit and the escapes' periapsis, and Phobos's orbit.
-const LEO_RADIUS: f64 = 6_778.0;
-const LLO_ALTITUDE: f64 = 100.0;
-const LMO_ALTITUDE: f64 = 300.0;
+/// The altitude of the escapes' periapsis in the sweep, and Phobos's
+/// orbit, km.
 const ESCAPE_ALTITUDE: f64 = 200.0;
 const PHOBOS_RADIUS: f64 = 9_376.0;
 
@@ -95,13 +89,21 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
             .join(", ")
     );
     let mut g = RouteGraph::new(source);
-    let place = |g: &mut RouteGraph, id: &str, name: &str, system: BodyId, gw: Option<Gateway>| {
-        g.add_place(Place {
+    let places = Places::standard();
+    let named = |id: &str| places.get(id).with_context(|| format!("no place {id}"));
+    let place = |g: &mut RouteGraph, id: &str, system: BodyId, gw: Option<Gateway>| {
+        Ok::<_, anyhow::Error>(g.add_place(Place {
             id: id.into(),
-            name: name.into(),
+            name: named(id)?.name.clone(),
             system,
             gateway: gw,
-        })
+        }))
+    };
+    let radius = |id: &str| {
+        places
+            .low(id)
+            .map(|l| l.radius)
+            .with_context(|| format!("{id} is not a low orbit"))
     };
 
     // A low orbit's gateway: a burn from it, and an aerocapture whose
@@ -128,13 +130,7 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
             days: 0.0,
         }
     };
-    let leo = place(
-        &mut g,
-        "leo",
-        "Low Earth orbit",
-        earth,
-        Some(low(earth, LEO_RADIUS)),
-    );
+    let leo = place(&mut g, "leo", earth, Some(low(earth, radius("leo")?)))?;
 
     // Stations and low lunar orbit: a perigee burn 200 km above Earth,
     // after `extra` to get there (fitted per design as Δv less the burn).
@@ -185,26 +181,20 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
         })
     };
     let mut station = HashMap::new();
-    for (id, name) in STATIONS {
+    for id in STATIONS {
         let gw = fitted(id)?;
-        station.insert(id, place(&mut g, id, name, earth, Some(gw)));
+        station.insert(id, place(&mut g, id, earth, Some(gw))?);
     }
     let llo_gw = fitted("llo")?;
-    let llo = place(&mut g, "llo", "Low lunar orbit", earth, Some(llo_gw));
-    let pole = place(&mut g, "moon-south-pole", "Lunar south pole", earth, None);
-    let mare = place(&mut g, "moon-mare", "Lunar mare", earth, None);
+    let llo = place(&mut g, "llo", earth, Some(llo_gw))?;
+    let pole = place(&mut g, "moon-south-pole", earth, None)?;
+    let mare = place(&mut g, "moon-mare", earth, None)?;
 
     // Mars: low orbit; the surface, reached from another system by entry;
     // Phobos, left by dropping to a periapsis at low orbit's radius.
     let (gm_m, r_m) = (eph.body(mars).gm, eph.body(mars).radius);
-    let lmo_r = r_m + LMO_ALTITUDE;
-    let lmo = place(
-        &mut g,
-        "lmo",
-        "Low Mars orbit",
-        mars,
-        Some(low(mars, lmo_r)),
-    );
+    let lmo_r = radius("lmo")?;
+    let lmo = place(&mut g, "lmo", mars, Some(low(mars, lmo_r)))?;
     let air = surface::rules(eph, mars)
         .atmosphere
         .context("Mars's atmosphere")?;
@@ -218,7 +208,7 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
         }),
         days: 0.0,
     };
-    let ground = place(&mut g, "mars-surface", "Mars surface", mars, Some(entry));
+    let ground = place(&mut g, "mars-surface", mars, Some(entry))?;
     let a = (PHOBOS_RADIUS + lmo_r) / 2.0;
     let vis = |r: f64| (gm_m * (2.0 / r - 1.0 / a)).sqrt();
     let drop = Escape::Periapsis {
@@ -232,7 +222,7 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
         pass: None,
         days: r4(std::f64::consts::PI * (a.powi(3) / gm_m).sqrt() / 86_400.0),
     };
-    let phobos = place(&mut g, "phobos", "Phobos", mars, Some(phobos_gw));
+    let phobos = place(&mut g, "phobos", mars, Some(phobos_gw))?;
 
     // The small bodies, each its own system.
     let meet = Gateway {
@@ -243,8 +233,7 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
     };
     for b in eph.ids() {
         if matches!(eph.body(b).kind, BodyKind::SmallBody { .. }) {
-            let nea = eph.body(b);
-            place(&mut g, &nea.id, &nea.name, b, Some(meet));
+            place(&mut g, &eph.body(b).id, b, Some(meet))?;
         }
     }
 
@@ -257,7 +246,7 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
         ("lmo-phobos".into(), lmo, phobos, false),
         ("phobos-lmo".into(), phobos, lmo, false),
     ];
-    for (s, _) in STATIONS {
+    for s in STATIONS {
         let at = station[s];
         if s != "l1" {
             swept.push((format!("leo-{s}"), leo, at, false));
@@ -266,7 +255,7 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
         swept.push((format!("{s}-llo"), at, llo, false));
         swept.push((format!("llo-{s}"), llo, at, false));
         swept.push((format!("{s}-leo-aero"), at, leo, true));
-        for (o, _) in STATIONS {
+        for o in STATIONS {
             if o != s {
                 swept.push((format!("{s}-{o}"), at, station[o], false));
             }
@@ -294,7 +283,7 @@ pub fn run(sweeps: &[PathBuf], out: &Path) -> Result<()> {
     }
 
     // Landing and ascent.
-    let llo_r = eph.body(moon).radius + LLO_ALTITUDE;
+    let llo_r = radius("llo")?;
     for site in [pole, mare] {
         for (from, to, dv) in [
             (llo, site, surface::descent(eph, moon, llo_r)),

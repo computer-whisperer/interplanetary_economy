@@ -19,10 +19,11 @@
 
 use anyhow::{Context, Result, bail};
 use orbit::ephem::{BodyId, Ephemeris};
-use orbit::families::{Catalog, Member};
+use orbit::families::Catalog;
 use orbit::gravity::Field;
 use orbit::interplanetary;
 use orbit::legs;
+use orbit::places::Places;
 use orbit::reference::{Reference, continue_orbit};
 use orbit::shooting::{Design, End, LowOrbit};
 use orbit::stationkeeping::{Errors, upkeep};
@@ -65,14 +66,8 @@ const TIMED: usize = 6;
 /// Monte Carlo runs per upkeep.
 const UPKEEP_RUNS: u64 = 10;
 
-/// The station orbits: name, catalog family and period wanted (days), as
-/// in `tests/transfers.rs`.
-const STATIONS: [(&str, &str, f64); 4] = [
-    ("l1", "l1-halo-north", 12.0),
-    ("l2", "l2-halo-north", 14.5),
-    ("nrho", "l2-halo-south", 6.57),
-    ("dro", "dro", 14.0),
-];
+/// The station orbits, by their ids in `data/places.toml`.
+const STATIONS: [&str; 4] = ["l1", "l2", "nrho", "dro"];
 
 pub struct Options {
     pub start: Epoch,
@@ -88,15 +83,15 @@ pub struct Options {
 enum Place {
     /// A low Earth orbit of this radius, free plane.
     Leo(f64),
-    /// Polar low lunar orbit, 100 km.
+    /// Low lunar orbit (`data/places.toml`).
     Llo,
     Station(usize),
     /// A hyperbola about Earth with this excess speed, periapsis at 200 km.
     Escape(f64),
-    /// LEO (400 km) by aerocapture: a pass through Earth's atmosphere whose
-    /// apogee reaches it, then a burn there.
+    /// LEO by aerocapture: a pass through Earth's atmosphere whose apogee
+    /// reaches it, then a burn there.
     LeoAero,
-    /// Low Mars orbit, 300 km.
+    /// Low Mars orbit (`data/places.toml`).
     Lmo,
     Phobos,
 }
@@ -144,7 +139,9 @@ impl LegSpec {
     }
 }
 
-fn core_legs() -> Vec<LegSpec> {
+/// The legs, with LEO at `leo` km (`data/places.toml`) except where a
+/// publication's parking orbit was lower.
+fn core_legs(leo: f64) -> Vec<LegSpec> {
     const WM: &str = "Whitley & Martinez 2016";
     let pub_ = |m_s: f64, counted: Counted, source: &'static str| {
         Some(Published {
@@ -159,11 +156,7 @@ fn core_legs() -> Vec<LegSpec> {
         Place::Station(2),
         Place::Station(3),
     );
-    let (leo, leo200, leo185) = (
-        Place::Leo(6_778.0),
-        Place::Leo(6_578.0),
-        Place::Leo(6_563.0),
-    );
+    let (leo, leo200, leo185) = (Place::Leo(leo), Place::Leo(6_578.0), Place::Leo(6_563.0));
     let leg =
         |name: &str, from: Place, to: Place, days: f64, published: Option<Published>| LegSpec {
             name: name.to_string(),
@@ -238,8 +231,8 @@ fn core_legs() -> Vec<LegSpec> {
     // relative phase repeats only every 12-400 days (the L2 halo's and the
     // DRO's periods nearly match), more than the window (a revolution of
     // the first), so a fixed duration finds some dates badly phased.
-    for (a, &(an, _, _)) in STATIONS.iter().enumerate() {
-        for (b, &(bn, _, _)) in STATIONS.iter().enumerate() {
+    for (a, &an) in STATIONS.iter().enumerate() {
+        for (b, &bn) in STATIONS.iter().enumerate() {
             if a != b {
                 legs.push(LegSpec {
                     days: vec![6.0, 8.0, 10.0, 12.0, 14.0],
@@ -311,12 +304,14 @@ impl Pieces {
 struct Sweep {
     eph: &'static Ephemeris,
     earth: BodyId,
-    moon: BodyId,
     mars: BodyId,
     phobos: BodyId,
     cislunar: Field<'static>,
     cislunar_light: Field<'static>,
     mars_field: Field<'static>,
+    leo: LowOrbit,
+    llo: LowOrbit,
+    lmo: LowOrbit,
     pieces: Vec<Pieces>,
 }
 
@@ -329,11 +324,7 @@ impl Sweep {
                 radius,
                 inclination: None,
             }),
-            Place::Llo => End::Low(LowOrbit {
-                body: self.moon,
-                radius: eph.body(self.moon).radius + 100.0,
-                inclination: Some(90f64.to_radians()),
-            }),
+            Place::Llo => End::Low(self.llo),
             Place::Station(_) => End::Orbit(reference.expect("a reference")),
             Place::LeoAero => {
                 let earth = eph.body(self.earth);
@@ -344,7 +335,7 @@ impl Sweep {
                 End::Atmosphere {
                     body: self.earth,
                     radius: pass,
-                    after: surface::after_aerocapture(earth.gm, pass, 6_778.0),
+                    after: surface::after_aerocapture(earth.gm, pass, self.leo.radius),
                     max_speed: air.max_speed,
                 }
             }
@@ -353,11 +344,7 @@ impl Sweep {
                 radius: eph.body(self.earth).radius + 200.0,
                 v_inf,
             },
-            Place::Lmo => End::Low(LowOrbit {
-                body: self.mars,
-                radius: eph.body(self.mars).radius + 300.0,
-                inclination: None,
-            }),
+            Place::Lmo => End::Low(self.lmo),
             Place::Phobos => End::Body(self.phobos),
         }
     }
@@ -366,7 +353,7 @@ impl Sweep {
     fn durations(&self, leg: &LegSpec) -> Vec<f64> {
         if leg.mars() {
             let gm = self.eph.body(self.mars).gm;
-            let a = (self.eph.body(self.mars).radius + 300.0 + 9_376.0) / 2.0;
+            let a = (self.lmo.radius + 9_376.0) / 2.0;
             vec![std::f64::consts::PI * (a.powi(3) / gm).sqrt()]
         } else {
             leg.days.iter().map(|d| d * DAY).collect()
@@ -445,20 +432,6 @@ fn counted(d: &Design, counted: Counted) -> f64 {
     }
 }
 
-fn nearest<'a>(cat: &'a Catalog, family: &str, days: f64) -> &'a Member {
-    let to_days = |m: &Member| m.orbit.period * cat.time_s / DAY;
-    cat.family(family)
-        .expect("a catalog family")
-        .members
-        .iter()
-        .min_by(|a, b| {
-            (to_days(a) - days)
-                .abs()
-                .total_cmp(&(to_days(b) - days).abs())
-        })
-        .expect("members")
-}
-
 pub fn run(opts: &Options, out: &Path) -> Result<()> {
     std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     let eph = Ephemeris::standard();
@@ -467,7 +440,10 @@ pub fn run(opts: &Options, out: &Path) -> Result<()> {
     let bodies = [eph.sun(), earth, moon];
     let cislunar = Field::new(eph, Some(earth), &bodies).with_oblateness();
     let wants = |part: &str| opts.parts.iter().any(|p| p == part);
-    let mut legs = core_legs();
+    let places = Places::standard();
+    let low = |id: &str| places.low(id).context(format!("no low orbit {id}"));
+    let (leo, llo, lmo) = (low("leo")?, low("llo")?, low("lmo")?);
+    let mut legs = core_legs(leo.radius);
     if let Some(only) = &opts.only {
         legs.retain(|l| l.name.contains(only.as_str()));
     }
@@ -486,8 +462,8 @@ pub fn run(opts: &Options, out: &Path) -> Result<()> {
     let built: Vec<(usize, usize, Option<Reference>)> = jobs
         .par_iter()
         .map(|&(s, k)| {
-            let (_, family, days) = STATIONS[s];
-            let m = nearest(cat, family, days);
+            let (family, days) = places.station(STATIONS[s]).expect("a station place");
+            let m = cat.nearest(family, days).expect("a catalog family");
             let revs = ((PIECE_DAYS + OVERLAP_DAYS) / days).ceil() as usize;
             // A start that does not converge is retried a day or two later.
             let r = (0..3).find_map(|late| {
@@ -506,7 +482,7 @@ pub fn run(opts: &Options, out: &Path) -> Result<()> {
     let mut missing = Vec::new();
     for (s, k, r) in built {
         if r.is_none() {
-            missing.push(format!("{} piece {k}", STATIONS[s].0));
+            missing.push(format!("{} piece {k}", STATIONS[s]));
         }
         pieces[s].refs[k] = r;
     }
@@ -518,9 +494,11 @@ pub fn run(opts: &Options, out: &Path) -> Result<()> {
     let sweep = Sweep {
         eph,
         earth,
-        moon,
         mars,
         phobos,
+        leo,
+        llo,
+        lmo,
         cislunar_light: Field::new(eph, Some(earth), &bodies),
         mars_field: Field::new(eph, Some(mars), &[eph.sun(), mars, id("jupiter")?])
             .with_oblateness(),
@@ -956,7 +934,7 @@ fn upkeeps(sweep: &Sweep, out: &Path, report: &mut String) -> Result<()> {
         .collect();
     let mut csv = String::from("station,piece_start,m_s_per_year\n");
     writeln!(report, "\nUpkeep (m/s per year, by yearly piece):")?;
-    for (s, &(name, _, _)) in STATIONS.iter().enumerate() {
+    for (s, &name) in STATIONS.iter().enumerate() {
         let mine: Vec<&(usize, usize, Option<f64>)> = rows.iter().filter(|r| r.0 == s).collect();
         for &&(_, k, u) in &mine {
             let start = sweep.pieces[s].refs[k]
@@ -996,13 +974,11 @@ fn between(sweep: &Sweep, opts: &Options, out: &Path, report: &mut String) -> Re
         Field::all(eph, Some(earth)).with_oblateness(),
         Field::all(eph, Some(sweep.mars)).with_oblateness(),
     ];
-    let leo = LowOrbit {
-        body: earth,
-        radius: 6_778.0,
-        inclination: None,
-    };
+    let leo = sweep.leo;
     let mars = sweep.mars;
     let (gm_m, r_m) = (eph.body(mars).gm, eph.body(mars).radius);
+    // The handbook's 400 km Mars orbit (M1a.md, step 7), as the check
+    // against patched conics was first made.
     let lmo = LowOrbit {
         body: mars,
         radius: r_m + 400.0,
