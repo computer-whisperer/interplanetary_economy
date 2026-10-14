@@ -275,30 +275,6 @@ pub fn seed(
     Some(Path::coasting(epoch, times, states))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::shooting::excess_velocity;
-
-    /// A hyperbola built from an excess velocity has that excess velocity,
-    /// leaving and arriving, in any plane.
-    #[test]
-    fn periapsis_has_its_excess_velocity() {
-        let gm = 398_600.4;
-        let v_inf = DVec3::new(2.1, -1.4, 0.7);
-        for turn in [0.0, 1.0, 2.5, 4.0] {
-            for outgoing in [true, false] {
-                let p = periapsis(gm, 6_778.0, v_inf, turn, outgoing);
-                assert!(p.r.dot(p.v).abs() < 1e-9, "not a periapsis");
-                assert!((p.r.length() - 6_778.0).abs() < 1e-9);
-                let s = [p.r.x, p.r.y, p.r.z, p.v.x, p.v.y, p.v.z];
-                let got = excess_velocity(gm, &s, outgoing).unwrap();
-                assert!((got - v_inf).length() < 1e-9, "{got} vs {v_inf}");
-            }
-        }
-    }
-}
-
 /// Designs a leg between planetary systems leaving at `depart` and arriving
 /// at `arrive`, in `global` (a barycentric field) with arcs near a planet
 /// integrated in `locals` (fields centered on the planets): the cheapest
@@ -332,4 +308,28 @@ pub fn plan(
                 .ok()
         })
         .min_by(|a, b| a.dv.total_cmp(&b.dv))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shooting::excess_velocity;
+
+    /// A hyperbola built from an excess velocity has that excess velocity,
+    /// leaving and arriving, in any plane.
+    #[test]
+    fn periapsis_has_its_excess_velocity() {
+        let gm = 398_600.4;
+        let v_inf = DVec3::new(2.1, -1.4, 0.7);
+        for turn in [0.0, 1.0, 2.5, 4.0] {
+            for outgoing in [true, false] {
+                let p = periapsis(gm, 6_778.0, v_inf, turn, outgoing);
+                assert!(p.r.dot(p.v).abs() < 1e-9, "not a periapsis");
+                assert!((p.r.length() - 6_778.0).abs() < 1e-9);
+                let s = [p.r.x, p.r.y, p.r.z, p.v.x, p.v.y, p.v.z];
+                let got = excess_velocity(gm, &s, outgoing).unwrap();
+                assert!((got - v_inf).length() < 1e-9, "{got} vs {v_inf}");
+            }
+        }
+    }
 }

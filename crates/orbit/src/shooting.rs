@@ -762,6 +762,13 @@ impl<'a> Leg<'a> {
         if times.windows(2).any(|w| w[1] <= w[0]) {
             return None;
         }
+        // A wild step can carry times off the ephemeris's tables (seen in a
+        // line search between station orbits: 24 years back).
+        let (first, last) = self.field.ephemeris().span();
+        let at = |t: f64| epoch.0 + t / SECONDS_PER_DAY;
+        if at(times[0]) < first.0 || at(times[layout.nodes - 1]) > last.0 {
+            return None;
+        }
 
         let states = layout.states(z);
         let arcs = layout.nodes - 1;

@@ -1,5 +1,6 @@
 //! `orbit`: inspect the game's orbital mechanics from the command line.
 
+mod gate;
 mod porkchop_png;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -57,6 +58,30 @@ enum Cmd {
         /// Write the grid as a PNG heatmap (darker = cheaper).
         #[arg(long)]
         png: Option<PathBuf>,
+    },
+    /// M1a's gate sweep: every core leg at departures every 5 days, standing
+    /// routes re-planned from the departures before, station upkeep, and
+    /// legs between systems through each window (M1a.md, step 10).
+    Gate {
+        /// Directory for the CSVs and summary.
+        out: PathBuf,
+        #[arg(long, default_value = "2040-01-01")]
+        start: Epoch,
+        #[arg(long, default_value = "2076-01-01")]
+        end: Epoch,
+        /// Only legs whose names contain this (e.g. nrho, leo-, mars).
+        #[arg(long)]
+        only: Option<String>,
+        /// Parts to run.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            default_value = "cold,routes,upkeep,between"
+        )]
+        parts: Vec<String>,
+        /// Plan cold at every n-th departure date only.
+        #[arg(long, default_value_t = 1)]
+        every: usize,
     },
 }
 
@@ -167,6 +192,23 @@ fn main() -> Result<()> {
             let (from, to) = world.pair(&from, &to)?;
             porkchop(&world, from, to, &search, png, span)
         }
+        Cmd::Gate {
+            out,
+            start,
+            end,
+            only,
+            parts,
+            every,
+        } => gate::run(
+            &gate::Options {
+                start,
+                end,
+                only,
+                parts,
+                every,
+            },
+            &out,
+        ),
     }
 }
 
