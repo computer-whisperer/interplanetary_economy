@@ -1,0 +1,59 @@
+# Bodies' maps (M1c.md, step 6 plan, item 4), built by tools/textures/build.py;
+# see it for what each field means. Equirectangular, east longitude from
+# -180 at the left edge, north up.
+
+[body.earth]
+# NASA Earth Observatory's Blue Marble Next Generation (July 2004, R.
+# Stöckli), its clouds, and GEBCO's elevation (scaled 0-6400 m: higher is
+# clipped) and bathymetry (water: any depth); Black Marble 2016 (NASA
+# Earth Observatory, M. Román et al.). NASA imagery: free to use, credit
+# requested.
+color = "color.jpg"
+albedo = 1.0
+shading = "lambert"
+clouds = "clouds.jpg"
+cloud_albedo = 0.8000
+water = "water.png"
+night = "night.jpg"
+# The lights' radiance at full value, warm: far above their true one
+# (~1e-5 of daylight), so they show at the day side's exposure, as the
+# stars do (M1c.md, Realism).
+night_radiance = [0.20, 0.15, 0.08]
+elevation = { file = "elevation.png", metres_per_unit = 1.0, offset_m = 0.0 }
+
+
+[body.moon]
+# NASA's Scientific Visualization Studio's CGI Moon Kit (E. Wright, N.
+# Petro): LROC WAC color (Hapke-normalized) and LOLA elevation, 16 px a
+# degree. Free to use, credit requested.
+color = "color.jpg"
+albedo = 0.40009
+shading = "lunar-lambert"
+elevation = { file = "elevation.png", metres_per_unit = 0.5, offset_m = -10000.0 }
+
+
+[body.mars]
+# The Viking MDIM 2.1 colorized mosaic (USGS Astrogeology, NASA Ames), as
+# NASA Mars Trek's tiles; MOLA's MEGDR elevation, 16 px a degree (PDS
+# Geosciences Node). Public domain.
+color = "color.jpg"
+albedo = 1.83397
+shading = "lambert"
+elevation = { file = "elevation.png", metres_per_unit = 0.5, offset_m = -9000.0 }
+
+
+[body.mercury]
+# MESSENGER MDIS's basemap (NASA, JHU APL, Carnegie Institution), as
+# NASA Mercury Trek's tiles; tinted faintly brown. Public domain.
+color = "color.jpg"
+albedo = 2.11217
+shading = "lunar-lambert"
+
+
+[body.jupiter]
+# Cassini's cylindrical map from its December 2000 flyby (PIA07782,
+# NASA/JPL/Space Science Institute). Its features drift: their longitudes
+# in the game's years are not the map's. Public domain.
+color = "color.jpg"
+albedo = 0.93867
+shading = "lambert"

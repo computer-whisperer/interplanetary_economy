@@ -4,7 +4,7 @@
 use orbit::time::Epoch;
 use sandbox::app::Shell;
 use sandbox::frames::Frame;
-use sandbox::paths::{ORBIT_SET, seconds};
+use sandbox::paths::ORBIT_SET;
 
 #[test]
 fn every_orbit_passes_through_its_body_in_every_frame() {
@@ -28,7 +28,7 @@ fn every_orbit_passes_through_its_body_in_every_frame() {
         );
         for path in &orbits.paths {
             let pose = scene.poses[path.pose];
-            let at = pose.to_world(path.at(seconds(t)).expect("now is in the window"));
+            let at = pose.to_world(path.at(t.seconds()).expect("now is in the window"));
             let nearest = bodies
                 .iter()
                 .map(|b| (*b - at).length())

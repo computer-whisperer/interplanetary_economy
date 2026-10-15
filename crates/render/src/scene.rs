@@ -5,10 +5,11 @@
 //! Sun at 1 au; [`Look::exposure`] maps it to the shown image.
 
 use crate::camera::{Camera, NEAR_KM};
+use crate::maps::{Maps, SurfaceGpu};
 use crate::paths::{MAX_POSES, Paths, Pose, split};
 use crate::sky::Sky;
 use bytemuck::{Pod, Zeroable};
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 use std::sync::Arc;
 
 /// The astronomical unit, km.
@@ -104,12 +105,30 @@ impl Default for Look {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Sphere {
     /// km.
     pub center: DVec3,
     pub radius: f64,
     pub surface: Surface,
+    /// The body's frame, as columns in the scene's: x through its prime
+    /// meridian, y 90° east, z its north pole. Its maps lie on it.
+    pub axes: DMat3,
+    /// With them, a lit sphere's albedo multiplies its color map.
+    pub maps: Option<Arc<Maps>>,
+}
+
+impl Sphere {
+    /// A sphere without maps, its frame the scene's.
+    pub fn plain(center: DVec3, radius: f64, surface: Surface) -> Sphere {
+        Sphere {
+            center,
+            radius,
+            surface,
+            axes: DMat3::IDENTITY,
+            maps: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -185,6 +204,7 @@ pub struct SphereGpu {
     pub light: [f32; 3],
     pub _pad1: f32,
     pub corners: [[f32; 4]; 4],
+    pub surface: SurfaceGpu,
 }
 
 /// `Dot` in scene.wgsl.
@@ -204,6 +224,8 @@ pub struct DotGpu {
 pub struct Instances {
     pub frame: Option<FrameGpu>,
     pub spheres: Vec<SphereGpu>,
+    /// Each sphere's maps, by `spheres`.
+    pub maps: Vec<Option<Arc<Maps>>>,
     pub points: Vec<DotGpu>,
     pub markers: Vec<DotGpu>,
 }
@@ -317,6 +339,11 @@ impl Scene {
                 match s.surface {
                     Surface::Emissive(c) => c.map(|c| f64::from(c) * disk / spread),
                     Surface::Lit(albedo) => {
+                        // With maps, their mean is the sphere's color.
+                        let albedo = match &s.maps {
+                            Some(m) => std::array::from_fn(|c| albedo[c] * m.mean[c]),
+                            None => albedo,
+                        };
                         let (albedo, irradiance, _, to_sun) = lit(albedo);
                         let alpha = to_sun.angle_between(cam.eye - s.center);
                         let mean = 2.0 / 3.0 * irradiance * lambert_phase(alpha);
@@ -385,7 +412,26 @@ impl Scene {
                 light,
                 _pad1: 0.0,
                 corners: billboard.unwrap_or_default(),
+                surface: {
+                    let column = |c: DVec3| {
+                        let v = cam.rotate(c);
+                        [v.x as f32, v.y as f32, v.z as f32, 0.0]
+                    };
+                    let m = s.maps.as_deref();
+                    SurfaceGpu {
+                        axes: [
+                            column(s.axes.x_axis),
+                            column(s.axes.y_axis),
+                            column(s.axes.z_axis),
+                        ],
+                        night: m.map_or([0.0; 3], |m| m.night_radiance),
+                        flags: m.map_or(0, Maps::flags),
+                        cloud_albedo: m.map_or(0.0, |m| m.cloud_albedo),
+                        _pad: [0.0; 3],
+                    }
+                },
             });
+            out.maps.push(s.maps.clone());
         }
         for m in &self.markers {
             let v = cam.to_view(m.position);

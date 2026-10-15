@@ -110,6 +110,7 @@ impl Shell {
         let eph = Ephemeris::standard();
         let earth = eph.lookup("earth").expect("Earth is in the ephemeris");
         sky::start();
+        crate::maps::start();
         Shell {
             eph,
             viewport: None,
@@ -250,7 +251,7 @@ impl Shell {
             // By `paths::PLAN_SET` and `ORBIT_SET`.
             paths: vec![self.paths.clone(), self.orbits.paths()],
             poses,
-            now: paths::seconds(t),
+            now: t.seconds(),
             line_px: LINE_PX * px,
             look: render::Look {
                 exposure: self.exposure.value(self.target_exposure()),
@@ -276,7 +277,7 @@ impl Shell {
         })?;
         self.owners
             .get(&(s, k))
-            .and_then(|&p| self.paths.paths[p].at(paths::seconds(t)))
+            .and_then(|&p| self.paths.paths[p].at(t.seconds()))
             .map(|p| view.to_world(p))
             .or_else(|| position(self.eph, &ship.items[k..=k], t, true))
     }

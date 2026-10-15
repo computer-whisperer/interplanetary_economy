@@ -11,6 +11,7 @@
 
 pub mod camera;
 mod lines;
+pub mod maps;
 pub mod offscreen;
 pub mod paths;
 mod post;
@@ -22,9 +23,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use camera::Camera;
+pub use maps::{Image, Maps, Shading};
 pub use paths::{Path, Paths, Pose, Sample};
 pub use scene::{Look, Marker, Scene, Shape, Sphere, Surface};
-pub use sky::{Image, Sky, Star};
+pub use sky::{Sky, Star};
 pub use timer::{GpuTimer, Timings};
 
 /// The scene's and the shown image's color format.
@@ -150,7 +152,7 @@ impl Storage {
 }
 
 /// Draws scenes (scene.wgsl): the scene's pass (the sky, then ray-cast
-/// spheres, then points, additive) into its radiance; bloom and the
+/// spheres, each with its maps, then points, additive) into its radiance; bloom and the
 /// tonemap into the shown image (post.wgsl); and over that, depth-tested
 /// against the scene, the overlay (each set of paths' lines, then
 /// markers), which exposure does not touch.
@@ -172,6 +174,7 @@ pub struct Renderer {
     piece_pipeline: wgpu::RenderPipeline,
     post: post::Post,
     sky: sky::SkyPass,
+    maps: maps::MapsPass,
 }
 
 impl Renderer {
@@ -219,6 +222,12 @@ impl Renderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
             bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let maps = maps::MapsPass::new(device, queue);
+        let sphere_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("spheres"),
+            bind_group_layouts: &[Some(&layout), None, None, Some(&maps.layout)],
             immediate_size: 0,
         });
         let line_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -283,7 +292,7 @@ impl Renderer {
             groups: None,
             sphere_pipeline: pipeline(
                 "spheres",
-                &pipeline_layout,
+                &sphere_layout,
                 "sphere_vs",
                 "sphere_fs",
                 over,
@@ -302,6 +311,7 @@ impl Renderer {
             piece_pipeline: pipeline("pieces", &line_layout, "piece_vs", "line_fs", over, false),
             post: post::Post::new(device),
             sky: sky::SkyPass::new(device, queue, &shader, &layout),
+            maps,
             layout,
             path_layout,
         }
@@ -382,6 +392,8 @@ impl Renderer {
             None => (None, None),
         };
         let sky = self.sky.prepare(device, queue, encoder, &self.post, scene);
+        self.maps
+            .prepare(device, queue, encoder, &self.post, &inst.maps);
         let [r, g, b] = scene.background.map(f64::from);
         let [with_points, with_markers] = self.groups.as_ref().expect("bind groups");
         {
@@ -413,15 +425,16 @@ impl Renderer {
                 if sky {
                     self.sky.draw(&mut pass, with_points);
                 }
-                for (pipeline, count) in [
-                    (&self.sphere_pipeline, inst.spheres.len()),
-                    (&self.point_pipeline, inst.points.len()),
-                ] {
-                    if count > 0 {
-                        pass.set_pipeline(pipeline);
-                        pass.set_bind_group(0, with_points, &[]);
-                        pass.draw(0..6, 0..count as u32);
-                    }
+                pass.set_bind_group(0, with_points, &[]);
+                // Each sphere with its maps.
+                pass.set_pipeline(&self.sphere_pipeline);
+                for (k, maps) in inst.maps.iter().enumerate() {
+                    pass.set_bind_group(3, self.maps.group(maps.as_ref()), &[]);
+                    pass.draw(0..6, k as u32..k as u32 + 1);
+                }
+                if !inst.points.is_empty() {
+                    pass.set_pipeline(&self.point_pipeline);
+                    pass.draw(0..6, 0..inst.points.len() as u32);
                 }
             }
         }

@@ -2,6 +2,7 @@
 //! behind everything, then the catalog's stars as spots, in the sky's own
 //! coordinates (equatorial, ICRS) turned into the scene's.
 
+use crate::maps::Image;
 use crate::{COLOR_FORMAT, DEPTH_FORMAT, Storage};
 use bytemuck::{Pod, Zeroable};
 use glam::DMat3;
@@ -22,14 +23,6 @@ pub struct Star {
     pub motion: [f32; 3],
     /// Linear r, g, b in the low three bytes, the largest 255.
     pub color: u32,
-}
-
-/// An 8-bit sRGB RGBA image, row by row from the top.
-#[derive(Clone, Debug)]
-pub struct Image {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
 }
 
 /// What the sky shows.

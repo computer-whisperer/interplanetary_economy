@@ -101,11 +101,7 @@ fn sdr_dither_follows_a_slow_gradient() {
         let scene = Scene {
             camera: Some(camera),
             sun: moon + sun_dir * AU_KM,
-            spheres: vec![Sphere {
-                center: moon,
-                radius,
-                surface: Surface::Lit([0.5; 3]),
-            }],
+            spheres: vec![Sphere::plain(moon, radius, Surface::Lit([0.5; 3]))],
             look: Look {
                 exposure: 1.0,
                 bloom: 0.0,
@@ -161,12 +157,12 @@ fn bloom_spreads_energy_and_keeps_it() {
     for bloom in [0.0, 0.3] {
         let scene = Scene {
             camera: Some(camera),
-            spheres: vec![Sphere {
+            spheres: vec![Sphere::plain(
                 center,
                 // ~10 px across.
-                radius: AU_KM * 10.0 / 512.0 * (15f64.to_radians().tan()),
-                surface: Surface::Emissive([100.0; 3]),
-            }],
+                AU_KM * 10.0 / 512.0 * (15f64.to_radians().tan()),
+                Surface::Emissive([100.0; 3]),
+            )],
             look: Look {
                 exposure: 1.0,
                 bloom,
@@ -206,11 +202,7 @@ fn exposure_leaves_the_overlay_alone() {
         let scene = Scene {
             camera: Some(camera),
             sun: eye - DVec3::X * AU_KM,
-            spheres: vec![Sphere {
-                center,
-                radius: 3_000.0,
-                surface: Surface::Lit([0.01; 3]),
-            }],
+            spheres: vec![Sphere::plain(center, 3_000.0, Surface::Lit([0.01; 3]))],
             markers: vec![Marker {
                 position: center - DVec3::X * 5_000.0,
                 color,

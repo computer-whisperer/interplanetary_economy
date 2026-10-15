@@ -51,7 +51,22 @@ struct Sphere {
     _pad1: f32,
     // The quad, view space (unused when full-screen).
     corners: array<vec4<f32>, 4>,
+    // The body's x (prime meridian), y (90° east) and z (north) axes, in
+    // view space: its maps lie on them (step 6 plan, item 4).
+    axes: mat3x3<f32>,
+    // Night lights' radiance at full value.
+    night: vec3<f32>,
+    // FLAG_* below: which maps it has, and how it reflects.
+    flags: u32,
+    cloud_albedo: f32,
 }
+
+// `maps::flags` in maps.rs.
+const FLAG_RELIEF: u32 = 1u;
+const FLAG_CLOUDS: u32 = 2u;
+const FLAG_NIGHT: u32 = 4u;
+const FLAG_WATER: u32 = 8u;
+const FLAG_LUNAR_LAMBERT: u32 = 16u;
 
 struct Dot {
     center: vec3<f32>,
@@ -96,6 +111,16 @@ struct Piece {
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> spheres: array<Sphere>;
 @group(0) @binding(2) var<storage, read> dots: array<Dot>;
+// A sphere's maps (white, flat and empty where it has none):
+// equirectangular, east longitude from −180° at the left, north up.
+@group(3) @binding(0) var color_map: texture_2d<f32>;
+// The surface normal's east and north components.
+@group(3) @binding(1) var relief_map: texture_2d<f32>;
+@group(3) @binding(2) var cloud_map: texture_2d<f32>;
+// sRGB-encoded.
+@group(3) @binding(3) var night_map: texture_2d<f32>;
+@group(3) @binding(4) var water_map: texture_2d<f32>;
+@group(3) @binding(5) var map_sampler: sampler;
 @group(1) @binding(0) var<storage, read> vertices: array<PathVertex>;
 @group(1) @binding(1) var<storage, read> paths: array<PathInfo>;
 // Per instance, a run of segments: its first vertex, and its segments
@@ -164,24 +189,102 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     let outside = -disc / (sqrt(max(s.radius * s.radius - disc, 0.0)) + s.radius);
     let per_pixel = length(vec2<f32>(dpdx(outside), dpdy(outside)));
     let coverage = clamp(0.5 - outside / max(per_pixel, 1e-30), 0.0, 1.0);
-    if (coverage <= 0.0 || b <= 0.0) {
-        discard;
-    }
     // The near hit, without b - √disc's cancellation; just outside, the
     // limb's nearest point.
     var p = d * b;
     if (disc >= 0.0) {
         p = d * (q / (b + sqrt(disc)));
     }
+    let up = normalize(p - s.center);
+    // Where that is on the maps, and how fast that changes across the
+    // screen (before any pixel is discarded), the longitude's change
+    // taken across the date line the short way.
+    let local = transpose(s.axes) * up;
+    let uv = vec2<f32>(0.5 + atan2(local.y, local.x) / (2.0 * PI), 0.5 - asin(clamp(local.z, -1.0, 1.0)) / PI);
+    var ddx = dpdx(uv);
+    var ddy = dpdy(uv);
+    ddx.x -= round(ddx.x);
+    ddy.x -= round(ddy.x);
+    if (coverage <= 0.0 || b <= 0.0) {
+        discard;
+    }
     var color = s.color;
     if (s.emissive < 0.5) {
-        let n = normalize(p - s.center);
-        color = s.color * s.irradiance * max(dot(n, s.light), 0.0);
+        color = lit(s, up, -d, uv, ddx, ddy);
     }
     var out: SphereFragment;
     out.color = vec4<f32>(color * coverage, coverage);
     out.depth = frame.near / max(-p.z, frame.near);
     return out;
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
+}
+
+// Ocean glint: GGX with Cox and Munk's slopes for a 7 m/s wind (rms
+// slope 0.2; α = 0.28), and water's Fresnel reflectance.
+const GLINT_ALPHA: f32 = 0.28;
+
+// The radiance of a lit sphere's surface at `up` (unit, from its center),
+// seen along `view` (unit, toward the eye), at `uv` on its maps.
+fn lit(s: Sphere, up: vec3<f32>, view: vec3<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec3<f32> {
+    // East and north there (at a pole, any pair).
+    var east = cross(s.axes[2], up);
+    if (dot(east, east) < 1e-12) {
+        east = s.axes[0];
+    }
+    east = normalize(east);
+    let north = cross(up, east);
+    var n = up;
+    if ((s.flags & FLAG_RELIEF) != 0u) {
+        let t = textureSampleGrad(relief_map, map_sampler, uv, ddx, ddy).rg;
+        n = normalize(t.x * east + t.y * north + sqrt(max(1.0 - dot(t, t), 0.0)) * up);
+    }
+    var albedo = textureSampleGrad(color_map, map_sampler, uv, ddx, ddy).rgb * s.color;
+    var clouds = 0.0;
+    if ((s.flags & FLAG_CLOUDS) != 0u) {
+        clouds = textureSampleGrad(cloud_map, map_sampler, uv, ddx, ddy).r;
+        albedo = mix(albedo, vec3<f32>(s.cloud_albedo), clouds);
+        n = normalize(mix(n, up, clouds));
+    }
+    let cos_i = max(dot(n, s.light), 0.0);
+    let cos_e = max(dot(n, view), 0.0);
+    // Relief tilted toward the Sun past the terminator stays dark, but
+    // for peaks catching the light just beyond it.
+    let day = smoothstep(-0.05, 0.0, dot(up, s.light));
+    var reflected = cos_i;
+    if ((s.flags & FLAG_LUNAR_LAMBERT) != 0u) {
+        // McEwen 1991: the share L(α) of Lommel–Seeliger by phase angle
+        // α (degrees), the rest Lambert.
+        let a = degrees(acos(clamp(dot(s.light, view), -1.0, 1.0)));
+        let l = clamp(1.0 + a * (-0.019 + a * (2.42e-4 - a * 1.46e-6)), 0.0, 1.0);
+        reflected = 2.0 * l * cos_i / max(cos_i + cos_e, 1e-4) + (1.0 - l) * cos_i;
+    }
+    var color = albedo * s.irradiance * reflected * day;
+    if ((s.flags & FLAG_WATER) != 0u) {
+        let water = textureSampleGrad(water_map, map_sampler, uv, ddx, ddy).r * (1.0 - clouds);
+        let ci = max(dot(up, s.light), 0.0);
+        let ce = max(dot(up, view), 1e-4);
+        let h = normalize(s.light + view);
+        let nh = max(dot(up, h), 0.0);
+        let a2 = GLINT_ALPHA * GLINT_ALPHA;
+        let k = nh * nh * (a2 - 1.0) + 1.0;
+        let distribution = a2 / (PI * k * k);
+        let g1 = 2.0 / (1.0 + sqrt(1.0 + a2 * (1.0 / (ci * ci + 1e-6) - 1.0)));
+        let g2 = 2.0 / (1.0 + sqrt(1.0 + a2 * (1.0 / (ce * ce) - 1.0)));
+        let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(h, view), 0.0), 5.0);
+        // Radiance in this file's units is π × BRDF × irradiance × cos i.
+        let brdf = distribution * g1 * g2 * fresnel / (4.0 * ce * max(ci, 1e-4));
+        color += vec3<f32>(water * PI * brdf * ci * s.irradiance);
+    }
+    if ((s.flags & FLAG_NIGHT) != 0u) {
+        let lights = srgb_to_linear(textureSampleGrad(night_map, map_sampler, uv, ddx, ddy).r);
+        // The night side, fading in through twilight; dimmed under cloud.
+        let dark = smoothstep(0.05, -0.15, dot(up, s.light));
+        color += s.night * lights * dark * (1.0 - 0.7 * clouds);
+    }
+    return color;
 }
 
 struct DotOut {

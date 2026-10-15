@@ -61,11 +61,6 @@ fn scaled(c: [f32; 3], k: f32) -> [f32; 3] {
     c.map(|x| x * k)
 }
 
-/// The seconds of `t` on the paths' time axis.
-pub fn seconds(t: Epoch) -> f64 {
-    t.0 * SECONDS_PER_DAY
-}
-
 /// An event on a path: where it is in the view's frame, and how it is
 /// drawn.
 #[derive(Clone, Copy, Debug)]
@@ -128,7 +123,7 @@ fn item_path(
                 r += c.r;
                 v += c.v;
             }
-            Some(frame.sample(eph, focus, t, seconds(track.epoch) + s, r, v))
+            Some(frame.sample(eph, focus, t, track.epoch.seconds() + s, r, v))
         })
         .collect();
     if samples.len() < 2 {

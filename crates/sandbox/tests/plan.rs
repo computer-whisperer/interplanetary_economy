@@ -54,7 +54,7 @@ fn lines_follow_tracks_in_every_frame() {
             for k in 1..400 {
                 let t = Epoch(item.start.0 + (item.end.0 - item.start.0) * f64::from(k) / 400.0);
                 let pose = frame.pose(eph, moon, t);
-                let on_line = pose.to_world(path.at(paths::seconds(t)).unwrap());
+                let on_line = pose.to_world(path.at(t.seconds()).unwrap());
                 worst = worst.max((on_line - on_track(eph, track, t).unwrap()).length());
             }
         }
@@ -79,7 +79,7 @@ fn ship_and_burns_on_the_line() {
     let view = scene.poses[VIEW_POSE];
     let paths = &scene.paths[PLAN_SET];
     let line = paths.paths.last().unwrap();
-    let on_line = view.to_world(line.at(paths::seconds(t)).unwrap());
+    let on_line = view.to_world(line.at(t.seconds()).unwrap());
     let ship = scene
         .markers
         .iter()
@@ -108,9 +108,11 @@ fn ship_and_burns_on_the_line() {
         let pose = app.frame.pose(eph, app.camera.focus, m.t);
         let at = view
             .to_world(pose.from_world(on_track(eph, leg.track.as_ref().unwrap(), m.t).unwrap()));
-        // The arrival burn is at the line's end, within rounding.
-        let end = line.samples.last().unwrap().t;
-        let drawn = view.to_world(line.at(paths::seconds(m.t).min(end)).unwrap());
+        // The burns are at the line's ends, within rounding (the item's
+        // times and its track's come from different epochs: the departure
+        // fell 3e-7 s before the first sample once the Moon's pole moved).
+        let (start, end) = (line.samples[0].t, line.samples.last().unwrap().t);
+        let drawn = view.to_world(line.at(m.t.seconds().clamp(start, end)).unwrap());
         println!(
             "burn at {}: marker {:.3} m from the line",
             m.t,

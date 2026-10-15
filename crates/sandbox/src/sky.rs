@@ -2,17 +2,13 @@
 //! the Milky Way, from `data/sky/` (built by `tools/sky/`), read once per
 //! process on a thread of its own. The view shows them once they arrive.
 
+use crate::data_dir;
 use orbit::ephem::OBLIQUITY_J2000;
 use orbit::time::Epoch;
 use render::{Image, Star};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Once, OnceLock};
-
-/// The game's data directory, `data/` in the repository.
-pub fn data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data")
-}
 
 /// What `data/sky/` holds.
 #[derive(Clone, Debug)]
@@ -61,11 +57,11 @@ pub fn read(dir: &Path) -> Result<SkyData, String> {
             .to_rgba8();
     Ok(SkyData {
         stars: Arc::new(stars),
-        milky_way: Arc::new(Image {
-            width: decoded.width(),
-            height: decoded.height(),
-            rgba: decoded.into_raw(),
-        }),
+        milky_way: Arc::new(Image::srgba(
+            decoded.width(),
+            decoded.height(),
+            decoded.into_raw(),
+        )),
         milky_way_radiance: calibration.milky_way_radiance,
     })
 }

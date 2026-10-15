@@ -96,11 +96,11 @@ fn moon_limb_from_low_orbit() {
         let camera = Camera::looking_at(eye, eye + ahead, up, 60f64.to_radians());
         let scene = Scene {
             camera: Some(camera),
-            spheres: vec![Sphere {
-                center: MOON,
-                radius: MOON_RADIUS,
-                surface: Surface::Emissive([1.0; 3]),
-            }],
+            spheres: vec![Sphere::plain(
+                MOON,
+                MOON_RADIUS,
+                Surface::Emissive([1.0; 3]),
+            )],
             ..Default::default()
         };
         let cos = MOON_RADIUS / (MOON_RADIUS + altitude);
@@ -132,11 +132,11 @@ fn radiance_has_its_units() {
         camera: Some(camera),
         // Behind the eye, 1 au from the sphere.
         sun: center + DVec3::new(0.0, -AU_KM, 0.0),
-        spheres: vec![Sphere {
+        spheres: vec![Sphere::plain(
             center,
-            radius: 1_000.0,
-            surface: Surface::Lit([0.5, 0.25, 0.125]),
-        }],
+            1_000.0,
+            Surface::Lit([0.5, 0.25, 0.125]),
+        )],
         ..Default::default()
     };
     let (pixels, _) = draw(&gpu, &mut renderer, &scene, size);
@@ -153,11 +153,11 @@ fn radiance_has_its_units() {
             DVec3::Z,
             1f64.to_radians(),
         )),
-        spheres: vec![Sphere {
-            center: DVec3::new(AU_KM, 0.0, 0.0),
-            radius: 695_700.0,
-            surface: Surface::Emissive([sun_radiance; 3]),
-        }],
+        spheres: vec![Sphere::plain(
+            DVec3::new(AU_KM, 0.0, 0.0),
+            695_700.0,
+            Surface::Emissive([sun_radiance; 3]),
+        )],
         ..Default::default()
     };
     let (pixels, _) = draw(&gpu, &mut renderer, &sun_scene, size);
@@ -212,11 +212,7 @@ fn points_carry_their_spheres_flux() {
             let scene = Scene {
                 camera: Some(camera),
                 sun,
-                spheres: vec![Sphere {
-                    center,
-                    radius,
-                    surface: Surface::Lit([1.0; 3]),
-                }],
+                spheres: vec![Sphere::plain(center, radius, Surface::Lit([1.0; 3]))],
                 ..Default::default()
             };
             let (image, _) = draw(&gpu, &mut renderer, &scene, size);

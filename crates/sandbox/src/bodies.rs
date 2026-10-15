@@ -1,8 +1,11 @@
-//! How bodies look until step 6's textures (M1c.md, step 3 plan, item
-//! 3): Lambertian spheres of their Bond albedo, tinted, and the Sun's
-//! radiance.
+//! How bodies look (M1c.md, step 3 plan, item 3; step 6 plan, item 4):
+//! spheres turned by their rotation models, with their maps once read
+//! (`maps`); without, Lambertian of their Bond albedo, tinted. And the
+//! Sun's radiance.
 
+use glam::DMat3;
 use orbit::ephem::{BodyId, BodyKind, Ephemeris};
+use orbit::rotation::Rotations;
 use orbit::time::Epoch;
 use render::scene::AU_KM;
 use render::{Sphere, Surface};
@@ -59,16 +62,22 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
     if !eph.covers(b, t) {
         return None;
     }
-    let radius = eph.body(b).radius;
+    let id = &eph.body(b).id;
+    let maps = crate::maps::loaded(id);
     let surface = if b == eph.sun() {
         Surface::Emissive([sun_radiance(eph) as f32; 3])
     } else {
-        Surface::Lit(albedo(&eph.body(b).id))
+        match maps {
+            Some(m) => Surface::Lit([m.albedo; 3]),
+            None => Surface::Lit(albedo(id)),
+        }
     };
     Some(Sphere {
         center: eph.barycentric_position(b, t),
-        radius,
+        radius: eph.body(b).radius,
         surface,
+        axes: Rotations::standard().axes(id, t).unwrap_or(DMat3::IDENTITY),
+        maps: maps.map(|m| m.maps.clone()),
     })
 }
 

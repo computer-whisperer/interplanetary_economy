@@ -8,7 +8,7 @@
 //! A body's window steps by a sixteenth of its period, so it is sampled
 //! again only when now moves a step.
 
-use crate::paths::{LOOP_POSE, seconds};
+use crate::paths::LOOP_POSE;
 use glam::DMat3;
 use orbit::ephem::{BodyId, BodyKind, Ephemeris};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -131,7 +131,7 @@ impl Orbits {
     pub fn update(&mut self, eph: &Ephemeris, t: Epoch, focus: BodyId) -> bool {
         let mut changed = self.focus != Some(focus);
         self.focus = Some(focus);
-        let now = seconds(t);
+        let now = t.seconds();
         for orbit in &mut self.orbits {
             let step = orbit.period / STEPS as f64;
             let k = (now / step).floor() as i64;
@@ -246,7 +246,7 @@ mod tests {
             .zip(&paths.paths)
         {
             let pose = poses[path.pose - LOOP_POSE - 1];
-            let at = pose.to_world(path.at(seconds(t)).expect("now is in the window"));
+            let at = pose.to_world(path.at(t.seconds()).expect("now is in the window"));
             let body = eph.barycentric_position(o.body, t);
             let off = (at - body).length();
             let closest = eph.body(o.body).radius + crate::camera::MIN_ALTITUDE_KM;

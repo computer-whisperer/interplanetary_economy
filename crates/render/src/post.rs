@@ -32,9 +32,6 @@ pub fn levels(size: (u32, u32)) -> usize {
     n.max(1)
 }
 
-/// Images' format on the GPU.
-pub const IMAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-
 pub(crate) struct Post {
     chain_layout: wgpu::BindGroupLayout,
     tonemap_layout: wgpu::BindGroupLayout,
@@ -44,7 +41,8 @@ pub(crate) struct Post {
     up: wgpu::RenderPipeline,
     tonemap: wgpu::RenderPipeline,
     /// An sRGB image's next mip level from the last.
-    blit: wgpu::RenderPipeline,
+    /// By `Image::FORMATS`.
+    blit: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     /// The target the groups below were made for, by its id.
     groups: Option<(u64, Groups)>,
 }
@@ -145,7 +143,10 @@ impl Post {
             down: pipeline("bloom down", &chain_layout, "down_fs", COLOR_FORMAT, None),
             up: pipeline("bloom up", &chain_layout, "up_fs", COLOR_FORMAT, Some(add)),
             tonemap: pipeline("tonemap", &tonemap_layout, "tonemap_fs", COLOR_FORMAT, None),
-            blit: pipeline("mip", &chain_layout, "blit_fs", IMAGE_FORMAT, None),
+            blit: crate::maps::Image::FORMATS
+                .iter()
+                .map(|&f| (f, pipeline("mip", &chain_layout, "blit_fs", f, None)))
+                .collect(),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("post"),
                 mag_filter: wgpu::FilterMode::Linear,
@@ -290,8 +291,14 @@ impl Post {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        image: &crate::sky::Image,
+        image: &crate::maps::Image,
     ) -> wgpu::TextureView {
+        let blit = &self
+            .blit
+            .iter()
+            .find(|(f, _)| *f == image.format)
+            .unwrap_or_else(|| panic!("no mips for {:?}", image.format))
+            .1;
         let levels = 32 - image.width.max(image.height).max(1).leading_zeros();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("image"),
@@ -303,7 +310,7 @@ impl Post {
             mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: IMAGE_FORMAT,
+            format: image.format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_DST,
@@ -311,10 +318,10 @@ impl Post {
         });
         queue.write_texture(
             texture.as_image_copy(),
-            &image.rgba,
+            &image.data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * image.width),
+                bytes_per_row: Some(image.pixel() * image.width),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
@@ -363,7 +370,7 @@ impl Post {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.blit);
+            pass.set_pipeline(blit);
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
