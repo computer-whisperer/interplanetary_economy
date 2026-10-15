@@ -1,7 +1,8 @@
 # M1c — Creative sandbox and the map view
 
 Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
-left out); next, step 7 (editing).
+left out); now step 6, part 9 (shapes, small bodies' maps and spins);
+next, step 7 (editing).
 
 - Step 5: labels on the map view, picking by click, and the plan's
   panel. As built, see the step 5 plan below; where it differs:
@@ -600,7 +601,8 @@ night lights, below.
 - Eclipses: analytic sphere shadows, such as Earth's on the Moon and
   Phobos's on Mars.
 - Saturn's rings, with their shadow.
-- Shape models for Phobos, Deimos, Bennu and Ryugu.
+- Shape models for the moons and small bodies with published ones, made
+  up for the rest (step 6, part 9 plan).
 
 **The Sun and the sky.**
 - The Sun is a limb-darkened disc with bloom.
@@ -1341,3 +1343,135 @@ As built (2026-10-15), where it differs, each found against the fixture:
   aerosols, the global mean's since 2026-10-15, are 14× Hillaire's in
   optical depth: its large phase angles lean on the haze, which at 130°
   left Mars 19% under its Monte Carlo (above).
+
+## Step 6, part 9 plan (2026-10-15): shapes, small bodies' maps and spins
+
+The moons and small bodies with published shape models are drawn with
+them, and the rest with made-up ones (the user, 2026-10-15: sources
+with convenient licenses, the remaining bodies approximated); with the
+small bodies' maps and spins, and the planets' maps still missing.
+Sources and their terms: the research of 2026-10-15, recorded in
+`tools/shapes/` and beside each file in `data/` as it is imported.
+
+**Decided with the user (2026-10-15): shaped bodies are radius maps,
+ray-marched in the spheres' own pass.** The models chosen are radius
+grids already: Gaskell's implicitly connected quadrilaterals, 6 × 64²
+quads (49,152 facets), one radius per direction from the center; the
+radar models are near enough. Rejected: rasterized meshes. The scene's
+pass has no MSAA and blends far to near (air and edges composite in
+order), so each resolved body would need its own MSAA render off screen
+composited at its place in that order, a depth-only redraw for the
+overlay's lines, and a shadow map for its self-shadowing. Marched, a
+shape inherits the order, the air's blending, eclipses, the edges'
+coverage and the fade from its point; it costs fragment time where one
+is large on screen, and needs bodies seen whole from their centers
+(star-shaped).
+
+Order of work, each part committed with its tests:
+
+1. **The shape path** (`render`).
+   - `render::shape::Shape`: a star-shaped body's radius by direction in
+     its frame (`Sphere::axes`), km, on a cube map's six faces (N²
+     texels each, in wgpu's face order and orientation); with its least
+     and greatest radii, its area and volume (the map triangulated), and
+     a bound on the slope of |p| − r(p̂), which the march's steps are
+     divided by.
+   - On the GPU: an `Rgba16Float` cube texture with mips, held with the
+     body's maps (`Maps::shape`; a shaped body without a color map gets a
+     plain one): the radius between the least and the greatest (alpha)
+     and the normal in the body's frame (rgb), from the radius map's
+     differences; each level the mean of the one below.
+   - `shape_fs`, a second entry point over the sphere's quad (grown to
+     the greatest radius), drawn in the same pass and order: the ray
+     sphere-traced from where it enters the bounding sphere (or from
+     the eye, within it), each step |p| − r(p̂) over the slope bound and
+     at least a share of the pixel's footprint, to the first crossing,
+     refined by bisection. Its edge's coverage from the ray's closest
+     miss, in pixels of the footprint there, as a sphere's limb's.
+     Self-shadowing: a second march, toward the Sun, its penumbra the
+     Sun's angular size (the least miss over distance along it, over the
+     Sun's angular radius). Then `lit`, `sun_seen` (eclipses by other
+     bodies), `written`, depth and opacity as a sphere's. Its maps'
+     coordinates are the hit's longitude and latitude from the center,
+     as maps of irregular bodies are published; their screen
+     derivatives, for the maps' levels, are the mean sphere's, taken
+     before the march (after a loop with a data-dependent exit, control
+     flow is not uniform). The shape's own level follows the pixel's
+     footprint over its texel, so a body a few pixels across marches a
+     smoothed one.
+   - `scene.rs`: a shaped sphere reaches its greatest radius (its quad,
+     its culling, its spot's place in front), and is skipped only with
+     the eye inside the body itself (its radius toward the eye).
+     `Sphere::radius` is its volume-equivalent radius: its point's size,
+     the fade, an eclipse's occluder.
+   - The sandbox: the camera's least altitude scales with the body (a
+     tenth of its radius, at most 10 km), over its greatest radius;
+     labels and picks reach its greatest radius.
+   - Tests: a triaxial ellipsoid (exact intersections) from several
+     directions: coverage summed against its projected area, depth and
+     Lambert radiance per pixel against exact; two overlapping lobes lit
+     from the side: shadowed where a CPU ray says; the eye inside the
+     bounding sphere; the cube map's lookup on the GPU against the
+     CPU's. GPU time with one filling 1920×1080 (a measurement).
+2. **Shapes' photometry** (`sandbox::photometry`, `render`).
+   - The disk: averaged over orientations, a convex body's brightness is
+     a sphere's of the same area (each facet counts alone, whatever its
+     law). Its gain is that of a sphere of its volume-equivalent radius
+     R, times 4πR² / S, over the share of its light its self-shadowing
+     leaves at that phase (averaged over orientations, tabulated per
+     shape when built, 0–180° by 10°).
+   - Its point: its facets' light summed on the CPU at the geometry (16²
+     a face), times that share and the gain: a lightcurve, which a
+     sphere's point lacks.
+   - Tests: the disk over random orientations against its curve; point
+     and disk at the fade; an ellipsoid's lightcurve at full phase
+     against the ratio of its cross-sections.
+3. **The shapes' data** (`tools/shapes/`: `fetch.sh`, `build.py`). Each
+   model ray-cast from its origin into the cube map (256² a face: 16
+   texels a model's quad), checked star-shaped (rays meeting the surface
+   more than once counted; the outermost hit kept), written to
+   `data/bodies/ID/shape.bin` (f32 radii), with `data/bodies/shapes.toml`
+   (source, terms, size, radii, area, volume, slope bound, shadow table).
+   - Phobos (Gaskell 2006), Deimos (Thomas 1993's 5° grid), Bennu
+     (SPOv54), Ryugu (Watanabe et al. 2019; JAXA's terms: credit
+     ISAS/JAXA, modifications stated), Itokawa (Gaskell), Didymos (DART
+     v003), Apophis (Brozović et al. 2018), 2008 EV5 (Busch et al. 2011),
+     Nereus (Brozović et al. 2009): public domain but Ryugu's. Models keep
+     their sizes; a shaped body's radius is its model's
+     volume-equivalent one (the SBDB's beside it in `shapes.toml`).
+   - Made up: 1996 FG3 (none archived: an oblate primary with an
+     equatorial ridge, as binary primaries are) and 2009 UY19 (nothing
+     published: elongated, 1.4 : 1.1 : 1), each a seeded Gaussian random
+     sphere over an ellipsoid, scaled to the SBDB's diameter, marked
+     made up.
+   - Left out: Phobos's and Deimos's 2023 models (Ernst et al.; terms
+     unstated, "All rights reserved": APL could be asked); Dimorphos
+     (not among the game's bodies).
+4. **Spins** (`orbit::rotation`, `tools/rotation/`). The small bodies
+   have none yet (their axes are the scene's). Bennu (`bennu_v17.tpc`,
+   with its YORP term), Ryugu (`ryugu_v10.tpc`), Itokawa (Gaskell's PCK,
+   its rate recast to Lowry et al. 2014's period and YORP), Didymos
+   (`didymos_system_15.tpc`'s pole, longitude 0 at the DART frame's
+   boulder), 2008 EV5 and Nereus (their radar spin states: ecliptic pole,
+   period and phase at an epoch), 1996 FG3 (Scheirich et al. 2015's
+   period, its pole the mutual orbit's, its phase made up), 2009 UY19
+   (made up). Apophis tumbles: Brozović et al.'s spin state carried by
+   Euler's equations, torque-free, with its model's moments of inertia.
+   Phases in the 2040s past their data's reach (Ryugu's, Didymos's,
+   EV5's, Nereus's) are as their models extrapolate, noted in
+   `rotation.toml`.
+5. **Small bodies' maps** (`tools/textures/`): grayscale where
+   published, in their class's color (`photometry::color` gives it):
+   Phobos (USGS and Stooke's Viking mosaic), Deimos (Stooke), Bennu
+   (USGS normal albedo to ±55°, the panchromatic mosaic beyond), Itokawa
+   (Stooke), Ryugu (Hirata et al. 2026, CC BY 4.0: its b, v and w bands
+   a near-true color). Stooke's and the Viking mosaics carry their
+   images' shading: judged on screenshots, flattened at large scales if
+   it reads as a second Sun. The rest: a seeded albedo variation (±10%),
+   made up.
+6. **The planets' maps still missing**: Saturn (Cassini ISS's global
+   color map, PDS; its gaps past 78°N and 82°S and in the rings' shadow
+   filled from HST OPAL 2025, CC BY 4.0), Uranus and Neptune (their
+   bands from OPAL's composites, averaged along longitude; their color
+   the measured one), Venus left plain (no visible-light map exists; its
+   cloud deck is near featureless there).
