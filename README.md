@@ -38,8 +38,9 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   periodic-orbit families (`orbits.toml`), the places ships go
   (`places.toml`), mission plans (`missions/`), the route graph the
   autopilot measured (`routes.toml`, written by `orbit routes`), the
-  economy (`economy.toml`, with sources), and the sky (`sky/`: the
-  Hipparcos stars and NASA SVS's Milky Way, with their terms).
+  economy (`economy.toml`, with sources), the bodies' rotation models
+  (`rotation.toml`, IAU 2015), and the sky (`sky/`: the Hipparcos stars
+  and NASA SVS's Milky Way, with their terms).
 - `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
   then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
   Horizons fixtures the tests check it against (`fixtures.sh`).
@@ -50,6 +51,10 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   precessing ellipses fitted to JPL Horizons; `fetch.sh DIR`, then
   `python3 build.py DIR > ../../data/moons.toml`; needs numpy and scipy),
   and the Horizons fixtures the tests check them against (`fixtures.sh`).
+- `tools/rotation/` — regenerates `data/rotation.toml` from NAIF's
+  pck00011 (`fetch.sh DIR`, then `python3 build.py DIR >
+  ../../data/rotation.toml`), and the Horizons sub-observer points the
+  tests check it against (`fixtures.sh`).
 - `tools/sky/` — regenerates `data/sky/` (`fetch.sh DIR`, ~250 MB, then
   `python3 build.py DIR ../../data/sky`; needs numpy, scipy, Pillow and
   OpenEXR): the star list, the Milky Way map, and its calibration against

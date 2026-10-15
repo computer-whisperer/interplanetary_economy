@@ -1,0 +1,138 @@
+API VERSION: 1.2
+API SOURCE: NASA/JPL Horizons API
+
+
+
+*******************************************************************************
+Ephemeris / API_USER Wed Oct 14 19:14:06 2026 Pasadena, USA      / Horizons    
+*******************************************************************************
+Target body name: Neptune (899)                   {source: nep098_merged}
+Center body name: Earth (399)                     {source: nep098_merged}
+Center-site name: GEOCENTRIC
+*******************************************************************************
+Start time      : A.D. 2026-Jan-01 00:00:00.0000 TT      
+Stop  time      : A.D. 2036-Jan-01 00:00:00.0000 TT      
+Step-size       : 361440 minutes
+*******************************************************************************
+Target pole/equ : IAU_NEPTUNE                     {West-longitude positive}
+Target radii    : 24764.0, 24764.0, 24341.0 km    {Equator_a, b, pole_c}       
+Center geodetic : 0.0, 0.0, -6378.137             {E-lon(deg),Lat(deg),Alt(km)}
+Center cylindric: 0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}
+Center pole/equ : ITRF93                          {East-longitude positive}
+Center radii    : 6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}       
+Target primary  : Sun
+Vis. interferer : MOON (R_eq= 1737.400) km        {source: DE441}
+Rel. light bend : Sun                             {source: nep098_merged}
+Rel. lght bnd GM: 1.3271E+11 km^3/s^2                                          
+Atmos refraction: NO (AIRLESS)
+RA format       : HMS
+Time format     : CAL 
+Calendar mode   : Mixed Julian/Gregorian
+EOP file        : eop.261014.p270110                                           
+EOP coverage    : DATA-BASED 1962-JAN-20 TO 2026-OCT-14. PREDICTS-> 2027-JAN-09
+Units conversion: 1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s 
+Table cut-offs 1: Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )
+Table cut-offs 2: Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )
+Table cut-offs 3: RA/DEC angular rate (     0.0=NO )                           
+Table format    : Comma Separated Values (spreadsheet)
+*******************************************************************************
+ Date__(TT)__HR:MN, , , ObsSub-LON, ObsSub-LAT,  1-way_down_LT,
+***************************************************************
+$$SOE
+ 2026-Jan-01 00:00, , , 292.241795, -20.796433,   249.98397851,
+ 2026-Sep-09 00:00, , ,  38.001078, -19.345094,   240.47521902,
+ 2027-May-18 00:00, , , 136.697420, -18.488223,   253.65697177,
+ 2028-Jan-24 00:00, , , 244.914397, -19.062638,   252.29113539,
+ 2028-Oct-01 00:00, , , 352.570596, -17.797018,   240.03890722,
+ 2029-Jun-09 00:00, , ,  91.128160, -16.529457,   251.41302104,
+ 2030-Feb-15 00:00, , , 197.661387, -17.146840,   254.25014183,
+ 2030-Oct-24 00:00, , , 306.878449, -16.178913,   240.44752131,
+ 2031-Jul-02 00:00, , ,  45.880329, -14.525805,   248.93180775,
+ 2032-Mar-09 00:00, , , 150.588460, -15.063953,   255.66993779,
+ 2032-Nov-15 00:00, , , 260.870882, -14.469966,   241.65776088,
+ 2033-Jul-24 00:00, , ,   0.874713, -12.506087,   246.40381563,
+ 2034-Apr-01 00:00, , , 103.790603, -12.839357,   256.40000891,
+ 2034-Dec-08 00:00, , , 214.550920, -12.649029,   243.51413189,
+ 2035-Aug-16 00:00, , , 316.031393, -10.494548,   244.00726405,
+$$EOE
+*******************************************************************************
+Column meaning:
+ 
+TIME
+
+  Terrestrial Time ("TT") output was requested. This continuous timescale
+is the relativistic proper time of a clock at rest on the Earth's geoid (at
+"mean sea level"), but defined for a specified gravitational time dilation,
+so a coordinate time. It is appropriate for observations and measurements
+from the surface of the Earth.
+
+  TT runs at a uniform rate of one SI second per second and is independent of
+irregularities in Earth's rotation. It is a theoretical ideal, approximated
+(with a constant offset of 32.184 seconds) by the measured International Atomic
+Time (TAI) after 1955.  TT is the relativistic successor to the now deprecated
+non-relativistic Ephemeris Time (ET).
+
+  The TT scale requested here is a time-scale conversion from internal
+Barycentric Dynamical Time (TDB) and differs periodically from TDB with an
+amplitude less than 2 ms for several thousand years centered on present.
+The time-scale conversion for Earth is used regardless of observer location
+within the solar system, although clock rates may differ due to the local
+gravity field.
+
+  Any 'b' symbol in the 1st-column denotes a B.C. date. First-column blank
+(" ") denotes an A.D. date.
+ 
+CALENDAR SYSTEM
+
+  Mixed calendar mode was active such that calendar dates after AD 1582-Oct-15
+(if any) are in the modern Gregorian system. Dates prior to 1582-Oct-5 (if any)
+are in the Julian calendar system, which is automatically extended for dates
+prior to its adoption on 45-Jan-1 BC.  The Julian calendar is useful for
+matching historical dates. The Gregorian calendar more accurately corresponds
+to the Earth's orbital motion and seasons. A "Gregorian-only" calendar mode is
+available if such physical events are the primary interest.
+
+  NOTE: "n.a." in output means quantity "not available" at the print-time.
+ 
+ 'ObsSub-LON, ObsSub-LAT,' =
+   Apparent planetodetic longitude and latitude of the center of the target
+disc seen by the OBSERVER at print-time. This is NOT exactly the same as the
+"nearest" sub-point for a non-spherical target shape (since the center of the
+disc might not be the point closest to the observer), but is generally very
+close if not a very irregular body shape. Down-leg light travel-time from
+target to observer is taken into account. Latitude is the angle between the
+equatorial plane and the line perpendicular to the reference ellipsoid of the
+body, so includes body oblateness. The reference ellipsoid is an oblate
+spheroid with a single flatness coefficient in which the y-axis body radius
+is taken to be the same value as the x-axis radius.  For Jupiter, Saturn, and
+Uranus, IAU2015 longitude is based on the "System III" prime meridian rotation
+angle of the magnetic field. By contrast, pole direction (thus latitude) is
+relative to the body dynamical equator.  There can be an offset between the
+magnetic pole and the dynamical pole of rotation. For Neptune, rotation is
+IAU2015 "System II" rotation of optically observed features in the Neptunian
+atmosphere. Positive longitude is to the WEST for this target. Cartographic
+system is specified in the header.  Units: DEGREES DEGREES
+ 
+ '1-way_down_LT,' =
+   1-way down-leg light-time from target center to observer. The elapsed time
+since light (observed at print-time) would have left or reflected off a point
+at the center of the target. Units: MINUTES
+
+Computations by ...
+
+    Solar System Dynamics Group, Horizons On-Line Ephemeris System
+    4800 Oak Grove Drive, Jet Propulsion Laboratory
+    Pasadena, CA  91109   USA
+
+    General site: https://ssd.jpl.nasa.gov/
+    Mailing list: https://ssd.jpl.nasa.gov/email_list.html
+    System news : https://ssd.jpl.nasa.gov/horizons/news.html
+    User Guide  : https://ssd.jpl.nasa.gov/horizons/manual.html
+    Connect     : browser        https://ssd.jpl.nasa.gov/horizons/app.html#/x
+                  API            https://ssd-api.jpl.nasa.gov/doc/horizons.html
+                  command-line   telnet ssd.jpl.nasa.gov 6775
+                  e-mail/batch   https://ssd.jpl.nasa.gov/ftp/ssd/horizons_batch.txt
+                  scripts        https://ssd.jpl.nasa.gov/ftp/ssd/SCRIPTS
+    Inquiries   : Jon.D.Giorgini@jpl.nasa.gov
+
+*******************************************************************************

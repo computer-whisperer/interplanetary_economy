@@ -163,16 +163,6 @@ fn positions_match_states() {
     }
 }
 
-/// ICRF (equatorial) to this crate's ecliptic frame, as tools/ephem/build.py
-/// rotates DE440.
-fn equatorial_to_ecliptic(v: glam::DVec3) -> glam::DVec3 {
-    let (c, s) = (
-        orbit::ephem::OBLIQUITY_J2000.cos(),
-        orbit::ephem::OBLIQUITY_J2000.sin(),
-    );
-    glam::DVec3::new(v.x, c * v.y + s * v.z, -s * v.y + c * v.z)
-}
-
 /// Earth's pole is ICRF z: at the June solstice the Sun stands 23.44° north
 /// of the equator.
 #[test]
@@ -183,60 +173,6 @@ fn earth_pole_puts_the_june_sun_north() {
     let sun = (eph.barycentric(eph.sun(), t).r - eph.barycentric(earth, t).r).normalize();
     let declination = sun.dot(eph.pole(earth, t).unwrap()).asin().to_degrees();
     assert!((declination - 23.44).abs() < 0.01, "{declination}");
-}
-
-/// The Moon's pole by Cassini's laws matches the IAU's (WGCCRE 2015,
-/// Archinal et al. 2018, with its periodic terms) to within 0.1°.
-#[test]
-fn moon_pole_matches_iau() {
-    let eph = Ephemeris::standard();
-    let moon = eph.lookup("moon").unwrap();
-    let mut worst = 0.0f64;
-    for year in [2030, 2041, 2052, 2063, 2075] {
-        for month in [1, 4, 7, 10] {
-            let t = Epoch::from_ymd(year, month, 1);
-            let d = t.0;
-            let tc = d / 36_525.0;
-            let e = |a: f64, b: f64| (a + b * d).to_radians();
-            let (e1, e2, e3, e4) = (
-                e(125.045, -0.052_992_1),
-                e(250.089, -0.105_984_2),
-                e(260.008, 13.012_000_9),
-                e(176.625, 13.340_715_4),
-            );
-            let (e6, e7, e10, e13) = (
-                e(357.529, 0.985_600_3),
-                e(311.589, 26.405_708_4),
-                e(15.134, -0.158_976_3),
-                e(25.053, 12.959_008_8),
-            );
-            let ra = (269.9949 + 0.0031 * tc - 3.8787 * e1.sin() - 0.1204 * e2.sin()
-                + 0.0700 * e3.sin()
-                - 0.0172 * e4.sin()
-                + 0.0072 * e6.sin()
-                - 0.0052 * e10.sin()
-                + 0.0043 * e13.sin())
-            .to_radians();
-            let dec = (66.5392 + 0.0130 * tc + 1.5419 * e1.cos() + 0.0239 * e2.cos()
-                - 0.0278 * e3.cos()
-                + 0.0068 * e4.cos()
-                - 0.0029 * e6.cos()
-                + 0.0009 * e7.cos()
-                + 0.0008 * e10.cos()
-                - 0.0009 * e13.cos())
-            .to_radians();
-            let iau = equatorial_to_ecliptic(glam::DVec3::new(
-                dec.cos() * ra.cos(),
-                dec.cos() * ra.sin(),
-                dec.sin(),
-            ));
-            let ours = eph.pole(moon, t).unwrap();
-            let angle = ours.angle_between(iau).to_degrees();
-            assert!(angle < 0.1, "{year}-{month}: {angle}°");
-            worst = worst.max(angle);
-        }
-    }
-    println!("worst {worst:.3}°");
 }
 
 /// Phobos and Deimos, precessing ellipses fitted to Horizons, against

@@ -17,6 +17,7 @@ pub mod linalg;
 pub mod mission;
 pub mod places;
 pub mod reference;
+pub mod rotation;
 pub mod routes;
 pub mod shooting;
 pub mod stationkeeping;

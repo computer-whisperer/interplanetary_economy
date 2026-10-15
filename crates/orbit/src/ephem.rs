@@ -45,10 +45,6 @@ const MEAN_RADIUS_KM: [(&str, f64); 10] = [
     ("neptune", 24_622.0),
 ];
 
-/// The Moon's equator is inclined 1.543° to the ecliptic (Cassini's
-/// second law; IAU WGCCRE 2015), cos and sin.
-const MOON_EQUATOR_TO_ECLIPTIC: (f64, f64) = (0.999_637_397_9, 0.026_927_175_3);
-
 /// A body's identity in an [`Ephemeris`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BodyId(usize);
@@ -751,21 +747,12 @@ impl Ephemeris {
             .unwrap_or_else(|| panic!("{} is not on a heliocentric ellipse", body.id))
     }
 
-    /// The body's spin axis, where the game knows it: Earth's from its
-    /// figure; the Moon's by Cassini's laws, which DE440's librations follow
-    /// to ~0.1°: its pole, its orbit's pole and the ecliptic pole are
-    /// coplanar, with the ecliptic pole between the other two and 1.543°
-    /// from the Moon's.
+    /// The body's spin axis, where the game models it: Earth's from its
+    /// figure (the axis its J2 acts about, ICRF z); the Moon's from the
+    /// IAU's rotation model ([`crate::rotation`]).
     pub fn pole(&self, id: BodyId, t: Epoch) -> Option<DVec3> {
         match self.bodies[id.0].motion {
-            Motion::Moon => {
-                let earth = self.lookup("earth").unwrap();
-                let (e, m) = (self.barycentric(earth, t), self.barycentric(id, t));
-                let normal = (m.r - e.r).cross(m.v - e.v).normalize();
-                let away = DVec3::new(normal.x, normal.y, 0.0).normalize();
-                let (cos, sin) = MOON_EQUATOR_TO_ECLIPTIC;
-                Some(cos * DVec3::Z - sin * away)
-            }
+            Motion::Moon => crate::rotation::Rotations::standard().pole("moon", t),
             _ => self.bodies[id.0].figure.map(|f| f.pole),
         }
     }

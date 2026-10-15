@@ -1,0 +1,122 @@
+API VERSION: 1.2
+API SOURCE: NASA/JPL Horizons API
+
+
+
+*******************************************************************************
+Ephemeris / API_USER Wed Oct 14 19:14:07 2026 Pasadena, USA      / Horizons    
+*******************************************************************************
+Target body name: Earth (399)                     {source: DE441}
+Center body name: Moon (301)                      {source: DE441}
+Center-site name: BODYCENTRIC
+*******************************************************************************
+Start time      : A.D. 2026-Jan-01 00:00:00.0000 TT      
+Stop  time      : A.D. 2026-Sep-28 00:00:00.0000 TT      
+Step-size       : 56160 minutes
+*******************************************************************************
+Target pole/equ : ITRF93 (high precision)         {East-longitude positive}
+Target radii    : 6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}       
+Center geodetic : 0.0, 0.0, -1737.4               {E-lon(deg),Lat(deg),Alt(km)}
+Center cylindric: 0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}
+Center pole/equ : MEAN_ME (high precision)        {East-longitude positive}
+Center radii    : 1737.4, 1737.4, 1737.4 km       {Equator_a, b, pole_c}       
+Target primary  : Sun
+Vis. interferer : EARTH (R_eq= 6378.137) km       {source: DE441}
+Rel. light bend : Sun, EARTH                      {source: DE441}
+Rel. lght bnd GM: 1.3271E+11, 3.9860E+05 km^3/s^2                              
+Atmos refraction: NO (AIRLESS)
+RA format       : HMS
+Time format     : CAL 
+Calendar mode   : Mixed Julian/Gregorian
+EOP file        : eop.261014.p270110                                           
+EOP coverage    : DATA-BASED 1962-JAN-20 TO 2026-OCT-14. PREDICTS-> 2027-JAN-09
+Units conversion: 1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s 
+Table cut-offs 1: Elevation (-90.0deg=NO ),Airmass     n.a.    , Daylight (NO )
+Table cut-offs 2: Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )
+Table cut-offs 3: RA/DEC angular rate (     0.0=NO )                           
+Table format    : Comma Separated Values (spreadsheet)
+*******************************************************************************
+ Date__(TT)__HR:MN, , , ObsSub-LON, ObsSub-LAT,  1-way_down_LT,
+***************************************************************
+$$SOE
+ 2026-Jan-01 00:00, , , 323.544109,  26.556280,     0.02006976,
+ 2026-Feb-09 00:00, , ,  81.660913, -20.856401,     0.02238853,
+ 2026-Mar-20 00:00, , , 192.401436,   7.296331,     0.02058306,
+ 2026-Apr-28 00:00, , , 319.309023,   0.463931,     0.02173689,
+ 2026-Jun-06 00:00, , ,  66.021058, -17.066558,     0.02209486,
+ 2026-Jul-15 00:00, , , 191.101134,  22.584211,     0.02010242,
+ 2026-Aug-23 00:00, , , 300.666916, -28.089446,     0.02248000,
+$$EOE
+*******************************************************************************
+Column meaning:
+ 
+TIME
+
+  Terrestrial Time ("TT") output was requested. This continuous timescale
+is the relativistic proper time of a clock at rest on the Earth's geoid (at
+"mean sea level"), but defined for a specified gravitational time dilation,
+so a coordinate time. It is appropriate for observations and measurements
+from the surface of the Earth.
+
+  TT runs at a uniform rate of one SI second per second and is independent of
+irregularities in Earth's rotation. It is a theoretical ideal, approximated
+(with a constant offset of 32.184 seconds) by the measured International Atomic
+Time (TAI) after 1955.  TT is the relativistic successor to the now deprecated
+non-relativistic Ephemeris Time (ET).
+
+  The TT scale requested here is a time-scale conversion from internal
+Barycentric Dynamical Time (TDB) and differs periodically from TDB with an
+amplitude less than 2 ms for several thousand years centered on present.
+The time-scale conversion for Earth is used regardless of observer location
+within the solar system, although clock rates may differ due to the local
+gravity field.
+
+  Any 'b' symbol in the 1st-column denotes a B.C. date. First-column blank
+(" ") denotes an A.D. date.
+ 
+CALENDAR SYSTEM
+
+  Mixed calendar mode was active such that calendar dates after AD 1582-Oct-15
+(if any) are in the modern Gregorian system. Dates prior to 1582-Oct-5 (if any)
+are in the Julian calendar system, which is automatically extended for dates
+prior to its adoption on 45-Jan-1 BC.  The Julian calendar is useful for
+matching historical dates. The Gregorian calendar more accurately corresponds
+to the Earth's orbital motion and seasons. A "Gregorian-only" calendar mode is
+available if such physical events are the primary interest.
+
+  NOTE: "n.a." in output means quantity "not available" at the print-time.
+ 
+ 'ObsSub-LON, ObsSub-LAT,' =
+   Apparent planetodetic longitude and latitude of the center of the target
+disc (Earth) seen by the OBSERVER at print-time. This may not be exactly the
+same as the nearest point (since the center of the disc might not be the point
+closest to the observer). Light travel-time from target to observer is taken
+into account.  Latitude is the angle between the true-of-date equatorial plane
+and the line perpendicular to the reference ellipsoid of the body (e.g.,
+includes body oblateness). A high-precision Earth orientation model with
+precession, nutation, polar motion, and UTC/UT1 distinctions is used. Positive
+longitude is to the EAST for this target.  Units: DEGREES DEGREES
+ 
+ '1-way_down_LT,' =
+   1-way down-leg light-time from target center to observer. The elapsed time
+since light (observed at print-time) would have left or reflected off a point
+at the center of the target. Units: MINUTES
+
+Computations by ...
+
+    Solar System Dynamics Group, Horizons On-Line Ephemeris System
+    4800 Oak Grove Drive, Jet Propulsion Laboratory
+    Pasadena, CA  91109   USA
+
+    General site: https://ssd.jpl.nasa.gov/
+    Mailing list: https://ssd.jpl.nasa.gov/email_list.html
+    System news : https://ssd.jpl.nasa.gov/horizons/news.html
+    User Guide  : https://ssd.jpl.nasa.gov/horizons/manual.html
+    Connect     : browser        https://ssd.jpl.nasa.gov/horizons/app.html#/x
+                  API            https://ssd-api.jpl.nasa.gov/doc/horizons.html
+                  command-line   telnet ssd.jpl.nasa.gov 6775
+                  e-mail/batch   https://ssd.jpl.nasa.gov/ftp/ssd/horizons_batch.txt
+                  scripts        https://ssd.jpl.nasa.gov/ftp/ssd/SCRIPTS
+    Inquiries   : Jon.D.Giorgini@jpl.nasa.gov
+
+*******************************************************************************
