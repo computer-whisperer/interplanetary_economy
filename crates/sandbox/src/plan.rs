@@ -1,22 +1,29 @@
-//! A mission plan in the sandbox (M1c.md, step 4 plan, item 4): its ships
-//! designed on a background thread, in parallel on a pool of their own
-//! (the UI's rebuilds use rayon's global pool, and would wait behind them),
-//! each item kept as it arrives.
+//! A mission plan in the sandbox (M1c.md, step 4 plan, item 4; step 7
+//! plan, item 2): its ships designed in the background, in parallel on a
+//! pool of their own (the UI's rebuilds use rayon's global pool, and
+//! would wait behind them), each item kept as it arrives; a ship edited
+//! designed again from where the edit takes effect.
 
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
-use orbit::mission::{Item, ItemKind, Marker, MarkerKind, Plan, Planner, Step, World};
+use orbit::mission::{
+    Checkpoint, Item, ItemKind, Marker, MarkerKind, Plan, Planner, Step, World, resume_from,
+};
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::track::Track;
-use rayon::prelude::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, LazyLock};
 
-/// What the background thread reports about a ship.
+/// What a designer reports about a ship.
 enum Message {
-    Items(Vec<Item>),
+    /// It started: where it is before its first step.
+    Started(Checkpoint),
+    /// Items, and where the ship is after them.
+    Items(Vec<Item>, Checkpoint),
     /// It could not start: why.
     Refused(String),
     Done,
@@ -34,15 +41,46 @@ pub struct Ship {
     pub first_leg: usize,
 }
 
+/// A ship's design: its generation (each edit starts another; a
+/// designer of an older one stops after the step it is on, and what it
+/// sent is dropped), and where the ship is before each step designed.
+struct Design {
+    generation: u64,
+    live: Arc<AtomicU64>,
+    checkpoints: Vec<Checkpoint>,
+}
+
+/// The fields legs are designed in, built once.
+static WORLD: LazyLock<World> = LazyLock::new(World::standard);
+
 /// A plan being designed.
 pub struct Loaded {
     pub name: String,
+    /// The plan as edited.
+    pub plan: Plan,
     pub ships: Vec<Ship>,
+    designs: Vec<Design>,
     /// The first ship's start.
     pub start: Epoch,
-    /// Changes whenever items arrive (not when a ship is only done).
+    /// Changes whenever items arrive or a ship is edited (not when a
+    /// ship is only done).
     pub generation: u64,
-    receiver: Receiver<(usize, Message)>,
+    pool: Arc<rayon::ThreadPool>,
+    sender: Sender<(usize, u64, Message)>,
+    receiver: Receiver<(usize, u64, Message)>,
+}
+
+/// Each ship's first leg's place in the plan's legs.
+fn first_legs(plan: &Plan) -> Vec<usize> {
+    let mut first = 0;
+    plan.ships
+        .iter()
+        .map(|s| {
+            let here = first;
+            first += s.steps.iter().filter(|s| matches!(s, Step::Go(_))).count();
+            here
+        })
+        .collect()
 }
 
 impl Loaded {
@@ -55,20 +93,25 @@ impl Loaded {
     }
 
     pub fn start(plan: Plan) -> Loaded {
-        let mut first_leg = 0;
         let ships = plan
             .ships
             .iter()
-            .map(|s| {
-                let ship = Ship {
-                    name: s.name.clone(),
-                    items: Vec::new(),
-                    done: false,
-                    failure: None,
-                    first_leg,
-                };
-                first_leg += s.steps.iter().filter(|s| matches!(s, Step::Go(_))).count();
-                ship
+            .zip(first_legs(&plan))
+            .map(|(s, first_leg)| Ship {
+                name: s.name.clone(),
+                items: Vec::new(),
+                done: false,
+                failure: None,
+                first_leg,
+            })
+            .collect();
+        let designs = plan
+            .ships
+            .iter()
+            .map(|_| Design {
+                generation: 0,
+                live: Arc::new(AtomicU64::new(0)),
+                checkpoints: Vec::new(),
             })
             .collect();
         let start = plan
@@ -77,24 +120,113 @@ impl Loaded {
             .map(|s| s.epoch)
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .unwrap_or(Epoch::from_ymd(2045, 1, 1));
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("design {i}"))
+            .build()
+            .expect("a thread pool");
         let (sender, receiver) = channel();
-        let name = plan.name.clone();
-        std::thread::spawn(move || design(plan, sender));
-        Loaded {
-            name,
+        let loaded = Loaded {
+            name: plan.name.clone(),
+            plan,
             ships,
+            designs,
             start,
             generation: 0,
+            pool: Arc::new(pool),
+            sender,
             receiver,
+        };
+        for s in 0..loaded.ships.len() {
+            loaded.design(s, None);
         }
+        loaded
+    }
+
+    /// Designs ship `s` in the background for its design's generation,
+    /// from `from` (else its start), sending each step's items as they
+    /// are ready. A ship whose design panics is refused; once the plan is
+    /// closed or the ship edited again, the designer stops after the step
+    /// it is on.
+    fn design(&self, s: usize, from: Option<Checkpoint>) {
+        let ship = self.plan.ships[s].clone();
+        let (generation, live) = (self.designs[s].generation, self.designs[s].live.clone());
+        let sender = self.sender.clone();
+        self.pool.spawn(move || {
+            let world = &*WORLD;
+            let send = |m| {
+                live.load(Ordering::Relaxed) == generation
+                    && sender.send((s, generation, m)).is_ok()
+            };
+            let designed = catch_unwind(AssertUnwindSafe(|| {
+                let mut planner = match from {
+                    Some(c) => Planner::resume(world, &ship, c),
+                    None => match Planner::new(world, &ship) {
+                        Ok(p) => {
+                            if !send(Message::Started(p.checkpoint())) {
+                                return;
+                            }
+                            p
+                        }
+                        Err(why) => {
+                            send(Message::Refused(why));
+                            return;
+                        }
+                    },
+                };
+                while let Some(items) = planner.step() {
+                    if !send(Message::Items(items, planner.checkpoint())) {
+                        return;
+                    }
+                }
+                send(Message::Done);
+            }));
+            if let Err(panic) = designed {
+                let why = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("no message");
+                send(Message::Refused(format!("designing it panicked: {why}")));
+            }
+        });
+    }
+
+    /// Replaces ship `s` with `ship`, whose steps from `edited` on
+    /// changed (`None`: its start changed), and designs it again from
+    /// where that takes effect (`mission::resume_from`), keeping the items
+    /// before.
+    pub fn edit(&mut self, s: usize, ship: orbit::mission::Ship, edited: Option<usize>) {
+        let design = &mut self.designs[s];
+        let from = edited
+            .and_then(|e| resume_from(&design.checkpoints, e))
+            .cloned();
+        let keep = from.as_ref().map_or(0, Checkpoint::next);
+        design.checkpoints.retain(|c| c.next() <= keep);
+        design.generation += 1;
+        design.live.store(design.generation, Ordering::Relaxed);
+        self.plan.ships[s] = ship;
+        let shown = &mut self.ships[s];
+        shown.name = self.plan.ships[s].name.clone();
+        shown.items.retain(|i| i.step < keep);
+        shown.done = false;
+        shown.failure = shown.items.iter().find_map(|i| match &i.kind {
+            ItemKind::Failed(why) => Some(why.clone()),
+            _ => None,
+        });
+        for (shown, first) in self.ships.iter_mut().zip(first_legs(&self.plan)) {
+            shown.first_leg = first;
+        }
+        self.generation += 1;
+        self.design(s, from);
     }
 
     /// Takes what has arrived; `true` if anything did.
     pub fn poll(&mut self) -> bool {
         let mut any = false;
-        while let Ok((i, message)) = self.receiver.try_recv() {
-            self.take(i, message);
-            any = true;
+        while let Ok((s, generation, message)) = self.receiver.try_recv() {
+            any |= self.take(s, generation, message);
         }
         any
     }
@@ -103,22 +235,31 @@ impl Loaded {
     pub fn wait(&mut self) {
         while !self.done() {
             match self.receiver.recv() {
-                Ok((i, message)) => self.take(i, message),
+                Ok((s, generation, message)) => {
+                    self.take(s, generation, message);
+                }
                 Err(_) => return,
             }
         }
     }
 
-    fn take(&mut self, i: usize, message: Message) {
-        let ship = &mut self.ships[i];
+    /// Takes a message for ship `s`'s design of `generation`: `false`
+    /// if it is of an older one.
+    fn take(&mut self, s: usize, generation: u64, message: Message) -> bool {
+        let (ship, design) = (&mut self.ships[s], &mut self.designs[s]);
+        if generation != design.generation {
+            return false;
+        }
         match message {
-            Message::Items(items) => {
+            Message::Started(c) => design.checkpoints.push(c),
+            Message::Items(items, c) => {
                 for item in &items {
                     if let ItemKind::Failed(why) = &item.kind {
                         ship.failure = Some(why.clone());
                     }
                 }
                 ship.items.extend(items);
+                design.checkpoints.push(c);
                 self.generation += 1;
             }
             Message::Refused(why) => {
@@ -127,6 +268,7 @@ impl Loaded {
             }
             Message::Done => ship.done = true,
         }
+        true
     }
 
     pub fn done(&self) -> bool {
@@ -174,45 +316,6 @@ impl Loaded {
         }
         s
     }
-}
-
-/// Designs `plan`'s ships in parallel on a pool of their own, sending each
-/// item as it is ready. A ship whose design panics is refused; once the
-/// sandbox has closed, ships stop at their next item.
-fn design(plan: Plan, sender: Sender<(usize, Message)>) {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .thread_name(|i| format!("design {i}"))
-        .build()
-        .expect("a thread pool");
-    let world = World::standard();
-    pool.install(|| {
-        plan.ships.par_iter().enumerate().for_each(|(i, ship)| {
-            let send = |m| sender.send((i, m)).is_ok();
-            let designed = catch_unwind(AssertUnwindSafe(|| match Planner::new(&world, ship) {
-                Ok(mut planner) => {
-                    while let Some(items) = planner.step() {
-                        if !send(Message::Items(items)) {
-                            return;
-                        }
-                    }
-                    send(Message::Done);
-                }
-                Err(why) => {
-                    send(Message::Refused(why));
-                }
-            }));
-            if let Err(panic) = designed {
-                let why = panic
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| panic.downcast_ref::<&str>().copied())
-                    .unwrap_or("no message");
-                send(Message::Refused(format!("designing it panicked: {why}")));
-            }
-        });
-    });
 }
 
 /// When a marker is drawn and jumped to: a landing where the ship leaves

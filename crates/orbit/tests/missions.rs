@@ -1,11 +1,14 @@
 //! Mission plans flown (M1c.md, step 1): every plan in `data/missions/`
 //! parses; a chain of legs is continuous in time and in space, where
 //! drawn; junctions in a low orbit the planner cannot fly are reported;
-//! an aerocapture ends circular in its low orbit.
+//! an aerocapture ends circular in its low orbit; a plan edited goes on
+//! from the middle as a fresh design of it would.
 
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
-use orbit::mission::{Item, ItemKind, MarkerKind, Plan, Planner, World};
+use orbit::mission::{
+    Checkpoint, Item, ItemKind, MarkerKind, Plan, Planner, Step, World, resume_from,
+};
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 
@@ -269,4 +272,102 @@ to = "2000-sg344"
         ] => assert!(why.contains("known from 2040-01-01"), "{why}"),
         other => panic!("{other:?}"),
     }
+}
+
+/// Down from the NRHO to the south pole and back to low lunar orbit.
+const SORTIE: &str = r#"
+name = "Sortie"
+
+[[ship]]
+name = "Lander"
+start = { at = "nrho", epoch = "2045-03-05" }
+
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+to = "llo"
+"#;
+
+/// Every item, and the checkpoint before each step.
+fn fly_with_checkpoints(
+    world: &World,
+    ship: &orbit::mission::Ship,
+) -> (Vec<Item>, Vec<Checkpoint>) {
+    let mut planner = Planner::new(world, ship).unwrap();
+    let (mut items, mut checkpoints) = (Vec::new(), vec![planner.checkpoint()]);
+    while let Some(batch) = planner.step() {
+        items.extend(batch);
+        checkpoints.push(planner.checkpoint());
+    }
+    (items, checkpoints)
+}
+
+/// Items alike, to rounding.
+fn assert_same(a: &[Item], b: &[Item]) {
+    assert_eq!(a.len(), b.len());
+    for (x, y) in a.iter().zip(b) {
+        assert_eq!((x.step, &x.kind, &x.label), (y.step, &y.kind, &y.label));
+        assert!((x.start.0 - y.start.0).abs() < 1e-9 && (x.end.0 - y.end.0).abs() < 1e-9);
+        assert!(
+            (x.dv - y.dv).abs() < 1e-9,
+            "{}: {} against {}",
+            x.label,
+            x.dv,
+            y.dv
+        );
+    }
+}
+
+/// The wait on the surface lengthened: going on from the checkpoint
+/// before it gives what designing the edited plan afresh gives; each item
+/// names its step.
+#[test]
+fn an_edit_goes_on_from_the_middle() {
+    let world = World::standard();
+    let plan = Plan::parse(SORTIE, world.eph, Places::standard()).unwrap();
+    let ship = &plan.ships[0];
+    let (items, checkpoints) = fly_with_checkpoints(&world, ship);
+    let steps: Vec<usize> = items.iter().map(|i| i.step).collect();
+    let kinds: Vec<&ItemKind> = items.iter().map(|i| &i.kind).collect();
+    println!("{steps:?} {kinds:?}");
+    assert!(
+        items
+            .iter()
+            .all(|i| matches!(ship.steps[i.step], Step::Go(_)))
+    );
+    assert_eq!(
+        checkpoints.iter().map(Checkpoint::next).collect::<Vec<_>>(),
+        [0, 1, 2, 4]
+    );
+
+    let mut edited = ship.clone();
+    edited.steps[2] = Step::Wait(3.0);
+    let from = resume_from(&checkpoints, 2).unwrap();
+    assert_eq!(from.next(), 2, "after the landing: on the surface");
+    let mut planner = Planner::resume(&world, &edited, from.clone());
+    let mut resumed: Vec<Item> = items.iter().filter(|i| i.step < 2).cloned().collect();
+    while let Some(batch) = planner.step() {
+        resumed.extend(batch);
+    }
+    let (fresh, _) = fly_with_checkpoints(&world, &edited);
+    assert_same(&resumed, &fresh);
+    let stay = fresh
+        .iter()
+        .find(|i| i.label == "at moon-south-pole")
+        .unwrap();
+    assert!((stay.end.0 - stay.start.0 - 3.0).abs() < 1e-9);
+
+    // An edit to the leg leaving a station goes on from before the leg
+    // that reached it (its visit was built for the leg leaving); here, the
+    // start.
+    assert!(resume_from(&checkpoints, 0).is_none());
+    assert_eq!(resume_from(&checkpoints, 1).map(Checkpoint::next), Some(1));
 }

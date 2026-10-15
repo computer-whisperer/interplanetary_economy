@@ -401,6 +401,7 @@ fn a_line_over_a_disk_is_picked() {
 
 fn item(kind: ItemKind, dv: f64) -> Item {
     Item {
+        step: 0,
         kind,
         label: "leo → nrho".into(),
         start: Epoch::from_ymd(2045, 3, 1),

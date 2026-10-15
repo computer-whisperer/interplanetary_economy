@@ -334,6 +334,8 @@ impl World {
 /// What a ship does over a span of time.
 #[derive(Clone, Debug)]
 pub struct Item {
+    /// The ship's step that made it: the stay before a leg is the leg's.
+    pub step: usize,
     pub kind: ItemKind,
     pub label: String,
     pub start: Epoch,
@@ -401,6 +403,38 @@ pub enum MarkerKind {
     },
 }
 
+/// Where a [`Planner`] is between steps: the step it goes on from, and
+/// where the ship is then.
+#[derive(Clone)]
+pub struct Checkpoint {
+    next: usize,
+    here: Here,
+    label: String,
+    since: Epoch,
+    ready: Epoch,
+    stopped: bool,
+}
+
+impl Checkpoint {
+    /// The step it goes on from.
+    pub fn next(&self) -> usize {
+        self.next
+    }
+}
+
+/// Of `checkpoints` (by their steps, ascending), the one to go on from
+/// after the ship's steps from `edited` on change: the last before the
+/// edit, but not one in a station's orbit, whose visit was built long
+/// enough for the steps after it (its waits, and the next leg's window
+/// and durations); then the one before it. `None`: from the start.
+pub fn resume_from(checkpoints: &[Checkpoint], edited: usize) -> Option<&Checkpoint> {
+    let k = checkpoints.iter().rposition(|c| c.next <= edited)?;
+    checkpoints[..=k]
+        .iter()
+        .rev()
+        .find(|c| !matches!(c.here, Here::Station(_)))
+}
+
 /// A station orbit for one visit: the reference the ship follows from the
 /// leg that arrives until the leg that leaves.
 struct Visit {
@@ -438,6 +472,8 @@ pub struct Planner<'w> {
     world: &'w World,
     ship: Ship,
     next: usize,
+    /// The step being designed.
+    at: usize,
     here: Here,
     label: String,
     /// When the ship reached where it is, and when it may leave.
@@ -452,6 +488,7 @@ impl<'w> Planner<'w> {
             world,
             ship: ship.clone(),
             next: 0,
+            at: 0,
             here: Here::Body(world.eph.sun()),
             label: ship.start.label.clone(),
             since: ship.epoch,
@@ -473,12 +510,42 @@ impl<'w> Planner<'w> {
         Ok(p)
     }
 
+    /// Where it is between steps, to go on from (with the steps from
+    /// there edited) by [`Planner::resume`].
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            next: self.next,
+            here: self.here.clone(),
+            label: self.label.clone(),
+            since: self.since,
+            ready: self.ready,
+            stopped: self.stopped,
+        }
+    }
+
+    /// Goes on from `checkpoint`, one of this ship's, with `ship`'s steps
+    /// (from the checkpoint's on, edited or not).
+    pub fn resume(world: &'w World, ship: &Ship, checkpoint: Checkpoint) -> Planner<'w> {
+        Planner {
+            world,
+            ship: ship.clone(),
+            next: checkpoint.next,
+            at: checkpoint.next,
+            here: checkpoint.here,
+            label: checkpoint.label,
+            since: checkpoint.since,
+            ready: checkpoint.ready,
+            stopped: checkpoint.stopped,
+        }
+    }
+
     /// The next items: a stay and the leg or event after it, or a failure
     /// (after which there are none). `None` when the plan is done.
     pub fn step(&mut self) -> Option<Vec<Item>> {
         while !self.stopped {
             let i = self.next;
             self.next += 1;
+            self.at = i;
             match self.ship.steps.get(i)?.clone() {
                 Step::Wait(days) => self.ready = self.ready.plus_days(days),
                 Step::Go(go) => {
@@ -494,6 +561,7 @@ impl<'w> Planner<'w> {
                         Err(why) => {
                             self.stopped = true;
                             vec![Item {
+                                step: self.at,
                                 kind: ItemKind::Failed(why),
                                 label: format!("{} → {}", self.label, go.to.label),
                                 start: self.ready,
@@ -604,6 +672,7 @@ impl<'w> Planner<'w> {
         let end = start.plus_days(SURFACE_DAYS);
         let (mut items, _) = self.stay(start, None)?;
         items.push(Item {
+            step: self.at,
             kind,
             label: format!("{} → {}", self.label, go.to.label),
             start,
@@ -1013,6 +1082,7 @@ impl<'w> Planner<'w> {
             }
         }
         items.push(Item {
+            step: self.at,
             kind: ItemKind::Leg,
             label: format!("{} → {}", self.label, go.to.label),
             start: t0,
@@ -1128,6 +1198,7 @@ impl<'w> Planner<'w> {
         let state = [top[0], top[1], top[2], circular.x, circular.y, circular.z];
         Ok((
             Item {
+                step: self.at,
                 kind: ItemKind::Capture,
                 label: format!("aerocapture into {}", describe(eph, &PlaceKind::Low(orbit))),
                 start: t,
@@ -1175,6 +1246,7 @@ impl<'w> Planner<'w> {
         let span = span.max(0.0);
         let mut jumped = None;
         let mut item = Item {
+            step: self.at,
             kind: ItemKind::Stay,
             label: format!("at {}", self.label),
             start: self.since,

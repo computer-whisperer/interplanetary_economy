@@ -6,6 +6,25 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, part 2: re-planning from the middle. As planned (step 7
+  plan, item 2):
+  - Each item names its step (`Item::step`). A planner's checkpoint
+    (`Planner::checkpoint`) is taken before its first step and after
+    each leg; `Planner::resume` goes on from one with the ship's steps
+    edited; `mission::resume_from` picks it (the last before the edit,
+    not one in a station's orbit; else the start).
+  - In the sandbox, `Loaded::edit` replaces a ship and designs it again
+    from there, keeping the items before. Each ship's design has a
+    generation; a designer of an older one stops after the step it is
+    on, and what it sent is dropped. The fields legs are designed in
+    are built once a process, not once a plan.
+  - Checks: the sortie (NRHO, low lunar orbit, the south pole, a wait,
+    back up) with its wait on the surface lengthened, resumed after
+    the landing, gives what a fresh design of the edited plan gives
+    (times to 1e-9 days, Δv to 1e-9 km/s); in the sandbox, the same
+    edited after designing and while still designing, the other ship
+    untouched.
+
 - Step 7, part 1: the timeline. As planned (step 7 plan, item 1);
   where it differs or adds:
   - A press on the axis seeks the clock; on the lanes, a press that

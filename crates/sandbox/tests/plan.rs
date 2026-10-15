@@ -1,9 +1,10 @@
-//! A plan in the sandbox (M1c.md, step 4 plan, items 4, 5 and 7):
-//! designed in the background, its paths drawn in each frame along its
-//! tracks, ships riding them, and events where they happen.
+//! A plan in the sandbox (M1c.md, step 4 plan, items 4, 5 and 7; step 7
+//! plan, item 2): designed in the background, its paths drawn in each
+//! frame along its tracks, ships riding them, and events where they
+//! happen; a ship edited designed again from the middle.
 
 use orbit::ephem::Ephemeris;
-use orbit::mission::{ItemKind, Plan};
+use orbit::mission::{Item, ItemKind, Plan, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sandbox::app::Shell;
@@ -214,4 +215,87 @@ fn published_plan_gpu_time() {
             None => println!("no timestamps"),
         }
     }
+}
+
+/// Down from the NRHO to the south pole and back to low lunar orbit, and
+/// a second ship that stays as it is.
+const SORTIE: &str = r#"
+name = "Sortie"
+
+[[ship]]
+name = "Lander"
+start = { at = "nrho", epoch = "2045-03-05" }
+
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+to = "llo"
+
+[[ship]]
+name = "Other"
+start = { at = "nrho", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+"#;
+
+/// Items alike, to rounding.
+fn assert_same(a: &[Item], b: &[Item]) {
+    assert_eq!(a.len(), b.len());
+    for (x, y) in a.iter().zip(b) {
+        assert_eq!((x.step, &x.kind, &x.label), (y.step, &y.kind, &y.label));
+        assert!((x.start.0 - y.start.0).abs() < 1e-9 && (x.end.0 - y.end.0).abs() < 1e-9);
+        assert!(
+            (x.dv - y.dv).abs() < 1e-9,
+            "{}: {} against {}",
+            x.label,
+            x.dv,
+            y.dv
+        );
+    }
+}
+
+/// A ship edited once designed, and one edited while still designing,
+/// end as a fresh design of the edited plan; the other ship is left alone,
+/// and what an older design sends is dropped.
+#[test]
+fn an_edited_ship_is_designed_again() {
+    let eph = Ephemeris::standard();
+    let parse = || Plan::parse(SORTIE, eph, Places::standard()).unwrap();
+    let mut edited = parse();
+    edited.ships[0].steps[2] = Step::Wait(3.0);
+    let mut fresh = Loaded::start(edited.clone());
+    fresh.wait();
+    assert!(fresh.ships.iter().all(|s| s.failure.is_none()));
+
+    let mut plan = Loaded::start(parse());
+    plan.wait();
+    let other = plan.ships[1].items.clone();
+    let generation = plan.generation;
+    plan.edit(0, edited.ships[0].clone(), Some(2));
+    assert!(plan.generation > generation);
+    assert!(!plan.ships[0].done);
+    assert!(
+        plan.ships[0].items.iter().all(|i| i.step < 2),
+        "the items before the edit are kept"
+    );
+    assert!(!plan.ships[0].items.is_empty());
+    plan.wait();
+    assert_same(&plan.ships[0].items, &fresh.ships[0].items);
+    assert_same(&plan.ships[1].items, &other);
+
+    // Edited at once, while its first design is under way.
+    let mut plan = Loaded::start(parse());
+    plan.edit(0, edited.ships[0].clone(), Some(2));
+    plan.wait();
+    assert_same(&plan.ships[0].items, &fresh.ships[0].items);
 }
