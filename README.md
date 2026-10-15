@@ -39,9 +39,9 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   (`places.toml`), mission plans (`missions/`), the route graph the
   autopilot measured (`routes.toml`, written by `orbit routes`), the
   economy (`economy.toml`, with sources), the bodies' rotation models
-  (`rotation.toml`, IAU 2015) and maps (`bodies/`: color, relief, and
-  Earth's clouds, lights and oceans, from NASA, USGS and PDS, with their
-  terms), and the sky (`sky/`: the Hipparcos stars and NASA SVS's Milky
+  (`rotation.toml`, IAU 2015) and maps (`bodies/`: color, relief,
+  Earth's clouds, lights and oceans, and Saturn's rings, from NASA, USGS
+  and PDS, with their terms), and the sky (`sky/`: the Hipparcos stars and NASA SVS's Milky
   Way).
 - `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
   then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
@@ -60,6 +60,9 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
 - `tools/textures/` — regenerates `data/bodies/` (`fetch.sh DIR`, ~260
   MB, then `python3 build.py DIR ../../data/bodies`; needs numpy, Pillow
   and vips), checking each map's orientation against landmarks.
+- `tools/rings/` — regenerates `data/bodies/saturn/rings.toml` from
+  Cassini UVIS's Gamma Crucis occultation (`fetch.sh DIR`, then `python3
+  build.py DIR > ../../data/bodies/saturn/rings.toml`; needs numpy).
 - `tools/sky/` — regenerates `data/sky/` (`fetch.sh DIR`, ~250 MB, then
   `python3 build.py DIR ../../data/sky`; needs numpy, scipy, Pillow and
   OpenEXR): the star list, the Milky Way map, and its calibration against

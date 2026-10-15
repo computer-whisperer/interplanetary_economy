@@ -185,6 +185,38 @@ pub struct Maps {
     pub shading: Shading,
     /// Its atmosphere, over the sphere's radius.
     pub air: Option<crate::atmosphere::Air>,
+    /// Its rings, in its equator's plane.
+    pub rings: Option<Rings>,
+}
+
+/// Rings in a body's equatorial plane: from `inner` to `outer` km, their
+/// particles' albedo and normal optical depth across them (a row of
+/// texels, RGBA half floats: albedo, then depth), lit as a slab of
+/// Lambert spheres scattering once.
+#[derive(Clone, Debug)]
+pub struct Rings {
+    pub inner: f64,
+    pub outer: f64,
+    pub profile: Image,
+}
+
+impl Rings {
+    /// Rings from `inner` km out in steps of `step` km, each step's
+    /// optical depth `tau` and particle albedo `albedo`.
+    pub fn new(inner: f64, step: f64, tau: &[f32], albedo: &[[f32; 3]]) -> Rings {
+        assert_eq!(tau.len(), albedo.len());
+        let data = tau
+            .iter()
+            .zip(albedo)
+            .flat_map(|(t, a)| [a[0], a[1], a[2], *t])
+            .flat_map(|x| f32_to_f16(x).to_le_bytes())
+            .collect();
+        Rings {
+            inner,
+            outer: inner + step * tau.len() as f64,
+            profile: Image::new(tau.len() as u32, 1, wgpu::TextureFormat::Rgba16Float, data),
+        }
+    }
 }
 
 /// Bits of `SphereGpu::flags` (scene.wgsl's `FLAG_*`).
@@ -225,9 +257,11 @@ pub(crate) struct MapsPass {
 }
 
 /// The textures a sphere's bind group holds, in binding order: the maps,
-/// then (after their sampler) the atmosphere's two tables, and theirs.
+/// then (after their sampler) the atmosphere's two tables, and theirs;
+/// then the rings' profile (read with the maps' sampler).
 const TEXTURES: usize = 5;
 const TABLES: usize = 2;
+const RINGS_BINDING: u32 = (TEXTURES + 2 + TABLES) as u32;
 
 impl MapsPass {
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> MapsPass {
@@ -252,6 +286,7 @@ impl MapsPass {
         entries.push(sampler_entry(TEXTURES as u32));
         entries.extend((0..TABLES as u32).map(|k| texture(TEXTURES as u32 + 1 + k)));
         entries.push(sampler_entry((TEXTURES + 1 + TABLES) as u32));
+        entries.push(texture(RINGS_BINDING));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("maps"),
             entries: &entries,
@@ -286,6 +321,7 @@ impl MapsPass {
             [&sampler, &table_sampler],
             [&white, &flat, &none, &none, &none],
             [&no_table, &no_table],
+            &no_table,
         );
         MapsPass {
             layout,
@@ -339,12 +375,17 @@ impl MapsPass {
                 ],
                 None => [0, 1].map(|_| plain(wgpu::TextureFormat::Rgba16Float, &[0; 8])),
             };
+            let rings = match &m.rings {
+                Some(r) => post.upload_with_mips(device, queue, encoder, &r.profile),
+                None => plain(wgpu::TextureFormat::Rgba16Float, &[0; 8]),
+            };
             let g = group(
                 device,
                 &self.layout,
                 [&self.sampler, &self.table_sampler],
                 std::array::from_fn(|k| &views[k]),
                 [&tables[0], &tables[1]],
+                &rings,
             );
             self.uploaded.insert(key, (m.clone(), g));
         }
@@ -393,6 +434,7 @@ fn group<'a>(
     [sampler, table_sampler]: [&'a wgpu::Sampler; 2],
     views: [&'a wgpu::TextureView; TEXTURES],
     tables: [&'a wgpu::TextureView; TABLES],
+    rings: &'a wgpu::TextureView,
 ) -> wgpu::BindGroup {
     fn view(binding: usize, v: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
         wgpu::BindGroupEntry {
@@ -416,6 +458,7 @@ fn group<'a>(
         binding: (TEXTURES + 1 + TABLES) as u32,
         resource: wgpu::BindingResource::Sampler(table_sampler),
     });
+    entries.push(view(RINGS_BINDING as usize, rings));
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("maps"),
         layout,

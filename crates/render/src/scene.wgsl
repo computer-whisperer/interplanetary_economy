@@ -64,6 +64,8 @@ struct Sphere {
     atmosphere: Atmosphere,
     // What may hide the Sun from it.
     shadows: Shadows,
+    // Its rings' inner and outer radii, km (0 for none).
+    rings: vec4<f32>,
 }
 
 // The Sun and the spheres that may hide part of it from a sphere's
@@ -200,6 +202,9 @@ struct Piece {
 @group(3) @binding(6) var transmittance_table: texture_2d<f32>;
 @group(3) @binding(7) var multiple_table: texture_2d<f32>;
 @group(3) @binding(8) var table_sampler: sampler;
+// The rings' profile across them, inner edge to outer: their particles'
+// albedo (rgb) and normal optical depth (a).
+@group(3) @binding(9) var ring_map: texture_2d<f32>;
 @group(1) @binding(0) var<storage, read> vertices: array<PathVertex>;
 @group(1) @binding(1) var<storage, read> paths: array<PathInfo>;
 // Per instance, a run of segments: its first vertex, and its segments
@@ -284,13 +289,30 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     var ddy = dpdy(uv);
     ddx.x -= round(ddx.x);
     ddy.x -= round(ddy.x);
+    // Rings in the equator's plane: where the ray crosses it, how far
+    // from the center, and that distance's change across the screen (for
+    // the profile's level).
+    let has_rings = s.rings.y > 0.0;
+    let crossing = dot(d, s.axes[2]);
+    var ring_t = -1.0;
+    var ring_r = 0.0;
+    if (has_rings && abs(crossing) > 1e-7) {
+        ring_t = dot(s.center, s.axes[2]) / crossing;
+        ring_r = length(d * ring_t - s.center);
+    }
+    let ring_rate = length(vec2<f32>(dpdx(ring_r), dpdy(ring_r)));
+    // And where the ray from the ground point toward the Sun crosses
+    // them (their shadow), with its change across the screen.
+    let shadow_r = ring_shadow_radius(s, p);
+    let shadow_rate = length(vec2<f32>(dpdx(shadow_r), dpdy(shadow_r)));
+    let in_rings = ring_t > 0.0 && ring_r >= s.rings.x && ring_r <= s.rings.y;
     let ground = coverage > 0.0 && b > 0.0;
     let has_air = s.atmosphere.top > 0.0;
-    // Neither the ground nor the air: nothing here (nor depth, which
-    // would hide lines behind).
+    // Neither the ground nor the air nor rings: nothing here (nor depth,
+    // which would hide lines behind).
     let air_top = s.atmosphere.top;
     let in_air = has_air && disc + (air_top - s.radius) * (air_top + s.radius) > 0.0;
-    if (!ground && !in_air) {
+    if (!ground && !in_air && !in_rings) {
         discard;
     }
     var surface = vec3<f32>(0.0);
@@ -303,7 +325,7 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
         } else {
             // Sunlight reaching the ground: past other bodies, and
             // through the air.
-            var sun = vec3<f32>(sun_seen(s.shadows, p));
+            var sun = vec3<f32>(sun_seen(s.shadows, p) * ring_shadow(s, shadow_r, shadow_rate));
             if (has_air) {
                 sun *= through_air(s.atmosphere, s.radius, s.radius, 0.0, dot(up, s.light));
             }
@@ -312,19 +334,102 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     }
     var out: SphereFragment;
     out.depth = frame.near / max(-p.z, frame.near);
-    if (!has_air) {
-        out.color = vec4<f32>(surface * coverage, coverage);
+    // The ground and its air, premultiplied.
+    var base = vec4<f32>(surface * coverage, coverage);
+    if (has_air) {
+        // The air along the ray, to the ground where it meets it: the
+        // light it scatters toward the eye, and what it lets through.
+        let air = march(s, d, b, disc, ground && disc >= 0.0);
+        let through = dot(air.transmittance, vec3<f32>(1.0 / 3.0));
+        base = vec4<f32>(air.light + coverage * air.transmittance * surface, coverage + (1.0 - coverage) * (1.0 - through));
+        if (!ground) {
+            out.depth = frame.near / max(air.near, frame.near);
+        }
+    }
+    if (!in_rings) {
+        out.color = base;
         return out;
     }
-    // The air along the ray, to the ground where it meets it: the light
-    // it scatters toward the eye, and what it lets through.
-    let air = march(s, d, b, disc, ground && disc >= 0.0);
-    let through = dot(air.transmittance, vec3<f32>(1.0 / 3.0));
-    out.color = vec4<f32>(air.light + coverage * air.transmittance * surface, coverage + (1.0 - coverage) * (1.0 - through));
-    if (!ground) {
-        out.depth = frame.near / max(air.near, frame.near);
+    // The rings, in front of the ground (or with none behind) or behind
+    // it, seen past its edge.
+    let ring = ring_light(s, d, ring_t, ring_r, ring_rate);
+    let ring_depth = frame.near / max(ring_t * -d.z, frame.near);
+    if (!ground || disc < 0.0 || ring_t < q / (b + sqrt(disc))) {
+        out.color = vec4<f32>(ring.rgb + ring.a * base.rgb, 1.0 - ring.a * (1.0 - base.a));
+        out.depth = ring_depth;
+    } else {
+        out.color = vec4<f32>(base.rgb + (1.0 - base.a) * ring.rgb, base.a + (1.0 - base.a) * (1.0 - ring.a));
     }
     return out;
+}
+
+// The rings' profile at `r` km from the center, at `level`.
+fn ring_profile(s: Sphere, r: f32, level: f32) -> vec4<f32> {
+    let u = (r - s.rings.x) / (s.rings.y - s.rings.x);
+    return textureSampleLevel(ring_map, map_sampler, vec2<f32>(u, 0.5), level);
+}
+
+// Where the ray from `p` (view space) toward the Sun crosses the rings'
+// plane, km from the center; -1 where it does not.
+fn ring_shadow_radius(s: Sphere, p: vec3<f32>) -> f32 {
+    let toward = dot(s.light, s.axes[2]);
+    if (s.rings.y <= 0.0 || abs(toward) < 1e-6) {
+        return -1.0;
+    }
+    let t = dot(s.center - p, s.axes[2]) / toward;
+    if (t <= 0.0) {
+        return -1.0;
+    }
+    return length(p + s.light * t - s.center);
+}
+
+// The share of sunlight reaching a point past the rings, its ray toward
+// the Sun crossing them `r` km from the center (changing by `rate` a
+// pixel: the profile's level, so their fine structure does not alias).
+fn ring_shadow(s: Sphere, r: f32, rate: f32) -> f32 {
+    if (r < s.rings.x || r > s.rings.y) {
+        return 1.0;
+    }
+    let texels = f32(textureDimensions(ring_map).x);
+    let level = max(log2(rate * texels / (s.rings.y - s.rings.x)), 0.0);
+    return exp(-ring_profile(s, r, level).a / abs(dot(s.light, s.axes[2])));
+}
+
+// The rings where the ray `d` crosses them, `t` along it, `r` from the
+// center (changing by `rate` a pixel): the light they send toward the eye
+// (rgb) and their transmittance along the ray (a). A slab of normal
+// optical depth τ scattering once, its particles Lambert spheres of the
+// profile's albedo: from the lit face, μ₀ / (μ₀ + μ) (1 − e^(−τ (1/μ +
+// 1/μ₀))); through to the unlit face, μ₀ / (μ − μ₀) (e^(−τ/μ) − e^(−τ/μ₀));
+// times ω P(α) / 4, in this file's radiance units. Saturn's shadow and
+// other bodies' fall on them.
+fn ring_light(s: Sphere, d: vec3<f32>, t: f32, r: f32, rate: f32) -> vec4<f32> {
+    let n = s.axes[2];
+    let width = s.rings.y - s.rings.x;
+    let texels = f32(textureDimensions(ring_map).x);
+    let k = ring_profile(s, r, max(log2(rate * texels / width), 0.0));
+    let tau = k.a;
+    let mu = max(abs(dot(d, n)), 1e-4);
+    let mu0 = abs(dot(s.light, n));
+    let transmittance = exp(-tau / mu);
+    let p = d * t;
+    let to_center = s.center - p;
+    let along = dot(to_center, s.light);
+    var sunlit = sun_seen(s.shadows, p);
+    if ((along > 0.0 && dot(to_center, to_center) - along * along < s.radius * s.radius) || mu0 < 1e-4) {
+        sunlit = 0.0;
+    }
+    let alpha = acos(clamp(dot(s.light, -d), -1.0, 1.0));
+    let phase = 8.0 / (3.0 * PI) * (sin(alpha) + (PI - alpha) * cos(alpha));
+    var share: f32;
+    if (dot(s.light, n) * dot(-d, n) > 0.0) {
+        share = mu0 / (mu0 + mu) * (1.0 - exp(-tau * (1.0 / mu + 1.0 / mu0)));
+    } else if (abs(mu - mu0) < 1e-3) {
+        share = tau / mu * exp(-tau / mu);
+    } else {
+        share = mu0 / (mu - mu0) * (exp(-tau / mu) - exp(-tau / mu0));
+    }
+    return vec4<f32>(k.rgb * s.irradiance * phase / 4.0 * share * sunlit, transmittance);
 }
 
 // What a stretch of atmosphere gives: light scattered toward the eye, the

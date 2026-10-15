@@ -216,6 +216,8 @@ pub struct SphereGpu {
     pub surface: SurfaceGpu,
     pub atmosphere: AtmosphereGpu,
     pub shadows: ShadowsGpu,
+    /// The rings' inner and outer radii, km (0 for none).
+    pub rings: [f32; 4],
 }
 
 /// What may hide the Sun from a sphere (`Shadows` in scene.wgsl): the Sun
@@ -385,7 +387,10 @@ impl Scene {
             let altitude = d - s.radius;
             // What the sphere reaches: its atmosphere's top, if any.
             let air = s.maps.as_ref().and_then(|m| m.air.as_ref());
-            let outer = air.map_or(s.radius, |a| a.atmosphere.top);
+            let rings = s.maps.as_ref().and_then(|m| m.rings.as_ref());
+            let outer = air
+                .map_or(s.radius, |a| a.atmosphere.top)
+                .max(rings.map_or(0.0, |r| r.outer));
             // Inside it, or wholly behind the eye or off the screen.
             if altitude <= 0.0 || !frustum.sees(v, outer) {
                 continue;
@@ -509,6 +514,7 @@ impl Scene {
                 },
                 atmosphere: air.map_or_else(AtmosphereGpu::default, |a| a.atmosphere.gpu()),
                 shadows: self.shadows(s, &cam),
+                rings: rings.map_or([0.0; 4], |r| [r.inner as f32, r.outer as f32, 0.0, 0.0]),
             });
             out.maps.push(s.maps.clone());
         }

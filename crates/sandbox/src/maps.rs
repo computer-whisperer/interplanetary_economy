@@ -1,8 +1,9 @@
 //! Bodies' maps (M1c.md, step 6 plan, items 4 and 5): `data/bodies/`
 //! (built by `tools/textures/`) and the atmospheres (`atmospheres`), read
 //! and tabulated once per process on a thread of its own, the bodies in
-//! parallel. Spheres show them once they arrive. A body with an
-//! atmosphere and no maps (Venus) gets a plain one.
+//! parallel, with rings where a body has a `rings.toml` (Saturn, built by
+//! `tools/rings/`). Spheres show them once they arrive. A body with an
+//! atmosphere or rings and no maps (Venus, Saturn) gets a plain one.
 
 use crate::data_dir;
 use orbit::ephem::Ephemeris;
@@ -30,6 +31,43 @@ struct Entry {
     night: Option<String>,
     night_radiance: Option<[f32; 3]>,
     elevation: Option<Elevation>,
+}
+
+/// `rings.toml`: see `tools/rings/build.py`.
+#[derive(Deserialize)]
+struct RingFile {
+    inner_km: f64,
+    step_km: f64,
+    tau: Vec<f32>,
+    region: Vec<Region>,
+}
+
+#[derive(Deserialize)]
+struct Region {
+    outer_km: f64,
+    albedo: [f32; 3],
+}
+
+/// The rings in `path`: each step's albedo its region's.
+fn rings(path: &Path) -> Result<render::maps::Rings, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file: RingFile = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
+    let albedo = (0..file.tau.len())
+        .map(|k| {
+            let r = file.inner_km + (k as f64 + 0.5) * file.step_km;
+            file.region
+                .iter()
+                .find(|g| r < g.outer_km)
+                .map(|g| g.albedo)
+                .ok_or_else(|| format!("{}: no region at {r} km", path.display()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(render::maps::Rings::new(
+        file.inner_km,
+        file.step_km,
+        &file.tau,
+        &albedo,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -95,6 +133,7 @@ fn body(dir: &Path, entry: &Entry, radius: f64) -> Result<BodyMaps, String> {
             water: optional(&entry.water)?,
             shading,
             air: None,
+            rings: None,
         }),
         albedo: [entry.albedo; 3],
     })
@@ -115,6 +154,7 @@ fn plain(id: &str) -> BodyMaps {
             water: None,
             shading: Shading::Lambert,
             air: None,
+            rings: None,
         }),
         albedo: crate::bodies::albedo(id),
     }
@@ -126,10 +166,11 @@ pub fn read(dir: &Path, eph: &Ephemeris) -> Result<HashMap<String, BodyMaps>, St
     let path = dir.join("bodies.toml");
     let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let file: File = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
+    let ringed = |id: &str| dir.join(id).join("rings.toml").exists();
     let mut ids: Vec<&str> = file.body.keys().map(String::as_str).collect();
     for b in eph.ids() {
         let id = eph.body(b).id.as_str();
-        if !ids.contains(&id) && crate::atmospheres::of(id, 1.0).is_some() {
+        if !ids.contains(&id) && (crate::atmospheres::of(id, 1.0).is_some() || ringed(id)) {
             ids.push(id);
         }
     }
@@ -145,9 +186,14 @@ pub fn read(dir: &Path, eph: &Ephemeris) -> Result<HashMap<String, BodyMaps>, St
                 }
                 None => plain(id),
             };
+            let made = Arc::get_mut(&mut maps.maps).expect("just made");
             if let Some(a) = crate::atmospheres::of(id, radius) {
-                Arc::get_mut(&mut maps.maps).expect("just made").air =
-                    Some(render::atmosphere::Air::new(a));
+                made.air = Some(render::atmosphere::Air::new(a));
+            }
+            if ringed(id) {
+                made.rings = Some(
+                    rings(&dir.join(id).join("rings.toml")).map_err(|e| format!("{id}: {e}"))?,
+                );
             }
             Ok((id.to_string(), maps))
         })
