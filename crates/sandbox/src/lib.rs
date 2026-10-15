@@ -22,6 +22,7 @@ pub mod settings;
 pub mod sky;
 pub mod sun;
 pub mod timeline;
+pub mod windows;
 
 /// The game's data directory, `data/` in the repository.
 pub fn data_dir() -> std::path::PathBuf {

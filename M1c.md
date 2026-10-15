@@ -6,6 +6,34 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, part 4: window lanes. As planned (step 7 plan, item 4);
+  where it differs or adds:
+  - Measured first: `interplanetary::patched` takes 0.5 µs; from LEO
+    to low Mars orbit, every day's departures over 2025–2080 at the
+    date search's 350 durations (78–776 days, every 2) take 0.2 s on
+    24 cores. So each lane is computed once over the ephemeris's
+    whole span, not the timeline's, on the design pool.
+  - Legs between planets are priced through one `World::crossing`,
+    which the planner's date search now uses too; outside what the
+    ephemeris knows of either end (a small body before 2040, arrivals
+    past 2080) it prices none.
+  - The lanes sit between the axis and the ships' lanes, gray: a
+    pixel's days' least Δv brightest at the lane's least, dark from
+    1.5 times it (a sequential ramp of one hue, the ships' legs keeping
+    the colors). Each ship's departure is a tick in its leg's color.
+    A lane's label's tooltip gives its range. The gutter is now 170 px.
+  - Checks: the published plan's three lanes (LEO to low Mars orbit,
+    by aerocapture, and to 2000 SG344) and each of its legs between
+    planets in its lane; the Mars lane's cheapest day within 45 days
+    of the handbook's dates the plan pins (−34, +11 and 0 days: the
+    handbook's are the least C3, the lane counts the capture too), and
+    there within 10% of it.
+  - Cost: the timeline's elements 0.24 ms a frame to build with the
+    published plan's three lanes (0.09 without), the UI's build and
+    layout 1.05 ms median.
+  - Found on the way: a panic in a task spawned on rayon's pool aborts
+    the process; lanes catch theirs (a lane that panics stays dark).
+
 - Step 7, part 3: plans written out. As planned (step 7 plan, item 3):
   - `Plan::to_toml` writes ships' starts as tables (`[ship.start]`),
     times as `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` (`Epoch::stamp`, to

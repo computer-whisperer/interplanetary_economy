@@ -259,7 +259,16 @@ fn timeline_cpu_time() {
     let clock = std::time::Instant::now();
     for i in 0..n {
         let t = app.timeline.at(i as f64 / n as f64);
-        std::hint::black_box(timeline::strip(eph, &app.timeline, 1700.0, &ships, t, None));
+        let windows = Some(&app.plan.as_ref().unwrap().windows);
+        std::hint::black_box(timeline::strip(
+            eph,
+            &app.timeline,
+            1700.0,
+            &ships,
+            windows,
+            t,
+            None,
+        ));
     }
     let build = clock.elapsed().as_secs_f64() * 1e3 / n as f64;
 

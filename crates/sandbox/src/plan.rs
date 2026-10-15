@@ -4,6 +4,7 @@
 //! would wait behind them), each item kept as it arrives; a ship edited
 //! designed again from where the edit takes effect.
 
+use crate::windows::Windows;
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{
@@ -53,6 +54,11 @@ struct Design {
 /// The fields legs are designed in, built once.
 static WORLD: LazyLock<World> = LazyLock::new(World::standard);
 
+/// The fields legs are designed and priced in.
+pub fn world() -> &'static World {
+    &WORLD
+}
+
 /// A plan being designed.
 pub struct Loaded {
     pub name: String,
@@ -61,6 +67,8 @@ pub struct Loaded {
     pub path: Option<PathBuf>,
     pub ships: Vec<Ship>,
     designs: Vec<Design>,
+    /// The windows of its legs between planets.
+    pub windows: Windows,
     /// The first ship's start.
     pub start: Epoch,
     /// Changes whenever items arrive or a ship is edited (not when a
@@ -149,12 +157,13 @@ impl Loaded {
             .build()
             .expect("a thread pool");
         let (sender, receiver) = channel();
-        let loaded = Loaded {
+        let mut loaded = Loaded {
             name: plan.name.clone(),
             plan,
             path: None,
             ships,
             designs,
+            windows: Windows::default(),
             start,
             generation: 0,
             pool: Arc::new(pool),
@@ -164,6 +173,7 @@ impl Loaded {
         for s in 0..loaded.ships.len() {
             loaded.design(s, None);
         }
+        loaded.windows.update(&loaded.plan, &loaded.pool);
         loaded
     }
 
@@ -177,7 +187,7 @@ impl Loaded {
         let (generation, live) = (self.designs[s].generation, self.designs[s].live.clone());
         let sender = self.sender.clone();
         self.pool.spawn(move || {
-            let world = &*WORLD;
+            let world = world();
             let send = |m| {
                 live.load(Ordering::Relaxed) == generation
                     && sender.send((s, generation, m)).is_ok()
@@ -243,18 +253,20 @@ impl Loaded {
         }
         self.generation += 1;
         self.design(s, from);
+        self.windows.update(&self.plan, &self.pool);
     }
 
     /// Takes what has arrived; `true` if anything did.
     pub fn poll(&mut self) -> bool {
-        let mut any = false;
+        let mut any = self.windows.poll();
         while let Ok((s, generation, message)) = self.receiver.try_recv() {
             any |= self.take(s, generation, message);
         }
         any
     }
 
-    /// Waits until every ship is designed.
+    /// Waits until every ship is designed, and every window lane
+    /// computed.
     pub fn wait(&mut self) {
         while !self.done() {
             match self.receiver.recv() {
@@ -264,6 +276,7 @@ impl Loaded {
                 Err(_) => return,
             }
         }
+        self.windows.wait();
     }
 
     /// Takes a message for ship `s`'s design of `generation`: `false`

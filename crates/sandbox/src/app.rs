@@ -682,6 +682,7 @@ impl App for Shell {
                 &self.timeline,
                 axis_px,
                 ships,
+                self.plan.as_ref().map(|p| &p.windows),
                 self.clock.t,
                 self.selected,
             ),

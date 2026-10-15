@@ -6,6 +6,7 @@
 use crate::panel;
 use crate::paths;
 use crate::plan::{Ship, event_time};
+use crate::windows::{self, Windows};
 use damascene_core::prelude::*;
 use orbit::ephem::Ephemeris;
 use orbit::mission::ItemKind;
@@ -24,9 +25,12 @@ const SHORTEST_DAYS: f64 = 1.0 / 24.0;
 /// The span a plan is fitted to at least, days.
 const FIT_DAYS: f64 = 10.0;
 /// The ships' names' gutter's width, logical px.
-const GUTTER_PX: f32 = 120.0;
+const GUTTER_PX: f32 = 170.0;
 const AXIS_PX: f32 = 22.0;
 const LANE_PX: f32 = 18.0;
+/// A window lane's height, and its brightest shade (sRGB).
+const WINDOW_PX: f32 = 12.0;
+const WINDOW_BRIGHT: [f32; 3] = [225.0, 225.0, 230.0];
 /// Bars' heights: a leg's or an event's, a stay's; and their least width.
 const LEG_PX: f32 = 10.0;
 const STAY_PX: f32 = 4.0;
@@ -388,13 +392,15 @@ fn tooltip(eph: &Ephemeris, item: &orbit::mission::Item) -> String {
 }
 
 /// The timeline under the map: the axis (`axis_px` wide when last laid
-/// out), and below it a lane per ship (scrolling past [`LANES_SHOWN`]),
-/// the item `selected` outlined, the clock at `t`.
+/// out); below it the plan's window lanes, then a lane per ship
+/// (scrolling past [`LANES_SHOWN`]), the item `selected` outlined, the
+/// clock at `t`.
 pub fn strip(
     eph: &Ephemeris,
     tl: &Timeline,
     axis_px: f32,
     ships: &[Ship],
+    windows: Option<&Windows>,
     t: Epoch,
     selected: Option<(usize, usize)>,
 ) -> El {
@@ -482,6 +488,32 @@ pub fn strip(
     .key(GUTTER_KEY)
     .width(Size::Fixed(GUTTER_PX));
     let mut parts = vec![axis_row(tl, axis_px, shown.then_some(cursor))];
+    if let Some(w) = windows {
+        for (i, lane) in w.lanes.iter().enumerate() {
+            // Each ship's departure on it, in its leg's color.
+            let departures: Vec<(f64, Color)> = w
+                .legs
+                .iter()
+                .filter(|&(_, &l)| l == i)
+                .flat_map(|(&(s, step), _)| {
+                    let colors = paths::colors(&ships[s]);
+                    ships[s]
+                        .items
+                        .iter()
+                        .enumerate()
+                        .filter(move |(_, item)| item.step == step && item.kind == ItemKind::Leg)
+                        .map(move |(k, item)| (tl.fraction(item.start), color(colors[k])))
+                })
+                .collect();
+            parts.push(window_row(
+                lane,
+                tl,
+                axis_px,
+                departures,
+                shown.then_some(cursor),
+            ));
+        }
+    }
     if !ships.is_empty() {
         parts.push(
             scroll([row([names, lanes]).height(Size::Fixed(height))])
@@ -492,6 +524,84 @@ pub fn strip(
     column(parts)
         .width(Size::Fill(1.0))
         .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1))
+}
+
+/// A window lane's row, `width` px wide: each pixel's days' least Δv,
+/// brightest at the lane's least and dark from [`windows::CEILING`] times
+/// it; ticks at `departures` (across the span, in their legs' colors), and
+/// the cursor.
+fn window_row(
+    lane: &windows::Lane,
+    tl: &Timeline,
+    width: f32,
+    departures: Vec<(f64, Color)>,
+    cursor: Option<f64>,
+) -> El {
+    let n = width.round().clamp(1.0, 4096.0) as usize;
+    let [r, g, b, _] = tokens::MUTED.to_srgb_u8a();
+    let dark = [f32::from(r), f32::from(g), f32::from(b)];
+    let mut pixels = Vec::with_capacity(4 * n);
+    for i in 0..n {
+        let f = |i: usize| i as f64 / n as f64;
+        let v = lane.least_between(tl.at(f(i)), tl.at(f(i + 1)));
+        let shade = 1.0 - (v - lane.least) / (lane.least * (windows::CEILING - 1.0));
+        let shade = if shade.is_nan() {
+            0.0
+        } else {
+            shade.clamp(0.0, 1.0)
+        };
+        for c in 0..3 {
+            pixels.push((dark[c] + (WINDOW_BRIGHT[c] - dark[c]) * shade).round() as u8);
+        }
+        pixels.push(255);
+    }
+    let strip = image(Image::from_rgba8(n as u32, 1, pixels))
+        .image_fit(ImageFit::Fill)
+        .width(Size::Fill(1.0))
+        .height(Size::Fixed(WINDOW_PX));
+    let mut places = Vec::new();
+    let mut els = Vec::new();
+    for (f, c) in departures.into_iter().chain(cursor.map(|f| (f, CURSOR))) {
+        if (0.0..=1.0).contains(&f) {
+            places.push(Place {
+                from: f,
+                to: f,
+                top: -1.0,
+                height: WINDOW_PX + 2.0,
+                bar: false,
+            });
+            els.push(spacer().fill(c));
+        }
+    }
+    let legend = match lane.cheapest {
+        Some(_) => format!(
+            "{}: each day's least Δv leaving then, by patched conics over the durations \
+             the planner tries; brightest at {:.2} km/s, dark from {:.2}",
+            lane.label,
+            lane.least,
+            lane.least * windows::CEILING
+        ),
+        None => format!("{}: computing", lane.label),
+    };
+    row([
+        text(lane.label.clone())
+            .caption()
+            .muted()
+            .ellipsis()
+            .tooltip(legend)
+            .width(Size::Fixed(GUTTER_PX))
+            .height(Size::Fixed(WINDOW_PX + 2.0)),
+        stack([
+            strip,
+            placed(els, places)
+                .width(Size::Fill(1.0))
+                .height(Size::Fixed(WINDOW_PX)),
+        ])
+        .width(Size::Fill(1.0))
+        .height(Size::Fixed(WINDOW_PX)),
+    ])
+    .height(Size::Fixed(WINDOW_PX + 2.0))
+    .align(Align::Center)
 }
 
 /// The axis's row, `width` px wide: its ticks and their labels, and the

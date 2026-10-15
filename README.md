@@ -131,7 +131,10 @@ Right drag orbits, the wheel zooms (down to a tenth of the focus's
 size above it, at most 10 km), space pauses, `,` and `.` step the time warp from 1 s to 1
 year per second, and `[` and `]` jump between burns and events. The
 timeline under the map has a lane per ship, its legs and stays as bars
-and its burns and events as ticks, with the clock's time as a cursor:
+and its burns and events as ticks, and above them a lane per kind of
+leg between planets in the plan, brightest where departures are
+cheapest (each day's least Δv by patched conics), with the clock's time
+as a cursor:
 the wheel over it zooms, a drag pans, a press on its axis seeks the
 clock, and a click on a bar selects that item. Bodies, ships, burns and events
 and station orbits are labeled where there is room. A click on a body

@@ -408,6 +408,124 @@ impl World {
     }
 }
 
+impl World {
+    /// The end a leg reaching `to` (through the atmosphere if `aero`)
+    /// arrives at, other than a station; `between`, from another planet.
+    fn end_to(&self, to: &PlaceKind, aero: bool, between: bool) -> Result<End<'static>, String> {
+        let eph = self.eph;
+        let air = |b: BodyId| {
+            surface::rules(eph, b)
+                .atmosphere
+                .ok_or_else(|| format!("{} has no atmosphere", eph.body(b).id))
+        };
+        Ok(match to {
+            PlaceKind::Low(orbit) if aero => {
+                let a = air(orbit.body)?;
+                let body = eph.body(orbit.body);
+                let pass = body.radius + a.capture_altitude;
+                End::Atmosphere {
+                    body: orbit.body,
+                    radius: pass,
+                    after: surface::after_aerocapture(body.gm, pass, orbit.radius),
+                    max_speed: a.max_speed,
+                }
+            }
+            PlaceKind::Low(orbit) => End::Low(*orbit),
+            PlaceKind::Body(b) => End::Body(*b),
+            PlaceKind::Surface(b) if aero && between => {
+                let a = air(*b)?;
+                End::Atmosphere {
+                    body: *b,
+                    radius: eph.body(*b).radius + a.entry_altitude,
+                    after: a.terminal_dv,
+                    max_speed: a.max_speed,
+                }
+            }
+            _ => return Err("unreachable end".into()),
+        })
+    }
+
+    /// A leg between planets from `from` to `to` (through the atmosphere
+    /// if `aero`), as its date search prices it.
+    pub fn crossing(
+        &self,
+        from: &PlaceKind,
+        to: &PlaceKind,
+        aero: bool,
+    ) -> Result<Crossing<'_>, String> {
+        let eph = self.eph;
+        let (from_end, from_body) = match from {
+            PlaceKind::Low(orbit) => (End::Low(*orbit), orbit.body),
+            PlaceKind::Body(b) => (End::Body(*b), *b),
+            _ => {
+                return Err(
+                    "leaving a station orbit for another planet is not designed yet (M1a step 9); fly through LEO"
+                        .into(),
+                );
+            }
+        };
+        if matches!(to, PlaceKind::Station { .. }) {
+            return Err(
+                "arriving at a station orbit from another planet is not designed yet (M1a step 9)"
+                    .into(),
+            );
+        }
+        let to_system = to.system(eph);
+        if eph.system(from_body) == to_system {
+            return Err("both ends are in one planet's system".into());
+        }
+        Ok(Crossing {
+            world: self,
+            from: from_end,
+            to: self.end_to(to, aero, true)?,
+            from_body,
+            to_system,
+        })
+    }
+}
+
+/// A leg between planets, priced by patched conics (`World::crossing`).
+pub struct Crossing<'w> {
+    world: &'w World,
+    pub from: End<'static>,
+    pub to: End<'static>,
+    from_body: BodyId,
+    to_system: BodyId,
+}
+
+impl Crossing<'_> {
+    /// Δv by patched conics, leaving at `depart` and taking `days`; `None`
+    /// where the ephemeris does not know both ends then.
+    pub fn dv(&self, depart: Epoch, days: f64) -> Option<f64> {
+        let (eph, arrive) = (self.world.eph, depart.plus_days(days));
+        if !eph.covers(self.from_body, depart) || !eph.covers(self.to_system, arrive) {
+            return None;
+        }
+        interplanetary::patched(&self.world.global, &self.from, &self.to, depart, arrive)
+    }
+
+    /// The durations the date search tries leaving at `t`, days: every
+    /// [`TOF_STEP`] over the range the bodies' orbits bracket; none where
+    /// the ephemeris does not know them then.
+    pub fn durations(&self, t: Epoch) -> Vec<f64> {
+        let eph = self.world.eph;
+        if !eph.covers(self.from_body, t) || !eph.covers(self.to_system, t) {
+            return Vec::new();
+        }
+        let (lo, hi) =
+            crate::transfer::default_tof_range(self.world.eph, self.from_body, self.to_system, t);
+        let n = ((hi - lo) / TOF_STEP).floor() as usize;
+        (0..=n).map(|k| lo + k as f64 * TOF_STEP).collect()
+    }
+
+    /// The synodic period of its two planets about `t`, days.
+    pub fn synodic_days(&self, t: Epoch) -> f64 {
+        self.world
+            .eph
+            .synodic_period_days(self.from_body, self.to_system, t)
+    }
+}
+
 /// What a ship does over a span of time.
 #[derive(Clone, Debug)]
 pub struct Item {
@@ -727,7 +845,7 @@ impl<'w> Planner<'w> {
                     .into(),
             ),
             _ if from_system == to_system => self.within(i, go, from_system),
-            _ => self.between(go, to_system),
+            _ => self.between(go),
         }
     }
 
@@ -851,7 +969,7 @@ impl<'w> Planner<'w> {
         let from = end_from(&here);
         let to = match &arriving {
             Some(v) => End::Orbit(&v.reference),
-            None => self.end_to(go, false)?,
+            None => self.world.end_to(&go.to.kind, go.aero, false)?,
         };
         let durations: Vec<f64> = go.days.iter().map(|d| d * DAY).collect();
         let leg = Leg {
@@ -917,11 +1035,10 @@ impl<'w> Planner<'w> {
 
     /// A leg between planetary systems: the cheapest dates by patched
     /// conics, then `interplanetary::plan`.
-    fn between(&mut self, go: &Go, to_system: BodyId) -> Result<Vec<Item>, String> {
-        let eph = self.world.eph;
-        let from_body = match &self.here {
-            Here::Low { orbit, .. } => orbit.body,
-            Here::Body(b) => *b,
+    fn between(&mut self, go: &Go) -> Result<Vec<Item>, String> {
+        let from_kind = match &self.here {
+            Here::Low { orbit, .. } => PlaceKind::Low(*orbit),
+            Here::Body(b) => PlaceKind::Body(*b),
             _ => {
                 return Err(
                     "leaving a station orbit for another planet is not designed yet (M1a step 9); fly through LEO"
@@ -929,35 +1046,29 @@ impl<'w> Planner<'w> {
                 );
             }
         };
-        if matches!(go.to.kind, PlaceKind::Station { .. }) {
-            return Err(
-                "arriving at a station orbit from another planet is not designed yet (M1a step 9)"
-                    .into(),
-            );
-        }
-        let synodic = eph.synodic_period_days(from_body, to_system, self.ready);
-        let (open, close) = self.window(go, synodic.min(LONGEST_WINDOW_DAYS))?;
+        let world = self.world;
+        let crossing = world.crossing(&from_kind, &go.to.kind, go.aero)?;
+        let (open, close) = self.window(
+            go,
+            crossing.synodic_days(self.ready).min(LONGEST_WINDOW_DAYS),
+        )?;
         let here = self.here.clone();
         let from = end_from(&here);
-        let to = self.end_to(go, true)?;
+        let to = crossing.to;
         let tofs: Vec<f64> = if go.days.is_empty() {
-            let (lo, hi) = crate::transfer::default_tof_range(eph, from_body, to_system, open);
-            let n = ((hi - lo) / TOF_STEP).floor() as usize;
-            (0..=n).map(|k| lo + k as f64 * TOF_STEP).collect()
+            crossing.durations(open)
         } else {
             go.days.clone()
         };
         let departs = ((close.0 - open.0) / DEPART_STEP).floor() as usize;
-        let world = self.world;
         let global = &world.global;
+        let crossing = &crossing;
         let mut cells: Vec<(f64, Epoch, f64)> = (0..=departs)
             .into_par_iter()
             .flat_map_iter(|k| {
                 let d = open.plus_days(k as f64 * DEPART_STEP);
-                tofs.iter().filter_map(move |&tof| {
-                    let dv = interplanetary::patched(global, &from, &to, d, d.plus_days(tof))?;
-                    Some((dv, d, tof))
-                })
+                tofs.iter()
+                    .filter_map(move |&tof| Some((crossing.dv(d, tof)?, d, tof)))
             })
             .collect();
         cells.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1008,41 +1119,6 @@ impl<'w> Planner<'w> {
             window: None,
         };
         self.flown(go, &leg, design, tried, None, go.note.clone())
-    }
-
-    /// The end the leg reaches, other than a station.
-    fn end_to(&self, go: &Go, between: bool) -> Result<End<'static>, String> {
-        let eph = self.world.eph;
-        let air = |b: BodyId| {
-            surface::rules(eph, b)
-                .atmosphere
-                .ok_or_else(|| format!("{} has no atmosphere", eph.body(b).id))
-        };
-        Ok(match &go.to.kind {
-            PlaceKind::Low(orbit) if go.aero => {
-                let a = air(orbit.body)?;
-                let body = eph.body(orbit.body);
-                let pass = body.radius + a.capture_altitude;
-                End::Atmosphere {
-                    body: orbit.body,
-                    radius: pass,
-                    after: surface::after_aerocapture(body.gm, pass, orbit.radius),
-                    max_speed: a.max_speed,
-                }
-            }
-            PlaceKind::Low(orbit) => End::Low(*orbit),
-            PlaceKind::Body(b) => End::Body(*b),
-            PlaceKind::Surface(b) if go.aero && between => {
-                let a = air(*b)?;
-                End::Atmosphere {
-                    body: *b,
-                    radius: eph.body(*b).radius + a.entry_altitude,
-                    after: a.terminal_dv,
-                    max_speed: a.max_speed,
-                }
-            }
-            _ => return Err("unreachable end".into()),
-        })
     }
 
     /// A station's member's period, days.
