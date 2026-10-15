@@ -30,7 +30,7 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   0.8, HDR output where the compositor offers it; the bodies turned by
   their rotation models, with their orbits drawn; mission plans designed
   in the background and played back, in fixed or rotating frames; labels,
-  picking by click, and the plan's panel.
+  picking by click, the plan's panel, and settings.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
   parameters, and a sweep that classifies the plans' development paths.
@@ -122,10 +122,12 @@ and station orbits are labeled where there is room. A click on a body
 focuses it; on a ship, a marker, a label or a line, it selects that
 item in the plan's panel (`p` shows or hides it), where a click on an
 item jumps to its start. Exposure follows the focus (its sunlit side
-at a fixed level), one for the whole scene: as in a photograph, no
-stars show beside a sunlit body. `-` and `=` shift it a stop at a time
-(from Earth's, +19 brings out the Milky Way's band, +22 shows it
-clearly). On an HDR output, highlights use the display's headroom.
+at a fixed level), one for the whole scene; `-` and `=` shift it a stop
+at a time. The settings (the gear) lift the sky over it, 17 stops by
+default (`--background-lift STOPS`); at 0, true to life, no stars show
+beside a sunlit body, as in a photograph. With the sky's exposure +19
+stops over Earth's, the Milky Way's band shows faintly; at +22,
+clearly. On an HDR output, highlights use the display's headroom.
 `--focus ID --altitude KM --azimuth DEG --elevation DEG --date
 YYYY-MM-DD[THH:MM] --exposure STOPS` set the starting view (the
 direction about the frame's axes), for screenshots too; with a plan, a

@@ -44,6 +44,10 @@ struct Cli {
     /// Stops of exposure added by hand at the start, as `-` and `=` do.
     #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
     exposure: i32,
+    /// Stops the stars and the Milky Way show over the scene's exposure
+    /// (the settings' background lift); 0 is true to life.
+    #[arg(long, default_value_t = sandbox::look::BACKGROUND_LIFT, allow_hyphen_values = true)]
+    background_lift: i32,
 }
 
 fn size(s: &str) -> Result<(u32, u32), String> {
@@ -100,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.exposure.bias = cli
         .exposure
         .clamp(-sandbox::app::MAX_BIAS, sandbox::app::MAX_BIAS);
+    app.settings.background_lift = cli.background_lift.clamp(0, sandbox::look::MAX_LIFT);
     // The view's direction is about this frame's axes.
     app.frame = frame;
     match cli.screenshot {

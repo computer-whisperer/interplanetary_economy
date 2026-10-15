@@ -138,9 +138,10 @@ fn stars_land_on_their_places() {
             assert!((got - at_j2000).length() > 50.0);
         }
         if place.name == "Sirius" {
-            // Its flux as shown, as a camera records it and through a
+            // Its flux as shown, as a camera records it, through a
             // viewer's pixels 3× and a third the scene's (at a tenth the
-            // exposure, its spot under f16's largest): the green channel's
+            // exposure, its spot under f16's largest), and with the sky
+            // lifted 5 stops over a 32nd the exposure: the green channel's
             // pixels × the sky each subtends.
             let tan_half = (fov / 2.0).tan();
             let pixel = 2.0 * tan_half / f64::from(size.1);
@@ -149,7 +150,12 @@ fn stars_land_on_their_places() {
                 exposure: gain / 10.0,
                 ..scene.look
             };
-            for look in [scene.look, viewer(3.0), viewer(1.0 / 3.0)] {
+            let lifted = Look {
+                exposure: gain / 32.0,
+                sky_lift: 32.0,
+                ..scene.look
+            };
+            for look in [scene.look, viewer(3.0), viewer(1.0 / 3.0), lifted] {
                 let image = radiance(
                     &gpu,
                     &mut renderer,
@@ -172,13 +178,13 @@ fn stars_land_on_their_places() {
                     }
                 }
                 // Times the gain the look gives a point where it lands
-                // (pixel² cos³θ of sky), and the exposure.
+                // (pixel² cos³θ of sky), and the sky's exposure.
                 let star = data.stars[0];
                 let cos = -camera.rotate(d).z;
                 let gain = look.point_gain(0.0, pixel * cos.powf(1.5));
                 let want = f64::from(star.flux) * f64::from((star.color >> 8) & 255) / 255.0
                     * gain
-                    * f64::from(look.exposure);
+                    * f64::from(look.exposure * look.sky_lift);
                 println!("Sirius, gain {gain:.3}: flux {flux:.4e}, wanted {want:.4e}");
                 assert!((flux / want - 1.0).abs() < 1e-2, "{flux} vs {want}");
             }
@@ -186,10 +192,11 @@ fn stars_land_on_their_places() {
     }
 }
 
-/// The Milky Way shows its map's radiance at the scene's exposure: a 2°
+/// The Milky Way shows its map's radiance at the sky's exposure: a 2°
 /// view toward the Sagittarius star cloud and the north galactic pole,
 /// at exposures 1e5 and 1e7 (the exposure keys reach the sky; at 1e4,
-/// f16 holds the pole's 1.6e-6 to 2%), against
+/// f16 holds the pole's 1.6e-6 to 2%), and 1e5 as 100 lifted 1,000×,
+/// against
 /// the map sampled on the CPU along each pixel's ray (its texels decoded
 /// from sRGB, bilinear, × its radiance), within 1%.
 #[test]
@@ -246,12 +253,13 @@ fn the_milky_way_takes_the_exposure() {
             }
         }
         want *= f64::from(sky.milky_way_radiance) / f64::from(size.0 * size.1);
-        for exposure in [1e5f32, 1e7] {
+        for (exposure, sky_lift) in [(1e5f32, 1.0), (1e7, 1.0), (1e2, 1e3)] {
             let scene = Scene {
                 camera: Some(camera),
                 sky: Some(sky.clone()),
                 look: Look {
                     exposure,
+                    sky_lift,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -262,8 +270,10 @@ fn the_milky_way_takes_the_exposure() {
                 .map(|p| f64::from(p[0] + p[1] + p[2]) / 3.0)
                 .sum::<f64>()
                 / image.len() as f64
-                / f64::from(exposure);
-            println!("{name}, exposure {exposure:e}: radiance {got:.4e}, the map's {want:.4e}");
+                / f64::from(exposure * sky_lift);
+            println!(
+                "{name}, exposure {exposure:e} lifted {sky_lift}×: radiance {got:.4e}, the map's {want:.4e}"
+            );
             assert!((got / want - 1.0).abs() < 0.01, "{name}: {got} vs {want}");
         }
     }

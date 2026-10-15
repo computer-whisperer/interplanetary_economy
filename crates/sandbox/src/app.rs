@@ -1,8 +1,8 @@
 //! The sandbox's UI (M1c.md, step 2 plan, item 5; step 3 plan, items 6
 //! and 7; step 4 plan, items 2, 4 and 6; step 5 plan; step 6 plan, item
-//! 1): a top bar with the focus, the frame and the clock; the map view,
-//! labeled and picked by clicks, with the plan's panel beside it; a
-//! scrubber; and a status line.
+//! 1): a top bar with the focus, the frame, the clock and the settings;
+//! the map view, labeled and picked by clicks, with the plan's panel
+//! beside it; a scrubber; and a status line.
 
 use crate::bodies;
 use crate::camera::MapCamera;
@@ -15,6 +15,7 @@ use crate::panel;
 use crate::paths::{self, Event, PAST_DIM};
 use crate::pick::{self, Pick};
 use crate::plan::{Loaded, on_track, position};
+use crate::settings::{self, Settings};
 use crate::sky;
 use damascene_core::prelude::*;
 use damascene_core::scroll::{ScrollAlignment, ScrollRequest};
@@ -106,6 +107,7 @@ pub struct Shell {
     pub frame: Frame,
     pub plan: Option<Loaded>,
     pub exposure: Exposure,
+    pub settings: Settings,
     /// The bodies the focus select offers.
     bodies: Vec<BodyId>,
     /// Station orbits' reference loops, and their places' ids.
@@ -121,6 +123,7 @@ pub struct Shell {
     event_times: Vec<Epoch>,
     focus_open: bool,
     frame_open: bool,
+    pub settings_open: bool,
     /// The item selected, by its ship and place: in the panel, its
     /// markers' labels first.
     pub selected: Option<(usize, usize)>,
@@ -151,6 +154,7 @@ impl Shell {
             frame: Frame::Focus,
             plan: None,
             exposure: Exposure::default(),
+            settings: Settings::default(),
             bodies: bodies::drawn(eph),
             orbits: Orbits::new(eph, &bodies::drawn(eph), t),
             loops: paths::loop_paths(loops),
@@ -162,6 +166,7 @@ impl Shell {
             event_times: Vec::new(),
             focus_open: false,
             frame_open: false,
+            settings_open: false,
             selected: None,
             panel_open: true,
             seen: None,
@@ -293,6 +298,7 @@ impl Shell {
                 bloom: look::BLOOM,
                 headroom: self.stats.headroom(),
                 pixel: (look::PIXEL / f64::from(px)) as f32,
+                sky_lift: self.settings.sky_lift(),
             },
             ..Default::default()
         }
@@ -521,7 +527,13 @@ impl App for Shell {
                 select_trigger(FOCUS_KEY, focus_name).width(Size::Fixed(180.0)),
                 text("Frame").muted().caption(),
                 select_trigger(FRAME_KEY, self.frame_name()).width(Size::Fixed(270.0)),
-                spacer(),
+                // The keys' hints give way where the bar is short of room.
+                text("space pause · , . warp · [ ] events · - = exposure · p plan")
+                    .muted()
+                    .caption()
+                    .ellipsis()
+                    .text_align(TextAlign::End)
+                    .width(Size::Fill(1.0)),
                 text(format!(
                     "{} · {}",
                     orbit::mission::when(self.clock.t),
@@ -529,10 +541,8 @@ impl App for Shell {
                 ))
                 .caption()
                 .tabular_numerals(),
-                text("space pause · , . warp · [ ] events · - = exposure · p plan")
-                    .muted()
-                    .caption(),
                 text(output).muted().caption(),
+                settings::trigger(),
             ])
             .gap(tokens::SPACE_3)
             .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
@@ -584,6 +594,9 @@ impl App for Shell {
                 .collect();
             layers.push(select_menu(FRAME_KEY, options));
         }
+        if self.settings_open {
+            layers.push(settings::menu(&self.settings));
+        }
         stack(layers).width(Size::Fill(1.0)).height(Size::Fill(1.0))
     }
 
@@ -623,16 +636,30 @@ impl App for Shell {
             let f = slider::normalized_from_event(rect, x);
             self.clock
                 .seek(clock::at_fraction(self.timeline(), f64::from(f)));
+        } else if self.settings.apply(&event) {
+            // The menu's slider moved.
         } else if event.is_click_or_activate(FOCUS_KEY) {
             self.focus_open = !self.focus_open;
             self.frame_open = false;
+            self.settings_open = false;
         } else if event.is_click_or_activate(FRAME_KEY) {
             self.frame_open = !self.frame_open;
             self.focus_open = false;
+            self.settings_open = false;
+        } else if event.is_click_or_activate(settings::KEY) {
+            self.settings_open = !self.settings_open;
+            self.focus_open = false;
+            self.frame_open = false;
         } else if event.is_click_or_activate(&format!("{FOCUS_KEY}:dismiss")) {
             self.focus_open = false;
         } else if event.is_click_or_activate(&format!("{FRAME_KEY}:dismiss")) {
             self.frame_open = false;
+        } else if event.is_click_or_activate(&format!("{}:dismiss", settings::KEY)) {
+            self.settings_open = false;
+        } else if event.kind == UiEventKind::Escape {
+            self.focus_open = false;
+            self.frame_open = false;
+            self.settings_open = false;
         } else if clicked
             && let Some(id) = event.route_suffix(&format!("{FOCUS_KEY}:option"))
             && let Some(b) = self.eph.lookup(id)

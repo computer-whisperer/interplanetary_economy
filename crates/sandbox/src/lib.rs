@@ -17,6 +17,7 @@ pub mod panel;
 pub mod paths;
 pub mod pick;
 pub mod plan;
+pub mod settings;
 pub mod sky;
 
 /// The game's data directory, `data/` in the repository.

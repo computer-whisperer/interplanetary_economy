@@ -80,6 +80,9 @@ pub struct Look {
     /// radians, by which points of light are shown (`point_gain`); 0: the
     /// angle it subtends of the scene, as a camera records them.
     pub pixel: f32,
+    /// What the sky's exposure (its stars' and the Milky Way's) is over
+    /// the scene's: 1 as it is.
+    pub sky_lift: f32,
 }
 
 impl Look {
@@ -108,6 +111,7 @@ impl Default for Look {
             bloom: 0.0,
             headroom: 1.0,
             pixel: 0.0,
+            sky_lift: 1.0,
         }
     }
 }

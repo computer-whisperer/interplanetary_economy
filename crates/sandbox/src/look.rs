@@ -1,7 +1,8 @@
 //! How the map view's radiance is shown (M1c.md, step 6 plan, item 1,
-//! and Realism): one exposure for the whole scene, the sky's too, set by
-//! the focus, eased when it changes and shifted by whole stops by hand;
-//! points of light as bright as at the viewer's eye; and bloom.
+//! and Realism): one exposure for the whole scene, set by the focus,
+//! eased when it changes and shifted by whole stops by hand, with the sky
+//! lifted over it; points of light as bright as at the viewer's eye; and
+//! bloom.
 
 use crate::bodies;
 use orbit::ephem::{BodyId, Ephemeris};
@@ -23,6 +24,18 @@ pub const SUN_KEY: f64 = 2.0 * KEY;
 /// (`Look::pixel`): CSS's reference pixel, 1/96 inch at 28 inches
 /// (0.0213°), which hosts' display scales approximate.
 pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
+
+/// Stops the sky (the stars and the Milky Way) shows over the scene's
+/// exposure by default, 0 being true to life: a game's departure
+/// (Realism), so that the sky shows beside a sunlit body. Over Earth's
+/// exposure, +17 shows stars to about magnitude 11.
+pub const BACKGROUND_LIFT: i32 = 17;
+
+/// The most the sky is lifted: enough for the Milky Way to show clearly
+/// (+22 over Earth's exposure) with any planet in focus (Venus's exposure
+/// is 2.2 stops under Earth's). With the Sun's, 16 stops under, the
+/// exposure keys reach further.
+pub const MAX_LIFT: i32 = 24;
 
 /// Seconds for exposure to close ~63% of the way to a new focus's: most
 /// of it within a refocus's flight.

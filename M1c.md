@@ -64,7 +64,7 @@ left out); next, step 7 (editing).
   built, see the step 6 plan below; where it differs:
   - Points of light (stars, bodies under a few pixels) are as bright
     to the viewer's eye as their sources would be, at the scene's one
-    exposure (Realism; decided 2026-10-15). Until then they and the
+    exposure, the sky's lifted over it (Realism; decided 2026-10-15). Until then they and the
     Milky Way showed at a fixed sky exposure where it exceeded the
     frame's (7.5e5), capped at a saturated star's brightness, and drawn
     as a camera records them. A body growing into a disk fades from its
@@ -449,13 +449,21 @@ As realistic as we can afford, in stages, while the map stays readable.
 - The scene is rendered in linear HDR. Exposure, bloom and a tonemap fit
   it to the output's headroom: up to the panel's peak on an HDR output (a
   16-bit float scRGB swapchain), and a filmic curve to 1.0 on SDR.
-- One exposure for the whole scene, the sky's too (decided 2026-10-15:
-  as accurate as we can first; departures where play shows the need).
-  Exposed for a sunlit body, as a camera would be, the sky shows
-  nothing; the exposure keys bring it up (from Earth's, +19 stops shows
-  the Milky Way's band faintly, +22 clearly). Rejected: a fixed exposure for the stars and the Milky
-  Way where it exceeded the frame's, which showed them beside a sunlit
-  body but which the exposure keys did not move.
+- One exposure for the whole scene (decided 2026-10-15: as accurate as
+  we can first; departures where play shows the need). Exposed for a
+  sunlit body, as a camera would be, the true sky shows nothing; over
+  Earth's exposure, +19 stops shows the Milky Way's band faintly, +22
+  clearly. Rejected: a fixed exposure for the stars and the Milky Way
+  where it exceeded the frame's, which showed them beside a sunlit body
+  but which the exposure keys did not move.
+- The sky (the stars and the Milky Way) is lifted over that exposure by
+  a setting, the background lift: 17 stops by default, 0 (true) to 24
+  (decided 2026-10-15: the true sky left the map black beside any
+  sunlit body). The exposure keys move it with the
+  rest of the scene. Over Earth's exposure, +17 shows stars to about
+  magnitude 11 and not yet the Milky Way. Bodies drawn as points are not
+  lifted: from Earth, Jupiter's point peaks at 0.0008 of the SDR white,
+  invisible, beside thousands of lifted stars.
 - Points of light are as bright to the viewer's eye as their sources
   would be: a star's flux is spread over the sky a pixel subtends at the
   viewer, not the sky it shows of the scene. A logical pixel is taken as
@@ -467,7 +475,7 @@ As realistic as we can afford, in stages, while the map stays readable.
   seen from Earth); past that its point's gain falls as its peak would,
   to 1 (none) where its image could be resolved.
 - Earth's night lights show at ~20,000× their radiance, so that they
-  show at the day side's exposure: the one departure left.
+  show at the day side's exposure.
 
 **Bodies.**
 - Spheroids with the right flattening: Earth 1/298, Mars 1/170, Jupiter

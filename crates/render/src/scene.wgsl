@@ -957,7 +957,8 @@ struct Sky {
     to_view: mat3x3<f32>,
     // Julian years since J2000, for proper motion.
     years: f32,
-    // The frame's exposure (`Look` in scene.rs).
+    // The sky's exposure: the frame's, lifted (`Look::sky_lift` in
+    // scene.rs).
     exposure: f32,
     // What a unit of the Milky Way's texture shows at: its radiance,
     // exposed.
@@ -1024,7 +1025,8 @@ fn sky_fs(in: SkyOut) -> @location(0) vec4<f32> {
 // The most the Milky Way shows at: under f16's largest with two
 // saturated stars' brightest pixels (SPOT_PEAK × HALF_MAX each) added
 // over it, which past it would be infinite on some GPUs, and NaN under a
-// sphere blended over them. Reached ~38 stops over Earth's exposure.
+// sphere blended over them. Reached where the sky's exposure is ~38
+// stops over Earth's.
 const SKY_MAX: f32 = 16000.0;
 
 // Each instance a star, a spot carrying its flux.
