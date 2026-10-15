@@ -1,7 +1,9 @@
 //! How bodies look (M1c.md, step 3 plan, item 3; step 6 plan, item 4):
 //! spheres turned by their rotation models, with their maps once read
-//! (`maps`); without, Lambertian of their Bond albedo, tinted. And the
-//! Sun's radiance.
+//! (`maps`); without, Lambertian of their Bond albedo, tinted; each held
+//! to its published brightness where it has a phase curve
+//! (`photometry`), which leaves of its albedo only its tint and how its
+//! map's parts compare. And the Sun's radiance.
 
 use crate::photometry::{self, Curve, Seen};
 use glam::{DMat3, DVec3};
@@ -12,7 +14,8 @@ use render::scene::AU_KM;
 use render::{Sphere, Surface};
 
 /// Bond albedo and a tint (linear RGB, scaled to the albedo's luminance)
-/// by body id. Albedos: NASA's planetary fact sheets (Phobos and Deimos:
+/// by body id: for a body with a phase curve, its tint, and its exposure
+/// before its maps are read. Albedos: NASA's planetary fact sheets (Phobos and Deimos:
 /// geometric albedo, 0.071 and 0.068); small bodies without a measured
 /// one take 0.1. Tints are rough: a body with maps takes its color from
 /// them.

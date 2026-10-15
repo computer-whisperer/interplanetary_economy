@@ -11,6 +11,10 @@ they come from.
   under Lambert. Earth's is taken as it is (its ice reads 0.8-0.96, its
   deserts ~0.4: reflectance already; its oceans are near black, their
   blue from space being the atmosphere's), its thick clouds at 0.8.
+  The sandbox then holds each body with a published phase curve to it
+  (crates/sandbox/src/photometry.rs), which cancels `albedo`: it counts
+  only where it sets a map against clouds (Earth's), or for a body
+  without a curve.
 - elevation.png: 16-bit, metres = value x `metres_per_unit` + `offset_m`.
 - clouds.jpg, water.png, night.jpg: one channel (Earth). Black Marble's
   faint moonlit snow and desert (up to ~55 of 255) is taken off its
