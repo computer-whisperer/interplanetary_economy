@@ -74,9 +74,27 @@ impl fmt::Display for Epoch {
 impl FromStr for Epoch {
     type Err = String;
 
-    /// Parses `YYYY-MM-DD`.
+    /// Parses `YYYY-MM-DD`, optionally with a time of day, `THH:MM`
+    /// (TDB).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bad = || format!("expected YYYY-MM-DD, got {s:?}");
+        let bad = || format!("expected YYYY-MM-DD or YYYY-MM-DDTHH:MM, got {s:?}");
+        let (date, time) = match s.split_once('T') {
+            Some((date, time)) => (date, Some(time)),
+            None => (s, None),
+        };
+        let hours = match time {
+            Some(time) => {
+                let (h, m) = time.split_once(':').ok_or_else(bad)?;
+                let (h, m): (u32, u32) =
+                    (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+                if h > 23 || m > 59 {
+                    return Err(bad());
+                }
+                f64::from(h) + f64::from(m) / 60.0
+            }
+            None => 0.0,
+        };
+        let s = date;
         let mut parts = s.split('-');
         let y = parts.next().and_then(|p| p.parse().ok()).ok_or_else(bad)?;
         let m: u32 = parts.next().and_then(|p| p.parse().ok()).ok_or_else(bad)?;
@@ -89,7 +107,7 @@ impl FromStr for Epoch {
         if e.ymd() != (y, m, d as f64) {
             return Err(format!("{s:?} is not a calendar date"));
         }
-        Ok(e)
+        Ok(e.plus_days(hours / 24.0))
     }
 }
 
@@ -124,5 +142,10 @@ mod tests {
         assert!("2041-04-31".parse::<Epoch>().is_err());
         assert!("2040-02-29".parse::<Epoch>().is_ok());
         assert!("2033-04".parse::<Epoch>().is_err());
+        let noon: Epoch = "2045-08-12T17:42".parse().unwrap();
+        let day: Epoch = "2045-08-12".parse().unwrap();
+        assert!((noon.0 - day.0 - (17.0 + 42.0 / 60.0) / 24.0).abs() < 1e-12);
+        assert!("2045-08-12T24:00".parse::<Epoch>().is_err());
+        assert!("2045-08-12T17".parse::<Epoch>().is_err());
     }
 }

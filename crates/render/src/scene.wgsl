@@ -46,7 +46,8 @@ struct Sphere {
     // Albedo (lit) or radiance (emissive).
     color: vec3<f32>,
     _pad0: f32,
-    // Unit, toward the Sun.
+    // Unit, toward the Sun; for a glowing sphere, its limb darkening's
+    // coefficients.
     light: vec3<f32>,
     _pad1: f32,
     // The quad, view space (unused when full-screen).
@@ -61,6 +62,59 @@ struct Sphere {
     cloud_albedo: f32,
     // Its atmosphere (top 0 for none).
     atmosphere: Atmosphere,
+    // What may hide the Sun from it.
+    shadows: Shadows,
+}
+
+// The Sun and the spheres that may hide part of it from a sphere's
+// surface (scene.rs, `ShadowsGpu`): centers in view space, radii (0 for
+// none; the Sun's 0 for no eclipses).
+struct Shadows {
+    sun: vec4<f32>,
+    occluders: array<vec4<f32>, 4>,
+}
+
+// The share of a disk of angular radius `a` covered by one of radius `b`
+// whose center is `t` away (small angles: flat).
+fn covered(a: f32, b: f32, t: f32) -> f32 {
+    if (t >= a + b) {
+        return 0.0;
+    }
+    if (t <= abs(a - b)) {
+        return min(b * b, a * a) / (a * a);
+    }
+    let x = acos(clamp((t * t + a * a - b * b) / (2.0 * t * a), -1.0, 1.0));
+    let y = acos(clamp((t * t + b * b - a * a) / (2.0 * t * b), -1.0, 1.0));
+    let k = sqrt(max((-t + a + b) * (t + a - b) * (t - a + b) * (t + a + b), 0.0));
+    return (a * a * x + b * b * y - 0.5 * k) / (PI * a * a);
+}
+
+// How much of the Sun's disk point `p` (view space) sees past the
+// occluders (each taken alone; their shares multiply).
+fn sun_seen(sh: Shadows, p: vec3<f32>) -> f32 {
+    if (sh.sun.w <= 0.0) {
+        return 1.0;
+    }
+    let to_sun = sh.sun.xyz - p;
+    let ds = length(to_sun);
+    let a = asin(min(sh.sun.w / ds, 1.0));
+    var seen = 1.0;
+    for (var k = 0u; k < 4u; k++) {
+        let o = sh.occluders[k];
+        if (o.w <= 0.0) {
+            continue;
+        }
+        let to_o = o.xyz - p;
+        let d = length(to_o);
+        if (d >= ds || dot(to_o, to_sun) <= 0.0) {
+            continue;
+        }
+        let b = asin(min(o.w / d, 1.0));
+        // The angle between them, well-conditioned when small.
+        let t = atan2(length(cross(to_o, to_sun)), dot(to_o, to_sun));
+        seen *= 1.0 - covered(a, b, t);
+    }
+    return seen;
 }
 
 // An atmosphere over a sphere (atmosphere.rs; step 6 plan, item 5):
@@ -242,11 +296,16 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     var surface = vec3<f32>(0.0);
     if (ground) {
         surface = s.color;
-        if (s.emissive < 0.5) {
-            var sun = vec3<f32>(1.0);
+        if (s.emissive > 0.5) {
+            // The linear law, its disk's mean kept: I₀ = mean / (1 − u/3).
+            let mu = max(dot(up, -d), 0.0);
+            surface = s.color * (vec3<f32>(1.0) - s.light * (1.0 - mu)) / (vec3<f32>(1.0) - s.light / 3.0);
+        } else {
+            // Sunlight reaching the ground: past other bodies, and
+            // through the air.
+            var sun = vec3<f32>(sun_seen(s.shadows, p));
             if (has_air) {
-                // Sunlight reaching the ground through the air.
-                sun = through_air(s.atmosphere, s.radius, s.radius, 0.0, dot(up, s.light));
+                sun *= through_air(s.atmosphere, s.radius, s.radius, 0.0, dot(up, s.light));
             }
             surface = lit(s, up, -d, uv, ddx, ddy, sun);
         }
@@ -366,7 +425,7 @@ fn march(s: Sphere, d: vec3<f32>, b: f32, disc: f32, ground: bool) -> Air {
         let extinction = scattering_r + scattering_m + a.mie_absorption * mie + a.absorption * ozone;
         let up = (d * si + across) / r;
         let mu_s = dot(up, s.light);
-        let sunlit = through_air(a, bottom, r, rr, mu_s);
+        let sunlit = through_air(a, bottom, r, rr, mu_s) * sun_seen(s.shadows, d * (b + si));
         let multiple = multiple_scattering(a, bottom, height, mu_s);
         let source = sun * ((scattering_r * phase_r + scattering_m * phase_m) * sunlit + (scattering_r + scattering_m) * multiple);
         let step = exp(-extinction * dt);

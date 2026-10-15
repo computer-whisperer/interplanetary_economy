@@ -51,6 +51,12 @@ pub fn drawn(eph: &Ephemeris) -> Vec<BodyId> {
     ids
 }
 
+/// The Sun's limb darkening, linear-law coefficients in red, green and
+/// blue: approximate fits to its center-to-limb profiles near 610, 540 and
+/// 465 nm (Neckel and Labs 1994), the limb at μ = 0.1 about 0.46, 0.40
+/// and 0.33 of the center.
+pub const SUN_DARKENING: [f32; 3] = [0.60, 0.67, 0.75];
+
 /// The Sun's radiance: a white Lambertian surface under the Sun at 1 au
 /// has radiance E/π; the Sun's disk E/Ω, Ω = π (R☉ / 1 au)².
 pub fn sun_radiance(eph: &Ephemeris) -> f64 {
@@ -65,7 +71,10 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
     let id = &eph.body(b).id;
     let maps = crate::maps::loaded(id);
     let surface = if b == eph.sun() {
-        Surface::Emissive([sun_radiance(eph) as f32; 3])
+        Surface::Emissive {
+            radiance: [sun_radiance(eph) as f32; 3],
+            darkening: SUN_DARKENING,
+        }
     } else {
         match maps {
             Some(m) => Surface::Lit(m.albedo),

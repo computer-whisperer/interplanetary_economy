@@ -21,8 +21,8 @@ struct Cli {
     /// A mission plan to design and play (data/missions/).
     #[arg(long)]
     plan: Option<PathBuf>,
-    /// The date the clock starts at: by default the plan's first ship's
-    /// start, or 2045-03-01.
+    /// The date the clock starts at, YYYY-MM-DD[THH:MM] (TDB): by default
+    /// the plan's first ship's start, or 2045-03-01.
     #[arg(long)]
     date: Option<orbit::time::Epoch>,
     /// The frame paths are drawn in: focus, earth-moon,

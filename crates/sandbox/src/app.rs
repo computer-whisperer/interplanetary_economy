@@ -241,6 +241,7 @@ impl Shell {
         render::Scene {
             camera: Some(self.camera.camera(eph, t, view.axes)),
             sun: eph.barycentric_position(eph.sun(), t),
+            sun_radius: eph.body(eph.sun()).radius,
             spheres: self
                 .bodies
                 .iter()

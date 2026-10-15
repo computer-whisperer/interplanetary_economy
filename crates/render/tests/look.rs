@@ -161,7 +161,10 @@ fn bloom_spreads_energy_and_keeps_it() {
                 center,
                 // ~10 px across.
                 AU_KM * 10.0 / 512.0 * (15f64.to_radians().tan()),
-                Surface::Emissive([100.0; 3]),
+                Surface::Emissive {
+                    radiance: [100.0; 3],
+                    darkening: [0.0; 3],
+                },
             )],
             look: Look {
                 exposure: 1.0,

@@ -48,6 +48,9 @@ pub struct Scene {
     pub look: Look,
     /// Where the Sun's light comes from.
     pub sun: DVec3,
+    /// The Sun's radius, km, for eclipses: other spheres hide part of its
+    /// disk from a sphere's surface. 0: no eclipses.
+    pub sun_radius: f64,
     pub spheres: Vec<Sphere>,
     pub markers: Vec<Marker>,
     /// Sets of paths, each uploaded when another is given in its place.
@@ -136,8 +139,13 @@ impl Sphere {
 pub enum Surface {
     /// Lambertian with this albedo, lit by the Sun.
     Lit([f32; 3]),
-    /// Glowing with this radiance (the Sun).
-    Emissive([f32; 3]),
+    /// Glowing (the Sun): its disk's mean radiance, darkened toward the
+    /// limb by the linear law, I(μ) = I₀ (1 − u (1 − μ)), with `darkening`
+    /// u per channel (0: even).
+    Emissive {
+        radiance: [f32; 3],
+        darkening: [f32; 3],
+    },
 }
 
 /// A shape of a fixed size in pixels, with a dark rim: a ship, or an
@@ -207,7 +215,21 @@ pub struct SphereGpu {
     pub corners: [[f32; 4]; 4],
     pub surface: SurfaceGpu,
     pub atmosphere: AtmosphereGpu,
+    pub shadows: ShadowsGpu,
 }
+
+/// What may hide the Sun from a sphere (`Shadows` in scene.wgsl): the Sun
+/// and up to [`OCCLUDERS`] spheres, each its center in view space and its
+/// radius (0 for none).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct ShadowsGpu {
+    pub sun: [f32; 4],
+    pub occluders: [[f32; 4]; OCCLUDERS],
+}
+
+/// The most spheres that may shade one.
+pub const OCCLUDERS: usize = 4;
 
 /// `Dot` in scene.wgsl.
 #[repr(C)]
@@ -272,6 +294,42 @@ pub fn lambert_phase(alpha: f64) -> f64 {
 }
 
 impl Scene {
+    /// The spheres that may hide part of the Sun from some point of `s`:
+    /// nearer the Sun, and with their disks, as seen from `s`, reaching
+    /// the Sun's (allowing for `s`'s own size), the largest first.
+    fn shadows(&self, s: &Sphere, cam: &Camera) -> ShadowsGpu {
+        let mut out = ShadowsGpu::default();
+        if self.sun_radius <= 0.0 || !matches!(s.surface, Surface::Lit(_)) {
+            return out;
+        }
+        let to_sun = self.sun - s.center;
+        let sun_angle = (self.sun_radius / to_sun.length()).min(1.0).asin();
+        let mut found: Vec<(f64, &Sphere)> = self
+            .spheres
+            .iter()
+            .filter(|o| matches!(o.surface, Surface::Lit(_)) && o.center != s.center)
+            .filter_map(|o| {
+                let to = o.center - s.center;
+                let d = to.length();
+                if d >= to_sun.length() || to.dot(to_sun) <= 0.0 {
+                    return None;
+                }
+                let reach = sun_angle + ((o.radius + s.radius) / d).min(1.0).asin();
+                (to.angle_between(to_sun) < reach).then_some((o.radius / d, o))
+            })
+            .collect();
+        found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let at = |c: DVec3, r: f64| {
+            let v = cam.to_view(c);
+            [v.x as f32, v.y as f32, v.z as f32, r as f32]
+        };
+        out.sun = at(self.sun, self.sun_radius);
+        for (slot, (_, o)) in out.occluders.iter_mut().zip(found) {
+            *slot = at(o.center, o.radius);
+        }
+        out
+    }
+
     /// The scene from its camera on a viewport of `size` pixels, in view
     /// space relative to the eye: subtracted and rotated in 64 bits.
     pub fn instances(&self, size: (u32, u32)) -> Instances {
@@ -347,7 +405,9 @@ impl Scene {
                 let disk = std::f64::consts::PI * half_angle * half_angle;
                 let spread = local_pixel * local_pixel;
                 match s.surface {
-                    Surface::Emissive(c) => c.map(|c| f64::from(c) * disk / spread),
+                    Surface::Emissive { radiance, .. } => {
+                        radiance.map(|c| f64::from(c) * disk / spread)
+                    }
                     Surface::Lit(albedo) => {
                         // With maps, their mean is the sphere's color.
                         let albedo = match &s.maps {
@@ -411,7 +471,11 @@ impl Scene {
                     let (albedo, irradiance, light, _) = lit(albedo);
                     (0.0, albedo, irradiance as f32, f32x3(cam.rotate(light)))
                 }
-                Surface::Emissive(c) => (1.0, c, 0.0, [0.0; 3]),
+                // For a glowing sphere, `light` holds its darkening.
+                Surface::Emissive {
+                    radiance,
+                    darkening,
+                } => (1.0, radiance, 0.0, darkening),
             };
             out.spheres.push(SphereGpu {
                 center: f32x3(v),
@@ -444,6 +508,7 @@ impl Scene {
                     }
                 },
                 atmosphere: air.map_or_else(AtmosphereGpu::default, |a| a.atmosphere.gpu()),
+                shadows: self.shadows(s, &cam),
             });
             out.maps.push(s.maps.clone());
         }

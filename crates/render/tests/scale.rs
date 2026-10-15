@@ -99,7 +99,10 @@ fn moon_limb_from_low_orbit() {
             spheres: vec![Sphere::plain(
                 MOON,
                 MOON_RADIUS,
-                Surface::Emissive([1.0; 3]),
+                Surface::Emissive {
+                    radiance: [1.0; 3],
+                    darkening: [0.0; 3],
+                },
             )],
             ..Default::default()
         };
@@ -156,7 +159,10 @@ fn radiance_has_its_units() {
         spheres: vec![Sphere::plain(
             DVec3::new(AU_KM, 0.0, 0.0),
             695_700.0,
-            Surface::Emissive([sun_radiance; 3]),
+            Surface::Emissive {
+                radiance: [sun_radiance; 3],
+                darkening: [0.0; 3],
+            },
         )],
         ..Default::default()
     };
@@ -254,5 +260,63 @@ fn points_carry_their_spheres_flux() {
                 );
             }
         }
+    }
+}
+
+/// A glowing sphere darkened toward its limb keeps its flux: its pixels,
+/// each weighted by the sky it subtends, sum to the even disk's within
+/// 0.3%, while its center is brighter by 1 / (1 − u/3).
+#[test]
+fn limb_darkening_keeps_the_flux() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let size = (300, 300);
+    let fov = 4f64.to_radians();
+    let center = DVec3::new(AU_KM, 0.0, 0.0);
+    let camera = Camera::looking_at(DVec3::ZERO, center, DVec3::Z, fov);
+    let u = [0.6f32, 0.67, 0.75];
+    let tan_half = (fov / 2.0).tan();
+    let side = 2.0 * tan_half / 300.0;
+    let flux = |image: &[[f32; 4]], c: usize| -> f64 {
+        image
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let (x, y) = ((i % 300) as f64 + 0.5, (i / 300) as f64 + 0.5);
+                let r = DVec3::new(
+                    (x / 150.0 - 1.0) * tan_half,
+                    (1.0 - y / 150.0) * tan_half,
+                    -1.0,
+                );
+                f64::from(p[c]) * side * side / r.length().powi(3)
+            })
+            .sum()
+    };
+    let mut seen = Vec::new();
+    for darkening in [[0.0; 3], u] {
+        let scene = Scene {
+            camera: Some(camera),
+            spheres: vec![Sphere::plain(
+                center,
+                695_700.0,
+                Surface::Emissive {
+                    radiance: [1.0; 3],
+                    darkening,
+                },
+            )],
+            ..Default::default()
+        };
+        let (image, _) = draw(&gpu, &mut renderer, &scene, size);
+        seen.push((image[150 * 300 + 150], [0, 1, 2].map(|c| flux(&image, c))));
+    }
+    for (c, u) in u.into_iter().enumerate() {
+        let (center_even, center_dark) = (seen[0].0[c], seen[1].0[c]);
+        let want = 1.0 / (1.0 - u / 3.0);
+        println!(
+            "channel {c}: center {center_dark} (want {want}), flux {:.5} vs {:.5}",
+            seen[1].1[c], seen[0].1[c]
+        );
+        assert!((center_dark / center_even / want - 1.0).abs() < 2e-3);
+        assert!((seen[1].1[c] / seen[0].1[c] - 1.0).abs() < 3e-3);
     }
 }

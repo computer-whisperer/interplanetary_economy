@@ -110,7 +110,7 @@ year per second, `[` and `]` jump between burns and events, and the
 scrubber under the map spans the plan. Exposure follows the focus (its
 sunlit side at a fixed level); `-` and `=` shift it a stop at a time. On
 an HDR output, highlights use the display's headroom. `--focus ID --altitude KM
---azimuth DEG --elevation DEG --date YYYY-MM-DD` set the starting view
+--azimuth DEG --elevation DEG --date YYYY-MM-DD[THH:MM]` set the starting view
 (the direction about the frame's axes), for screenshots too; with a
 plan, a screenshot waits for it to be designed.
 `DAMASCENE_COLOR_DEBUG=1` prints the color negotiation with the
