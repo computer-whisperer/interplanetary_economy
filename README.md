@@ -160,3 +160,18 @@ out: the LP over the whole route graph does not solve (M1a.md, step 11).
 Choosing which programs to fund takes ~6 LP solves of ~30 s each at the
 default six-month steps (`--months`); a sweep runs 12 draws at a time
 (`--jobs`).
+
+## Checks
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+CI runs these on each push to main and each pull request
+(`.github/workflows/ci.yml`). The render and sandbox tests draw on a
+GPU; CI's runners have none and draw on lavapipe, Mesa's Vulkan on the
+CPU. Locally, `VK_DRIVER_FILES` set to its ICD file and
+`LIBGL_ALWAYS_SOFTWARE=1` (else wgpu takes a GPU through OpenGL) do the
+same; the suite takes ~3 minutes on it.

@@ -196,12 +196,18 @@ fn stars_land_on_their_places() {
 /// view toward the Sagittarius star cloud and the north galactic pole,
 /// at exposures 1e5 and 1e7 (the exposure keys reach the sky; at 1e4,
 /// f16 holds the pole's 1.6e-6 to 2%), and 1e5 as 100 lifted 1,000×,
-/// against
-/// the map sampled on the CPU along each pixel's ray (its texels decoded
-/// from sRGB, bilinear, × its radiance), within 1%.
+/// against the map sampled on the CPU along each pixel's ray (its texels
+/// decoded from sRGB, bilinear, × its radiance), within 1%; on a CPU
+/// adapter, 2%: lavapipe (CI's) reads the map 0.3% over toward the star
+/// cloud and 1.1% at the darker pole, the GPUs tried within 0.2% (its
+/// sRGB filtering's precision, presumably).
 #[test]
 fn the_milky_way_takes_the_exposure() {
     let gpu = Offscreen::new().expect("a GPU");
+    let tolerance = match gpu.adapter.get_info().device_type {
+        wgpu::DeviceType::Cpu => 0.02,
+        _ => 0.01,
+    };
     let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let data = sky::wait().expect("data/sky reads");
     let map = &data.milky_way;
@@ -274,7 +280,10 @@ fn the_milky_way_takes_the_exposure() {
             println!(
                 "{name}, exposure {exposure:e} lifted {sky_lift}×: radiance {got:.4e}, the map's {want:.4e}"
             );
-            assert!((got / want - 1.0).abs() < 0.01, "{name}: {got} vs {want}");
+            assert!(
+                (got / want - 1.0).abs() < tolerance,
+                "{name}: {got} vs {want}"
+            );
         }
     }
 }
