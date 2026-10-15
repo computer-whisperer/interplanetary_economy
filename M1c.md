@@ -4,7 +4,8 @@ Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
 left out; of step 6, part 9's spins and small bodies' maps open, parts
 10, the eye's glare, and 11, the Sun's photosphere, done); now step 7,
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
-at the end).
+at the end): parts 1–7 done and reviewed; next, part 8 (legs leaving a
+low orbit from the ship's own orbit), then step 8, the gate.
 
 - Step 7, a review of parts 2–5 (a sub-agent, with runtime probes)
   found, all fixed:
