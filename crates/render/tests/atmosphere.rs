@@ -25,7 +25,6 @@ fn earth_air() -> Arc<Maps> {
         absorption: [0.650e-3, 1.881e-3, 0.085e-3],
         absorption_center: 25.0,
         absorption_width: 15.0,
-        ground_albedo: 0.3,
     });
     Arc::new(Maps {
         color: Image::srgba(1, 1, vec![255; 4]),

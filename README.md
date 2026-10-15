@@ -65,6 +65,10 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
 - `tools/rings/` — regenerates `data/bodies/saturn/rings.toml` from
   Cassini UVIS's Gamma Crucis occultation (`fetch.sh DIR`, then `python3
   build.py DIR > ../../data/bodies/saturn/rings.toml`; needs numpy).
+- `tools/atmosphere/` — a Monte Carlo of the renderer's atmospheres, and
+  with it the reference radiances `sandbox`'s test `atmospheres` holds
+  Mars's air to (`mc.py`, its usage in `crates/sandbox/tests/atmospheres.rs`;
+  `mc.py --check` runs its own two checks; needs numpy).
 - `tools/sky/` — regenerates `data/sky/` (`fetch.sh DIR`, ~250 MB, then
   `python3 build.py DIR ../../data/sky`; needs numpy, scipy, Pillow and
   OpenEXR): the star list, the Milky Way map, and its calibration against

@@ -23,16 +23,14 @@ pub fn of(id: &str, radius: f64) -> Option<Atmosphere> {
             absorption: [0.650e-3, 1.881e-3, 0.085e-3],
             absorption_center: 25.0,
             absorption_width: 15.0,
-            ground_albedo: 0.3,
         }),
         // CO₂ at 6.1 mbar and 210 K, 1/121 of air's number density at sea
         // level, each molecule scattering 2.45 times air's: Earth's
         // Rayleigh × 0.0202, scale height 11.1 km. Dust: visible optical
-        // depth 0.35 (the clear season around aphelion; at 0.5 the haze
-        // hid the surface toward the terminator) over a scale height of
-        // 11 km, single-scattering albedo 0.97 / 0.93 / 0.80 in red /
-        // green / blue (it absorbs blue: the butterscotch sky), asymmetry
-        // 0.65 (Wolff et al. 2009's range).
+        // depth 0.35 (the clear season around aphelion) over a scale
+        // height of 11 km, single-scattering albedo 0.97 / 0.93 / 0.80 in
+        // red / green / blue (it absorbs blue: the butterscotch sky),
+        // asymmetry 0.65 (Wolff et al. 2009's range).
         "mars" => {
             let dust = 0.35 / 11.0;
             let albedo = [0.97, 0.93, 0.80];
@@ -48,7 +46,6 @@ pub fn of(id: &str, radius: f64) -> Option<Atmosphere> {
                 absorption: [0.0; 3],
                 absorption_center: 0.0,
                 absorption_width: 1.0,
-                ground_albedo: 0.25,
             })
         }
         // Over the cloud deck (drawn as the body's surface, 1% inside the
@@ -71,7 +68,6 @@ pub fn of(id: &str, radius: f64) -> Option<Atmosphere> {
                 absorption: [0.0; 3],
                 absorption_center: 0.0,
                 absorption_width: 1.0,
-                ground_albedo: 0.75,
             })
         }
         _ => None,

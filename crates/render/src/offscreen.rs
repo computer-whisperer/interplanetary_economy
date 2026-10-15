@@ -230,7 +230,6 @@ mod tests {
             absorption: [0.0; 3],
             absorption_center: 0.0,
             absorption_width: 1.0,
-            ground_albedo: 0.3,
         });
         let maps = std::sync::Arc::new(Maps {
             color: Image::srgba(1, 1, vec![255; 4]),

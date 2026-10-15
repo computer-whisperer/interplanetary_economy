@@ -139,6 +139,11 @@ struct Atmosphere {
     // The top's radius.
     top: f32,
     absorption_width: f32,
+    // Mie scattering's share in its phase function's forward peak, which
+    // the scaled medium takes as unscattered (atmosphere.rs), and its
+    // mean cosine.
+    truncation: f32,
+    mie_asymmetry: f32,
 }
 
 // `maps::flags` in maps.rs.
@@ -201,14 +206,16 @@ struct Piece {
 @group(3) @binding(3) var night_map: texture_2d<f32>;
 @group(3) @binding(4) var water_map: texture_2d<f32>;
 @group(3) @binding(5) var map_sampler: sampler;
-// The atmosphere's tables (atmosphere.rs): transmittance to the top, and
-// Hillaire's multiple scattering.
+// The atmosphere's tables (atmosphere.rs): transmittance to the top (and
+// the Mie column, in alpha), Hillaire's multiple scattering, and the
+// scaled medium's skylight on level ground.
 @group(3) @binding(6) var transmittance_table: texture_2d<f32>;
 @group(3) @binding(7) var multiple_table: texture_2d<f32>;
-@group(3) @binding(8) var table_sampler: sampler;
+@group(3) @binding(8) var skylight_table: texture_2d<f32>;
+@group(3) @binding(9) var table_sampler: sampler;
 // The rings' profile across them, inner edge to outer: their particles'
 // albedo (rgb) and normal optical depth (a).
-@group(3) @binding(9) var ring_map: texture_2d<f32>;
+@group(3) @binding(10) var ring_map: texture_2d<f32>;
 @group(1) @binding(0) var<storage, read> vertices: array<PathVertex>;
 @group(1) @binding(1) var<storage, read> paths: array<PathInfo>;
 // Per instance, a run of segments: its first vertex, and its segments
@@ -337,12 +344,17 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
             surface = s.color * (vec3<f32>(1.0) - s.light * (1.0 - mu)) / (vec3<f32>(1.0) - s.light / 3.0);
         } else {
             // Sunlight reaching the ground: past other bodies, and
-            // through the air.
-            var sun = vec3<f32>(sun_seen(s.shadows, p) * ring_shadow(s, shadow_r, shadow_rate));
+            // through the air (the scaled medium's direct beam, and its
+            // skylight).
+            let seen = sun_seen(s.shadows, p);
+            var sun = vec3<f32>(seen * ring_shadow(s, shadow_r, shadow_rate));
+            var sky = vec3<f32>(0.0);
             if (has_air) {
-                sun *= through_air(s.atmosphere, s.radius, s.radius, 0.0, dot(up, s.light));
+                let mu_s = dot(up, s.light);
+                sun *= scaled(s.atmosphere, through_air(s.atmosphere, s.radius, s.radius, 0.0, mu_s));
+                sky = skylight(mu_s) * seen;
             }
-            surface = lit(s, up, -d, uv, ddx, ddy, sun);
+            surface = lit(s, up, -d, uv, ddx, ddy, sun, sky);
         }
     }
     var out: SphereFragment;
@@ -354,7 +366,20 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
         // light it scatters toward the eye, and what it lets through.
         let air = march(s, d, b, disc, ground && disc >= 0.0);
         let through = dot(air.transmittance, vec3<f32>(1.0 / 3.0));
-        base = vec4<f32>(air.light + coverage * air.transmittance * surface, coverage + (1.0 - coverage) * (1.0 - through));
+        // The ground, a Lambert surface, seen at cosine μ: by reciprocity
+        // through T(μ) + E(μ) / μ, the skylight a beam from there would
+        // give it (Chandrasekhar): what the air scatters out of the view
+        // it mostly scatters back in from beside it. That share of the
+        // whole column that the ray crosses. Against a Monte Carlo, the
+        // direct beam alone was 0.70 where the ground was seen by 0.89.
+        var seen_by = air.ground;
+        if (ground) {
+            let mu_v = max(dot(up, -d), 1e-3);
+            let column = scaled(s.atmosphere, through_air(s.atmosphere, s.radius, s.radius, 0.0, mu_v));
+            let crossed = (vec3<f32>(1.0) - air.ground) / max(vec3<f32>(1.0) - column, vec3<f32>(1e-4));
+            seen_by = min(air.ground + skylight(mu_v) / mu_v * min(crossed, vec3<f32>(1.0)), vec3<f32>(1.0));
+        }
+        base = vec4<f32>(air.light + coverage * seen_by * surface, coverage + (1.0 - coverage) * (1.0 - through));
         if (!ground) {
             out.depth = frame.near / max(air.near, frame.near);
         }
@@ -450,10 +475,13 @@ fn ring_light(s: Sphere, d: vec3<f32>, t: f32, r: f32, rate: f32) -> vec4<f32> {
 }
 
 // What a stretch of atmosphere gives: light scattered toward the eye, the
-// transmittance through it, and its near end's distance along -z.
+// transmittance through it (what is behind it is seen by), the scaled
+// medium's (the ground is seen by: light the dust scatters forward
+// still comes from it), and its near end's distance along -z.
 struct Air {
     light: vec3<f32>,
     transmittance: vec3<f32>,
+    ground: vec3<f32>,
     near: f32,
 }
 
@@ -463,17 +491,22 @@ fn rayleigh_phase(c: f32) -> f32 {
     return 3.0 / (16.0 * PI) * (1.0 + c * c);
 }
 
+fn henyey_greenstein(g: f32, c: f32) -> f32 {
+    return (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * c, 1.5));
+}
+
 fn mie_phase(g: f32, c: f32) -> f32 {
     let g2 = g * g;
     return 3.0 / (8.0 * PI) * (1.0 - g2) * (1.0 + c * c) / ((2.0 + g2) * pow(1.0 + g2 - 2.0 * g * c, 1.5));
 }
 
 // Transmittance from radius `r` (over a ground of radius `bottom`; `rr` is
-// r² − bottom², exact) along cosine `mu` to the top: none where the
-// ground is in the way. Bruneton's table mapping, as atmosphere.rs.
-fn through_air(a: Atmosphere, bottom: f32, r: f32, rr: f32, mu: f32) -> vec3<f32> {
+// r² − bottom², exact) along cosine `mu` to the top, and the Mie column
+// along the way (alpha): none where the ground is in the way. Bruneton's
+// table mapping, as atmosphere.rs.
+fn through_air(a: Atmosphere, bottom: f32, r: f32, rr: f32, mu: f32) -> vec4<f32> {
     if (mu < 0.0 && r * r * mu * mu >= rr) {
-        return vec3<f32>(0.0);
+        return vec4<f32>(0.0);
     }
     let h2 = (a.top - bottom) * (a.top + bottom);
     let h = sqrt(h2);
@@ -484,7 +517,21 @@ fn through_air(a: Atmosphere, bottom: f32, r: f32, rr: f32, mu: f32) -> vec3<f32
     let x_mu = (d - d_min) / max(d_max - d_min, 1e-6);
     let x_r = rho / h;
     let uv = vec2<f32>(0.5 / 256.0 + x_mu * (255.0 / 256.0), 0.5 / 64.0 + x_r * (63.0 / 64.0));
-    return textureSampleLevel(transmittance_table, table_sampler, uv, 0.0).rgb;
+    return textureSampleLevel(transmittance_table, table_sampler, uv, 0.0);
+}
+
+// The scaled medium's transmittance, from `through_air`'s: less the
+// forward peak's share of Mie scattering along its column.
+fn scaled(a: Atmosphere, t: vec4<f32>) -> vec3<f32> {
+    return t.rgb * exp(a.truncation * a.mie_scattering * t.a);
+}
+
+// The skylight on level ground, the Sun at cosine `mu_s`, for unit
+// irradiance (atmosphere.rs, the scaled medium's).
+fn skylight(mu_s: f32) -> vec3<f32> {
+    let n = f32(textureDimensions(skylight_table).x);
+    let u = clamp((mu_s + 1.0) * 0.5, 0.5 / n, 1.0 - 0.5 / n);
+    return textureSampleLevel(skylight_table, table_sampler, vec2<f32>(u, 0.5), 0.0).rgb;
 }
 
 // Hillaire's multiple scattering at altitude `height`, the Sun at cosine
@@ -510,7 +557,10 @@ fn march(s: Sphere, d: vec3<f32>, b: f32, disc: f32, ground: bool) -> Air {
     var out: Air;
     out.light = vec3<f32>(0.0);
     out.transmittance = vec3<f32>(1.0);
+    out.ground = vec3<f32>(1.0);
     out.near = 0.0;
+    // The Mie column crossed, for the scaled medium's transmittance.
+    var column = 0.0;
     let disc_top = disc + (a.top - bottom) * (a.top + bottom);
     if (disc_top <= 0.0) {
         return out;
@@ -531,6 +581,13 @@ fn march(s: Sphere, d: vec3<f32>, b: f32, disc: f32, ground: bool) -> Air {
     let c = dot(d, s.light);
     let phase_r = rayleigh_phase(c);
     let phase_m = mie_phase(a.mie_g, c);
+    // Hillaire's multiple scattering, spread as two scatterings spread
+    // it: Henyey–Greenstein with the square of the local mean cosine,
+    // blended between Mie's (here) and Rayleigh's (isotropic, 0) by Mie's
+    // share of the scattering. Isotropic, it was 10× too faint at 40° from
+    // the Sun's direction against a Monte Carlo of Mars's dust, 1.2–1.8×
+    // too bright at 140°.
+    let spread_m = henyey_greenstein(a.mie_asymmetry * a.mie_asymmetry, c) * 4.0 * PI;
     // The Sun's irradiance in this file's radiance units × sr.
     let sun = PI * s.irradiance;
     let dt = (s1 - s0) / f32(AIR_STEPS);
@@ -547,15 +604,20 @@ fn march(s: Sphere, d: vec3<f32>, b: f32, disc: f32, ground: bool) -> Air {
         let extinction = scattering_r + scattering_m + a.mie_absorption * mie + a.absorption * ozone;
         let up = (d * si + across) / r;
         let mu_s = dot(up, s.light);
-        let sunlit = through_air(a, bottom, r, rr, mu_s) * sun_seen(s.shadows, d * (b + si));
-        let multiple = multiple_scattering(a, bottom, height, mu_s);
+        let sunlit = through_air(a, bottom, r, rr, mu_s).rgb * sun_seen(s.shadows, d * (b + si));
+        let share = dot(scattering_m, vec3<f32>(1.0)) / max(dot(scattering_r + scattering_m, vec3<f32>(1.0)), 1e-30);
+        let multiple = multiple_scattering(a, bottom, height, mu_s) * mix(1.0, spread_m, share);
         let source = sun * ((scattering_r * phase_r + scattering_m * phase_m) * sunlit + (scattering_r + scattering_m) * multiple);
         let step = exp(-extinction * dt);
         // Integrated against the step's own extinction (Hillaire).
         let integral = select(vec3<f32>(dt), (vec3<f32>(1.0) - step) / extinction, extinction > vec3<f32>(1e-12));
         out.light += out.transmittance * source * integral;
         out.transmittance *= step;
+        column += mie * dt;
     }
+    // The scaled medium's (the ground is seen by): less Mie's forward
+    // peak along the column.
+    out.ground = out.transmittance * exp(a.truncation * a.mie_scattering * column);
     return out;
 }
 
@@ -569,8 +631,10 @@ const GLINT_ALPHA: f32 = 0.28;
 
 // The radiance of a lit sphere's surface at `up` (unit, from its center),
 // seen along `view` (unit, toward the eye), at `uv` on its maps.
-// `sun` is the sunlight reaching the ground, per channel (through its air).
-fn lit(s: Sphere, up: vec3<f32>, view: vec3<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>, sun: vec3<f32>) -> vec3<f32> {
+// `sun` is the sunlight reaching the ground directly, per channel (through
+// its air), and `sky` the skylight on level ground, both over the Sun's
+// irradiance above the air.
+fn lit(s: Sphere, up: vec3<f32>, view: vec3<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>, sun: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
     // East and north there (at a pole, any pair).
     var east = cross(s.axes[2], up);
     if (dot(east, east) < 1e-12) {
@@ -603,7 +667,8 @@ fn lit(s: Sphere, up: vec3<f32>, view: vec3<f32>, uv: vec2<f32>, ddx: vec2<f32>,
         let l = clamp(1.0 + a * (-0.019 + a * (2.42e-4 - a * 1.46e-6)), 0.0, 1.0);
         reflected = 2.0 * l * cos_i / max(cos_i + cos_e, 1e-4) + (1.0 - l) * cos_i;
     }
-    var color = albedo * s.irradiance * reflected * day * sun;
+    // The sky's light, on a slope as much of the sky as it faces.
+    var color = albedo * s.irradiance * (reflected * day * sun + sky * (0.5 + 0.5 * dot(n, up)));
     if ((s.flags & FLAG_WATER) != 0u) {
         let water = textureSampleGrad(water_map, map_sampler, uv, ddx, ddy).r * (1.0 - clouds);
         let ci = max(dot(up, s.light), 0.0);

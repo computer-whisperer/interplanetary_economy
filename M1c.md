@@ -38,9 +38,10 @@ shape models left out); next, step 5 (panels and labels).
     elevation clipped at 6,400 m (GEBCO's scaling). Saturn, Venus,
     Uranus and Neptune have no maps (no Cassini global map of Saturn was
     found; the others are near featureless in visible light).
-  - Mars's dust at optical depth 0.35 (0.5 hid the surface toward the
-    terminator); Mars's and Venus's air are estimates, stated in
-    `sandbox::atmospheres`.
+  - Mars's dust at optical depth 0.35 (the clear season); Mars's and
+    Venus's air are estimates, stated in `sandbox::atmospheres`. (0.5
+    had been dropped for hiding the surface toward the terminator, a
+    fault of the shader's: part 8.)
   - Not done: shape models (Phobos, Deimos, Bennu, Ryugu: a mesh
     pipeline, and sources each needing care).
   - Checks: Sirius, Betelgeuse and Polaris within 0.003 px of their
@@ -78,13 +79,10 @@ shape models left out); next, step 5 (panels and labels).
     an atmosphere the sky would hide lines and points; a ringed body as
     a point carries no ring light; a body as a point before the Sun
     adds light rather than hiding it.
-  - Open: Mars's air against a Monte Carlo of the same dust (plane-
-    parallel, checked against the analytic single scattering and by
-    binning escapes): single scattering agrees within 5%, but Hillaire's
-    isotropic multiple scattering is 1.2–4× too bright for this
-    forward-scattering dust, and the ground gets no skylight (near the
-    terminator 2.5× its direct light). Near the terminator the surface
-    is 23% of the light shown where it should be 62%: washed out.
+  - Part 8: Mars was washed out toward its terminator. Against a Monte
+    Carlo of the same dust (`tools/atmosphere/`), the air's multiple
+    scattering is now spread by direction, the ground lit by its sky and
+    seen by reciprocity; see the part 8 plan below.
 
 - Step 4: plans designed in the background and drawn as lines in fixed
   or rotating frames, with markers for ships and events, and playback.
@@ -986,3 +984,78 @@ Order of work, each part committed with its tests:
    - GPU time at 1920×1080 for each part, for gate item 3.
 8. **Not here:** Earth's clouds moving, cities growing, Jupiter's
    features drifting (the textures are fixed in time); shadows on ships.
+
+## Step 6, part 8 plan (2026-10-15): air against a Monte Carlo
+
+Mars looked washed out toward its terminator. A Monte Carlo of the same
+dust (plane-parallel, its first order checked against the analytic slab
+and its local estimates against binned escapes) found three faults in
+the shader, all of them in how light reaches and leaves the ground or
+scatters more than once (single scattering agreed within 5%):
+Hillaire's isotropic multiple scattering is 1.2–4× too bright for
+forward-scattering dust; the ground has no skylight (near the
+terminator 2.5× its direct light); and ground light the dust scatters
+forward toward the eye is counted lost.
+
+The fix, kept by the user (2026-10-15):
+
+1. **Delta-scaling** (δ-Eddington, with Nakajima and Tanaka's
+   single-scattering correction): the share f = g² of Mie scattering in
+   the phase function's forward peak is taken as unscattered (δ-
+   Eddington's share for Cornette–Shanks's Henyey–Greenstein factor; its
+   second Legendre moment χ₂ would also take the factor 1 + cos²θ's
+   symmetric 0.1, which is no peak: f 0.1 at g = 0). The scaled medium
+   (Mie scattering × (1 − f), its residual phase function
+   Cornette–Shanks with the residual's asymmetry) carries everything but
+   single scattering:
+   - multiple scattering: the table is computed in the scaled medium,
+     and added along the view ray with its σ′ₛ and the scaled
+     transmittance;
+   - the ground: lit by the scaled direct beam and the scaled skylight,
+     and seen through the scaled transmittance (forward-scattered ground
+     light is ground light, blurred by less than a pixel from orbit).
+   Single scattering keeps the true medium (its forward aureole, the
+   night-side halo), as does what the air lets through of whatever is
+   behind it (stars, other bodies, the Sun's disk). The transmittance
+   table's spare channel holds the Mie column along each ray, so the
+   shader gets the scaled transmittance as T · e^(f σₘ column).
+2. **Skylight**: a table of the scaled sky's irradiance on the ground by
+   the Sun's cosine (twilight included), per channel, integrated on the
+   CPU from the same model; the ground adds albedo × it (× (1 + n·up)/2
+   on relief), dimmed by eclipses.
+3. **Test**: the Monte Carlo becomes `tools/atmosphere/` (with its two
+   checks) and writes a fixture of reference radiances for pixels of a
+   uniform Mars (albedo 0.25) at phase angles 40°, 90° and 130°; a
+   sandbox test renders the same pixels and holds the air alone (black
+   ground) and air with ground to it.
+
+As built (2026-10-15), where it differs, each found against the fixture:
+
+- Multiple scattering in the scaled medium was still isotropic, and the
+  true one is not: the Sun at a cosine of 0.3 and the eye at 0.6, it
+  falls ~5× from 54° to 160° from the Sun's direction (Henyey–Greenstein
+  of asymmetry 0.4–0.5 fits it, as two scatterings by the dust give:
+  χ₁² = 0.51). So it stays Hillaire's, in
+  the true medium, spread by Henyey–Greenstein with the square of the
+  local mean cosine (blended from isotropic by Mie's share, evaluated
+  once a ray). Isotropic in the scaled medium, the haze was 0.57–1.34×
+  the Monte Carlo's; spread, 0.78–1.10× (the Sun over 0.2 in cosine).
+- The ground seen through the scaled beam alone lost what the air
+  scatters out of the view and back in from beside it (diffuse ground
+  light: the Monte Carlo's ground was seen by 0.89 where the beam gave
+  0.70). It is seen through T(μ) + E(μ)/μ instead: by reciprocity, the
+  skylight a beam from the eye would give it (for an eye inside the
+  air, in proportion to the column crossed). Hillaire's ground bounce
+  is dropped from the multiple scattering (it counted that light again),
+  and with it the atmosphere's `ground_albedo`.
+- The skylight's multiple scattering is spread the same way.
+- Against the fixture, where the Sun is over 0.2 in cosine: the ground's
+  part within 8%, the haze within 22%, the whole within 5% but at 130°
+  phase (−19%, the haze). Nearer the terminator the Monte Carlo's slab
+  dims the Sun more than the shell does (1.14× at 0.19, 1.7× at 0.11):
+  there the render runs up to 1.2× it. The skylight table: within 0.4%
+  of τ/2 under a thin Rayleigh sky on a flat planet.
+- Cost: Earth filling a 1080p view with its maps and air, 1.05 ms (0.80
+  before).
+- Earth's air shares all of it, unchecked against a Monte Carlo (its
+  Mie is thin, its multiple scattering near isotropic).

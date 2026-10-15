@@ -288,10 +288,10 @@ pub(crate) struct MapsPass {
 
 /// The textures a sphere's bind group holds, in binding order: the maps,
 /// then (after their sampler, which wraps east to west) the atmosphere's
-/// two tables, and theirs (which clamps); then the rings' profile (read
+/// three tables, and theirs (which clamps); then the rings' profile (read
 /// with the tables').
 const TEXTURES: usize = 5;
-const TABLES: usize = 2;
+const TABLES: usize = 3;
 const RINGS_BINDING: u32 = (TEXTURES + 2 + TABLES) as u32;
 
 impl MapsPass {
@@ -352,7 +352,7 @@ impl MapsPass {
             &layout,
             [&sampler, &table_sampler],
             [&white, &flat, &none, &none, &none],
-            [&no_table, &no_table],
+            [&no_table, &no_table, &no_table],
             &no_table,
         );
         MapsPass {
@@ -399,10 +399,12 @@ impl MapsPass {
             }
             let tables = match &m.air {
                 Some(air) => [
-                    single(device, queue, &air.transmittance),
-                    single(device, queue, &air.multiple),
-                ],
-                None => [0, 1].map(|_| plain(wgpu::TextureFormat::Rgba16Float, &[0; 8])),
+                    &air.tables.transmittance,
+                    &air.tables.multiple,
+                    &air.tables.skylight,
+                ]
+                .map(|t| single(device, queue, t)),
+                None => [0; TABLES].map(|_| plain(wgpu::TextureFormat::Rgba16Float, &[0; 8])),
             };
             let rings = match &m.rings {
                 Some(r) => post.upload_with_mips(device, queue, encoder, &r.profile),
@@ -413,7 +415,7 @@ impl MapsPass {
                 &self.layout,
                 [&self.sampler, &self.table_sampler],
                 std::array::from_fn(|k| &views[k]),
-                [&tables[0], &tables[1]],
+                std::array::from_fn(|k| &tables[k]),
                 &rings,
             );
             self.uploaded.insert(key, (m.clone(), g));
