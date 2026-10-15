@@ -45,6 +45,9 @@ const LOOP_COLOR: [f32; 3] = [0.09; 3];
 const PASS_COLOR: [f32; 3] = [1.0, 0.45, 0.12];
 const JUMP_COLOR: [f32; 3] = [1.0, 0.12, 0.08];
 
+/// A leg that could not be designed, where it is drawn (the timeline).
+pub const FAILURE_COLOR: [f32; 3] = JUMP_COLOR;
+
 /// Linear values of an sRGB color.
 fn linear(rgb: u32) -> [f32; 3] {
     [16, 8, 0].map(|shift| {
@@ -76,9 +79,9 @@ pub struct Event {
     pub size_px: f32,
 }
 
-/// Each item's color, in a ship's order: legs (and landings and ascents)
-/// by their place in the plan, the stays after them dimmer.
-fn colors(ship: &Ship) -> Vec<[f32; 3]> {
+/// Each item's color (linear), in a ship's order: legs (and landings and
+/// ascents) by their place in the plan, the stays after them dimmer.
+pub fn colors(ship: &Ship) -> Vec<[f32; 3]> {
     let mut leg = None;
     ship.items
         .iter()
@@ -212,13 +215,7 @@ pub fn build(
             let Some(r) = r.filter(|_| frame.covers(eph, focus, t)) else {
                 continue;
             };
-            let (shape, color, size_px) = match m.kind {
-                MarkerKind::Burn => (Shape::Diamond, color, 9.0),
-                MarkerKind::Flyby => (Shape::Ring, color, 11.0),
-                MarkerKind::Pass => (Shape::Ring, PASS_COLOR, 11.0),
-                MarkerKind::Landing | MarkerKind::Ascent => (Shape::Block, color, 9.0),
-                MarkerKind::Jump { .. } => (Shape::Cross, JUMP_COLOR, 11.0),
-            };
+            let (shape, color, size_px) = marker_style(m.kind, color);
             out.events.push(Event {
                 ship: s,
                 item: k,
@@ -232,6 +229,18 @@ pub fn build(
         }
     }
     out
+}
+
+/// How a marker is drawn on an item of `color` (linear): its shape, its
+/// color and its size, logical px.
+pub fn marker_style(kind: MarkerKind, color: [f32; 3]) -> (Shape, [f32; 3], f32) {
+    match kind {
+        MarkerKind::Burn => (Shape::Diamond, color, 9.0),
+        MarkerKind::Flyby => (Shape::Ring, color, 11.0),
+        MarkerKind::Pass => (Shape::Ring, PASS_COLOR, 11.0),
+        MarkerKind::Landing | MarkerKind::Ascent => (Shape::Block, color, 9.0),
+        MarkerKind::Jump { .. } => (Shape::Cross, JUMP_COLOR, 11.0),
+    }
 }
 
 /// The poses paths are placed with at `t`, by [`VIEW_POSE`] and

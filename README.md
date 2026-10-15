@@ -127,8 +127,11 @@ the frame paths are drawn in (centered on the focus, or rotating with
 Earth and the Moon, the Sun and Earth, or the Sun and Mars; `--frame`).
 Right drag orbits, the wheel zooms (down to a tenth of the focus's
 size above it, at most 10 km), space pauses, `,` and `.` step the time warp from 1 s to 1
-year per second, `[` and `]` jump between burns and events, and the
-scrubber under the map spans the plan. Bodies, ships, burns and events
+year per second, and `[` and `]` jump between burns and events. The
+timeline under the map has a lane per ship, its legs and stays as bars
+and its burns and events as ticks, with the clock's time as a cursor:
+the wheel over it zooms, a drag pans, a press on its axis seeks the
+clock, and a click on a bar selects that item. Bodies, ships, burns and events
 and station orbits are labeled where there is room. A click on a body
 focuses it; on a ship, a marker, a label or a line, it selects that
 item in the plan's panel (`p` shows or hides it), where a click on an

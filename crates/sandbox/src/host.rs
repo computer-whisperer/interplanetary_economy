@@ -22,7 +22,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 /// Logical pixels a wheel line scrolls a UI list.
-const WHEEL_LINE: f32 = 50.0;
+pub const WHEEL_LINE: f32 = 50.0;
 
 /// Opens the window and runs until it closes, or for `frames` frames;
 /// then prints what the window negotiated and its frame times.
@@ -235,7 +235,17 @@ impl ApplicationHandler for Host {
                     let eph = app.eph;
                     app.camera.wheel(eph, lines);
                 } else {
-                    gfx.renderer.pointer_wheel(x, y, -lines * WHEEL_LINE);
+                    let dy = -lines * WHEEL_LINE;
+                    let taken = gfx
+                        .renderer
+                        .pointer_wheel_event(x, y, 0.0, dy)
+                        .is_some_and(|e| {
+                            let cx = EventCx::new().with_ui_state(gfx.renderer.ui_state());
+                            app.on_wheel_event(e, &cx)
+                        });
+                    if !taken {
+                        gfx.renderer.pointer_wheel(x, y, dy);
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(m) => {

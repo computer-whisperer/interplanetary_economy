@@ -1,12 +1,12 @@
 //! The sandbox's UI (M1c.md, step 2 plan, item 5; step 3 plan, items 6
 //! and 7; step 4 plan, items 2, 4 and 6; step 5 plan; step 6 plan, item
-//! 1): a top bar with the focus, the frame, the clock and the settings;
-//! the map view, labeled and picked by clicks, with the plan's panel
-//! beside it; a scrubber; and a status line.
+//! 1; step 7 plan, item 1): a top bar with the focus, the frame, the
+//! clock and the settings; the map view, labeled and picked by clicks,
+//! with the plan's panel beside it; the timeline; and a status line.
 
 use crate::bodies;
 use crate::camera::MapCamera;
-use crate::clock::{self, Clock};
+use crate::clock::Clock;
 use crate::frames::{self, Frame};
 use crate::labels::{self, Anchor, Placed};
 use crate::look::{self, Exposure};
@@ -17,10 +17,10 @@ use crate::pick::{self, Pick};
 use crate::plan::{Loaded, on_track, position};
 use crate::settings::{self, Settings};
 use crate::sky;
+use crate::timeline::{self, Timeline};
 use damascene_core::prelude::*;
 use damascene_core::scroll::{ScrollAlignment, ScrollRequest};
 use damascene_core::surface::AppTexture;
-use damascene_core::widgets::slider;
 use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
@@ -33,10 +33,9 @@ use std::sync::Arc;
 /// The map view's key: input over it goes to the camera.
 pub const VIEWPORT_KEY: &str = "viewport";
 
-/// The selects' and the scrubber's keys.
+/// The selects' keys.
 const FOCUS_KEY: &str = "focus";
 const FRAME_KEY: &str = "frame";
-const SCRUBBER_KEY: &str = "scrubber";
 
 /// The longest step of wall time a frame advances, s.
 const MAX_STEP_S: f64 = 0.25;
@@ -106,6 +105,7 @@ pub struct Shell {
     pub viewport: Option<AppTexture>,
     pub camera: MapCamera,
     pub clock: Clock,
+    pub timeline: Timeline,
     pub stats: Stats,
     pub frame: Frame,
     pub plan: Option<Loaded>,
@@ -153,6 +153,7 @@ impl Shell {
             viewport: None,
             camera: MapCamera::new(eph, earth),
             clock: Clock::new(t, eph.span()),
+            timeline: Timeline::new(t, eph.span()),
             stats: Stats::default(),
             frame: Frame::Focus,
             plan: None,
@@ -195,18 +196,26 @@ impl Shell {
 
     /// Advances the clock and the camera by `dt` seconds of wall time,
     /// at most [`MAX_STEP_S`]: after a stall or a hidden window, time
-    /// resumes rather than leaping. Takes what the plan's designer has
-    /// sent, and builds the paths again if they changed.
+    /// resumes rather than leaping. Then [`Self::poll`], and builds the
+    /// paths again if they changed.
     pub fn tick(&mut self, dt: f64) {
         let dt = dt.min(MAX_STEP_S);
         self.follow_focus();
         self.clock.tick(dt);
         self.camera.tick(dt);
         self.exposure.tick(self.target_exposure(), dt);
+        self.poll();
+        self.update_paths();
+    }
+
+    /// Takes what the plan's designer has sent; the timeline follows the
+    /// plan and the clock.
+    pub fn poll(&mut self) {
         if let Some(plan) = self.plan.as_mut() {
             plan.poll();
+            self.timeline.fit(plan.span());
         }
-        self.update_paths();
+        self.timeline.follow(self.clock.t);
     }
 
     /// Builds the paths and events, if the frame, its center, the plan or
@@ -242,14 +251,6 @@ impl Shell {
         self.events = built.events;
         self.event_times = self.plan.as_ref().map_or_else(Vec::new, Loaded::events);
         self.built = Some(key);
-    }
-
-    /// The span the scrubber covers: the plan's, or the ephemeris's.
-    fn timeline(&self) -> (Epoch, Epoch) {
-        match &self.plan {
-            Some(p) => p.span(),
-            None => self.eph.span(),
-        }
     }
 
     /// The exposure the focus calls for now.
@@ -471,6 +472,41 @@ impl Shell {
         self.seen.as_ref().map_or(&[], |s| &s.anchors)
     }
 
+    /// Presses, drags and releases on the timeline: on the axis, seeking
+    /// the clock; on the lanes, panning, and a click on a bar selecting
+    /// its item and seeking to where it landed. `false` if the event is
+    /// not the timeline's.
+    fn timeline_event(&mut self, event: &UiEvent, cx: &EventCx) -> bool {
+        let Some(route) = event.route() else {
+            return false;
+        };
+        let bar = timeline::parse_bar_key(route);
+        let on_lanes = route == timeline::LANES_KEY || bar.is_some();
+        if route != timeline::AXIS_KEY && !on_lanes {
+            return false;
+        }
+        let (Some(axis), Some(x)) = (cx.rect_of_key(timeline::AXIS_KEY), event.pointer_x()) else {
+            return true;
+        };
+        let at = self.timeline.at(f64::from((x - axis.x) / axis.w.max(1.0)));
+        match event.kind {
+            UiEventKind::PointerDown | UiEventKind::Drag if route == timeline::AXIS_KEY => {
+                self.clock.seek(at);
+            }
+            UiEventKind::PointerDown => self.timeline.press(x),
+            UiEventKind::Drag => self.timeline.drag(x, axis.w),
+            UiEventKind::PointerUp => {
+                let clicked = self.timeline.release();
+                if clicked {
+                    self.clock.seek(at);
+                    self.select(bar);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn status(&self) -> String {
         let ms = |x: Option<f32>| x.map_or("–".to_string(), |x| format!("{x:.2} ms"));
         let frame = ms(self.stats.frame_ms);
@@ -549,7 +585,8 @@ impl App for Shell {
             _ => map,
         };
         let focus_name = self.eph.body(self.camera.focus).name.as_str();
-        let timeline = self.timeline();
+        let ships = self.plan.as_ref().map_or(&[][..], |p| &p.ships[..]);
+        let axis_px = cx.rect_of_key(timeline::AXIS_KEY).map_or(1000.0, |r| r.w);
         let main = column([
             row([
                 text("Interplanetary sandbox").bold(),
@@ -578,21 +615,14 @@ impl App for Shell {
             .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
             .align(Align::Center),
             middle,
-            row([
-                text(orbit::mission::when(timeline.0))
-                    .muted()
-                    .caption()
-                    .tabular_numerals(),
-                slider(SCRUBBER_KEY, clock::fraction(timeline, self.clock.t) as f32)
-                    .width(Size::Fill(1.0)),
-                text(orbit::mission::when(timeline.1))
-                    .muted()
-                    .caption()
-                    .tabular_numerals(),
-            ])
-            .gap(tokens::SPACE_3)
-            .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1))
-            .align(Align::Center),
+            timeline::strip(
+                self.eph,
+                &self.timeline,
+                axis_px,
+                ships,
+                self.clock.t,
+                self.selected,
+            ),
             row([
                 text(self.status()).muted().caption().tabular_numerals(),
                 spacer(),
@@ -630,7 +660,7 @@ impl App for Shell {
         stack(layers).width(Size::Fill(1.0)).height(Size::Fill(1.0))
     }
 
-    fn on_event(&mut self, event: UiEvent, _cx: &EventCx) {
+    fn on_event(&mut self, event: UiEvent, cx: &EventCx) {
         let clicked = matches!(event.kind, UiEventKind::Click | UiEventKind::Activate);
         if event.is_hotkey("pause") {
             self.clock.paused = !self.clock.paused;
@@ -662,13 +692,8 @@ impl App for Shell {
         {
             self.clock.seek(item.start);
             self.select(Some((s, k)));
-        } else if matches!(event.kind, UiEventKind::PointerDown | UiEventKind::Drag)
-            && event.route() == Some(SCRUBBER_KEY)
-            && let (Some(rect), Some(x)) = (event.target_rect(), event.pointer_x())
-        {
-            let f = slider::normalized_from_event(rect, x);
-            self.clock
-                .seek(clock::at_fraction(self.timeline(), f64::from(f)));
+        } else if self.timeline_event(&event, cx) {
+            // The timeline took it.
         } else if self.settings.apply(&event) {
             // One of the menu's sliders moved.
         } else if event.is_click_or_activate(FOCUS_KEY) {
@@ -708,6 +733,29 @@ impl App for Shell {
         {
             self.set_frame(f);
             self.frame_open = false;
+        }
+    }
+
+    /// The wheel over the timeline's axis or lanes zooms it about the
+    /// pointer; over its gutter, the lanes scroll.
+    fn on_wheel_event(&mut self, event: UiEvent, cx: &EventCx) -> bool {
+        let over = event.route().is_some_and(|r| {
+            r == timeline::AXIS_KEY
+                || r == timeline::LANES_KEY
+                || timeline::parse_bar_key(r).is_some()
+        });
+        match (
+            over,
+            cx.rect_of_key(timeline::AXIS_KEY),
+            event.pointer_x(),
+            event.wheel_delta(),
+        ) {
+            (true, Some(axis), Some(x), Some((_, dy))) if axis.w > 0.0 => {
+                let f = f64::from((x - axis.x) / axis.w);
+                self.timeline.wheel(f, -dy / crate::host::WHEEL_LINE);
+                true
+            }
+            _ => false,
         }
     }
 

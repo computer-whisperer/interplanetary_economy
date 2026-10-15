@@ -6,6 +6,30 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, part 1: the timeline. As planned (step 7 plan, item 1);
+  where it differs or adds:
+  - A press on the axis seeks the clock; on the lanes, a press that
+    moves 3 px or more pans, and one that does not seeks the clock to
+    where it landed and selects the bar under it (none on empty
+    space). The wheel over the axis or the lanes zooms by 1.25× a line;
+    over the gutter of names, the lanes scroll.
+  - Ticks on a ladder from an hour to ten years, each labeled with its
+    date (years `2045`, months `2045-03`, days `2045-03-05`, hours
+    `03-05 12:00`); days restart at each month's first.
+  - The plan is fitted to at least 10 days, with 2% spare either side.
+  - A bar's tooltip is its row in the panel. Failed legs are red.
+  - Damascene routes the wheel to keyed elements only when the host
+    asks (`pointer_wheel_event`, then `App::on_wheel_event`); the host
+    now does, before scrolling.
+  - Checks: bars within 0.0000 px of their items' times, in their
+    lanes, at 1 and 2 physical pixels to a logical one; a click on a
+    bar selects it and seeks to the click; a press on the axis seeks;
+    the wheel keeps the moment under the pointer. The ladder's steps
+    and labels, the fit, paging and panning are unit-tested.
+  - Cost, published plan (18 ships, 38 items) at 1920×1080: the
+    timeline's elements 0.09 ms a frame to build; the whole UI's build
+    and layout 0.93 ms median, 1.35 ms at the 95th percentile.
+
 - Step 5: labels on the map view, picking by click, and the plan's
   panel. As built, see the step 5 plan below; where it differs:
   - Of labels whose anchors lie within 6 px of each other, only the
@@ -1853,7 +1877,7 @@ Each part is committed on its own.
 3. **Plans written out** (`orbit::mission`).
    - `Plan::to_toml`, which `Plan::parse` reads back to the same plan.
      Places keep the TOML they were written as.
-   - `depart = "YYYY-MM-DD HH:MM"` pins a leg's departure, with one
+   - `depart = "YYYY-MM-DDTHH:MM"` pins a leg's departure, with one
      duration in `days`: what choosing an option writes. The window and
      the frontier shown stay those the leg has without the pin.
    - The sandbox saves to the file it loaded (Ctrl+S) and opens plans

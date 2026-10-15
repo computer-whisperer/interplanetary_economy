@@ -108,9 +108,15 @@ fn labels_beside_what_they_name() {
         let off = from_rect(anchor.at, label.rect);
         let r = label.rect;
         let y = (map.y + r.y + r.h / 2.0) * scale;
+        // Beside the label on the side away from the Moon.
+        let beside = if r.x + r.w / 2.0 < anchor.at.x {
+            r.x - 3.0
+        } else {
+            r.x + r.w + 3.0
+        };
         let (inside, outside) = (
             channel((map.x + r.x + 1.5) * scale, y, 1),
-            channel((map.x + r.x + r.w + 3.0) * scale, y, 1),
+            channel((map.x + beside) * scale, y, 1),
         );
         println!(
             "scale {scale}: Moon anchored at {:?}, drawn at {drawn:?} ({:.3} px apart), radius {:.2} px; \

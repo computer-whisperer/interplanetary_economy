@@ -104,20 +104,6 @@ impl Clock {
     }
 }
 
-/// Where `t` falls in `span`, from 0 to 1 (a scrubber's value).
-pub fn fraction(span: (Epoch, Epoch), t: Epoch) -> f64 {
-    let length = span.1.0 - span.0.0;
-    if length <= 0.0 {
-        return 0.0;
-    }
-    ((t.0 - span.0.0) / length).clamp(0.0, 1.0)
-}
-
-/// The moment at `fraction` (0 to 1) of `span`.
-pub fn at_fraction(span: (Epoch, Epoch), fraction: f64) -> Epoch {
-    Epoch(span.0.0 + (span.1.0 - span.0.0) * fraction.clamp(0.0, 1.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,17 +153,5 @@ mod tests {
         assert!(c.previous(&events));
         assert!(!c.previous(&events));
         assert_eq!(c.t, d(0.0));
-    }
-
-    /// The scrubber's value and back.
-    #[test]
-    fn scrubber_mapping() {
-        let span = (Epoch::from_ymd(2045, 1, 1), Epoch::from_ymd(2046, 1, 1));
-        let t = Epoch(span.0.0 + 100.25);
-        let f = fraction(span, t);
-        assert!((at_fraction(span, f).0 - t.0).abs() < 1e-9);
-        assert_eq!(fraction(span, Epoch(span.0.0 - 5.0)), 0.0);
-        assert_eq!(at_fraction(span, 2.0), span.1);
-        assert_eq!(fraction((span.0, span.0), span.0), 0.0);
     }
 }

@@ -178,6 +178,7 @@ pub fn shot(
     ui.set_surface_size(width, height);
     let mut view = View::new(device, queue);
     let scene = scene.unwrap_or_else(|| {
+        app.poll();
         app.update_paths();
         app.scene(scale)
     });

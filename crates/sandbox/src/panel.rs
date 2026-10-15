@@ -132,7 +132,7 @@ pub fn rows(
 }
 
 /// An item's row, unkeyed.
-fn item_row(eph: &Ephemeris, item: &Item) -> Row {
+pub fn item_row(eph: &Ephemeris, item: &Item) -> Row {
     let kind = match &item.kind {
         ItemKind::Leg => "leg",
         ItemKind::Stay => "stay",
