@@ -14,7 +14,9 @@ they come from.
   The sandbox then holds each body with a published phase curve to it
   (crates/sandbox/src/photometry.rs), which cancels `albedo`: it counts
   only where it sets a map against clouds (Earth's), or for a body
-  without a curve.
+  without a curve. It holds each body's color to its measured one too,
+  which cancels a map's mean tint (Mercury's below included): a map
+  sets only how its parts' colors compare.
 - elevation.png: 16-bit, metres = value x `metres_per_unit` + `offset_m`.
 - clouds.jpg, water.png, night.jpg: one channel (Earth). Black Marble's
   faint moonlit snow and desert (up to ~55 of 255) is taken off its
@@ -34,9 +36,11 @@ from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from color import LUMINANCE  # noqa: E402
+
 COLOR = (8192, 4096)
 SMALL = (4096, 2048)
-LUMINANCE = np.array([0.2126, 0.7152, 0.0722])
 
 
 def linear(encoded):

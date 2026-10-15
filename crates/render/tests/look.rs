@@ -79,6 +79,80 @@ fn tonemap_is_linear_to_its_knee_and_under_the_headroom() {
     }
 }
 
+/// Past the knee a color keeps its channels' ratios (a bright orange
+/// stays orange, not white), its largest channel shown as a gray of that
+/// level would be.
+#[test]
+fn tonemap_keeps_hue() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let shown = |renderer: &mut Renderer, background: [f32; 3]| {
+        let scene = Scene {
+            background,
+            look: Look {
+                exposure: 1.0,
+                bloom: 0.0,
+                headroom: 4.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        draw(&gpu, renderer, &scene, (16, 16)).1[8 * 16 + 8]
+    };
+    for level in [1.0f32, 3.0, 30.0, 3e4] {
+        let orange = [level, 0.67 * level, 0.34 * level];
+        let got = shown(&mut renderer, orange);
+        let gray = shown(&mut renderer, [level; 3]);
+        println!("{orange:?} → {got:?}; gray → {gray:?}");
+        assert!((got[0] - gray[0]).abs() <= 1e-3 * gray[0], "{got:?} vs {gray:?}");
+        for c in 1..3 {
+            let (want, ratio) = (orange[c] / orange[0], got[c] / got[0]);
+            assert!((ratio - want).abs() < 2e-3, "channel {c}: {ratio} vs {want}");
+        }
+    }
+}
+
+/// A colored sphere exposed past f16's range, as a point and as a disk,
+/// keeps its color in the scene's radiance: its spot and its pixels
+/// scaled down whole (a focused planet's point at the body lift once
+/// showed white).
+#[test]
+fn colors_keep_past_f16() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let albedo = [0.3f32, 0.2, 0.1];
+    let center = DVec3::new(AU_KM, 0.0, 0.0);
+    for (name, distance, exposure) in [("point", 1e7, 1e12f32), ("disk", 2e4, 1e7)] {
+        let eye = center + DVec3::new(-distance, 0.0, 0.0);
+        let scene = Scene {
+            camera: Some(Camera::looking_at(eye, center, DVec3::Z, 50f64.to_radians())),
+            sun: DVec3::ZERO,
+            spheres: vec![Sphere::plain(center, 3_000.0, Surface::Lit(albedo))],
+            look: Look {
+                exposure,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (hdr, _) = draw(&gpu, &mut renderer, &scene, (64, 64));
+        let brightest = hdr.iter().map(|p| p[0]).fold(0f32, f32::max);
+        let mut sum = [0f64; 3];
+        for p in &hdr {
+            for c in 0..3 {
+                sum[c] += f64::from(p[c]);
+            }
+        }
+        println!("{name}: brightest {brightest}, sum {sum:?}");
+        // At the limit: the spot's red sums to it; the disk's pixels reach it.
+        let red = if name == "point" { sum[0] as f32 } else { brightest };
+        assert!(red > 59_000.0, "{name} is not at the limit: {red}");
+        for c in 1..3 {
+            let (got, want) = (sum[c] / sum[0], f64::from(albedo[c] / albedo[0]));
+            assert!((got - want).abs() < 0.01 * want, "{name}, channel {c}: {got} vs {want}");
+        }
+    }
+}
+
 /// On SDR the shown image is dithered by an 8-bit step where it will be
 /// encoded: across a slow gradient (the Moon from low orbit, the Sun
 /// low) the 8-bit image's error is noise, unbiased, rather than the

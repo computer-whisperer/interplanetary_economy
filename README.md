@@ -72,7 +72,10 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   Mars's air to (`mc.py`, its usage in `crates/sandbox/tests/atmospheres.rs`;
   `mc.py --check` runs its own two checks; needs numpy).
 - `tools/photometry/` — downloads the Horizons magnitudes the bodies'
-  brightness is checked against (`fixtures.sh`).
+  brightness is checked against (`fixtures.sh`), and computes their
+  colors from published spectra (`colors.py`, printing the arms of
+  `photometry::color`; needs numpy). `tools/color.py` holds the color
+  science it shares with `tools/sky/`.
 - `tools/sky/` — regenerates `data/sky/` (`fetch.sh DIR`, ~250 MB, then
   `python3 build.py DIR ../../data/sky`; needs numpy, scipy, Pillow and
   OpenEXR): the star list, the Milky Way map, and its calibration against

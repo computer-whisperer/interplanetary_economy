@@ -29,6 +29,7 @@ channel, with the Sun's color white). Sorted brightest first.
 Usage: python3 build.py DIR ../../data/sky
 """
 
+import os
 import sys
 
 import numpy as np
@@ -36,6 +37,9 @@ import OpenEXR
 import Imath
 from PIL import Image
 from scipy.spatial import cKDTree
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from color import LUMINANCE, SUN_BV, blackbody_rgb, temperature  # noqa: E402
 
 V_SUN = -26.74
 # Hipparcos positions are at J1991.25.
@@ -85,42 +89,6 @@ def hipparcos(path):
 
 def unit(ra, de):
     return np.stack([np.cos(de) * np.cos(ra), np.cos(de) * np.sin(ra), np.sin(de)], -1)
-
-
-def lobe(lam, mu, s1, s2):
-    s = np.where(lam < mu, s1, s2)
-    return np.exp(-0.5 * ((lam - mu) / s) ** 2)
-
-
-def cie(lam):
-    """CIE 1931 color matching functions (Wyman, Sloan and Shirley 2013)."""
-    x = 1.056 * lobe(lam, 599.8, 37.9, 31.0) + 0.362 * lobe(lam, 442.0, 16.0, 26.7) - 0.065 * lobe(lam, 501.1, 20.4, 26.2)
-    y = 0.821 * lobe(lam, 568.8, 46.9, 40.5) + 0.286 * lobe(lam, 530.9, 16.3, 31.1)
-    z = 1.217 * lobe(lam, 437.0, 11.8, 36.0) + 0.681 * lobe(lam, 459.0, 26.0, 13.8)
-    return np.stack([x, y, z], -1)
-
-
-XYZ_TO_SRGB = np.array(
-    [[3.2406, -1.5372, -0.4986], [-0.9689, 1.8758, 0.0415], [0.0557, -0.2040, 1.0570]]
-)
-LUMINANCE = np.array([0.2126, 0.7152, 0.0722])
-
-
-def blackbody_rgb(t):
-    """Linear sRGB of blackbodies at temperatures `t`, unnormalized."""
-    lam = np.linspace(380.0, 780.0, 401)
-    m = lam * 1e-9
-    planck = 1.0 / (m[None, :] ** 5 * (np.exp(1.4388e-2 / (m[None, :] * t[:, None])) - 1.0))
-    xyz = planck @ cie(lam)
-    return xyz @ XYZ_TO_SRGB.T
-
-
-def temperature(bv):
-    """Ballesteros 2012: a star's temperature from its B-V."""
-    return 4600.0 * (1.0 / (0.92 * bv + 1.7) + 1.0 / (0.92 * bv + 0.62))
-
-
-SUN_BV = 0.65
 
 
 def star_colors(bv):

@@ -35,8 +35,9 @@ pub const ACUITY: f64 = 2.909e-4;
 /// the point's lift falling in stops with its share.
 const FADE_PX: f64 = 3.0;
 
-/// The most a spot's radiance per share reaches, exposed: under f16's
-/// largest.
+/// The most a spot's radiance per share reaches in any channel, exposed:
+/// under f16's largest. A brighter spot is scaled down whole, its color
+/// kept.
 const SPOT_MAX: f64 = 60_000.0;
 
 /// A sphere's quad is the whole screen when the cone of rays that hit it
@@ -136,13 +137,14 @@ pub struct Sphere {
     /// With them, a lit sphere's albedo multiplies its color map.
     pub maps: Option<Arc<Maps>>,
     /// What a lit sphere's surface reflects (and its point carries) is
-    /// multiplied by: what brings its shading to its measured brightness.
-    /// Not its air, rings, night lights or glint.
-    pub gain: f32,
-    /// What its point carries over its disk's light: what its disk does
-    /// not show the way its point stands in for it (Saturn's rings, drawn
-    /// only on its disk), or no longer scales.
-    pub point_scale: f32,
+    /// multiplied by, per channel: what brings its shading to its measured
+    /// brightness and color. Not its air, rings, night lights or glint.
+    pub gain: [f32; 3],
+    /// What its point carries over its disk's light, per channel: what
+    /// its disk does not show the way its point stands in for it
+    /// (Saturn's rings, drawn only on its disk; Earth's color, which its
+    /// disk's air gives it), or no longer scales.
+    pub point_scale: [f32; 3],
 }
 
 impl Sphere {
@@ -154,8 +156,8 @@ impl Sphere {
             surface,
             axes: DMat3::IDENTITY,
             maps: None,
-            gain: 1.0,
-            point_scale: 1.0,
+            gain: [1.0; 3],
+            point_scale: [1.0; 3],
         }
     }
 
@@ -254,7 +256,9 @@ pub struct SphereGpu {
     pub color: [f32; 3],
     pub opacity: f32,
     pub light: [f32; 3],
-    pub gain: f32,
+    pub _pad: f32,
+    pub gain: [f32; 3],
+    pub _pad2: f32,
     pub corners: [[f32; 4]; 4],
     pub surface: SurfaceGpu,
     pub atmosphere: AtmosphereGpu,
@@ -490,11 +494,11 @@ impl Scene {
                         let (albedo, shading) = s.reflectance().expect("lit");
                         let (albedo, irradiance, _, to_sun) = lit(albedo);
                         let alpha = to_sun.angle_between(cam.eye - s.center);
-                        let mean = irradiance
-                            * disk_mean(shading, alpha)
-                            * f64::from(s.gain)
-                            * f64::from(s.point_scale);
-                        albedo.map(|a| f64::from(a) * mean * disk / spread)
+                        let mean = irradiance * disk_mean(shading, alpha);
+                        std::array::from_fn(|c| {
+                            let carried = f64::from(s.gain[c]) * f64::from(s.point_scale[c]);
+                            f64::from(albedo[c]) * carried * mean * disk / spread
+                        })
                     }
                 }
             };
@@ -505,10 +509,13 @@ impl Scene {
             let (exposure, lift) = (f64::from(self.look.exposure), f64::from(self.look.body_lift));
             let front = v * (1.0 - 1.01 * outer / -v.z).max(0.0);
             let mut spot = |k: f64| {
+                let color = radiance.map(|x| x * k * exposure);
+                let most = color.into_iter().fold(0.0, f64::max);
+                let within = if most > SPOT_MAX { SPOT_MAX / most } else { 1.0 };
                 out.points.push(DotGpu {
                     center: f32x3(front),
                     size: SPOT_SIGMA_PX,
-                    color: radiance.map(|x| (x * k * exposure).min(SPOT_MAX) as f32),
+                    color: color.map(|x| (x * within) as f32),
                     shape: Shape::Spot as u32,
                 });
             };
@@ -569,7 +576,9 @@ impl Scene {
                 color,
                 opacity: (1.0 - fade) as f32,
                 light,
+                _pad: 0.0,
                 gain: s.gain,
+                _pad2: 0.0,
                 corners: billboard.unwrap_or_default(),
                 surface: {
                     let column = |c: DVec3| {

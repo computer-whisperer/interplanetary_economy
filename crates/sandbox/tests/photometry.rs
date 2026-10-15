@@ -1,7 +1,7 @@
 //! The bodies' brightness against JPL Horizons' apparent magnitudes
 //! (M1c.md, Realism; fixtures from tools/photometry/fixtures.sh): the
 //! phase curves as `photometry` computes them, and the flux the renderer
-//! shows.
+//! shows; and the colors it shows them in.
 
 use glam::DVec3;
 use orbit::ephem::{BodyId, Ephemeris};
@@ -9,7 +9,7 @@ use orbit::time::Epoch;
 use render::offscreen::Offscreen;
 use render::{Camera, Look, Renderer, Scene, Target};
 use sandbox::bodies;
-use sandbox::photometry::{Curve, Seen, V_SUN, saturn_with_rings};
+use sandbox::photometry::{self, Curve, Seen, V_SUN, saturn_with_rings};
 
 /// A fixture's row: when, APmag, the target's distances from the Sun and
 /// the observer (au), and its phase angle (S-T-O, degrees).
@@ -279,5 +279,82 @@ fn disks_show_their_curves() {
         println!("{id}: {}", shown.join(", "));
         let worst = report.iter().map(|(_, d)| d.abs()).fold(0f64, f64::max);
         assert!(worst < 0.03, "{id}: {worst} mag");
+    }
+}
+
+/// `image`'s pixels summed, as a color of luminance 1.
+fn color_of(image: &[[f32; 4]]) -> [f64; 3] {
+    let mut sum = [0f64; 3];
+    for p in image {
+        for c in 0..3 {
+            sum[c] += f64::from(p[c]);
+        }
+    }
+    let l = 0.2126 * sum[0] + 0.7152 * sum[1] + 0.0722 * sum[2];
+    sum.map(|x| x / l)
+}
+
+/// The colors the renderer shows bodies in, against their own
+/// (`photometry::color`), at 10° of phase: as points (from 5,000 radii),
+/// the planets, the Moon, Phobos, Deimos and small bodies of five
+/// classes, within 0.003 in each channel; as disks (from 30 radii) whose
+/// maps' mean sets their color and which have no air (the Moon, Mercury,
+/// Jupiter), within 0.02, as the face shown varies from their maps' mean.
+/// Disks with air add its color (Mars, Venus), or keep their maps' and
+/// take it from their air (Earth): printed.
+#[test]
+fn bodies_show_their_colors() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    sandbox::maps::wait().expect("data/bodies reads");
+    let eph = Ephemeris::standard();
+    let t = Epoch::from_ymd(2045, 3, 1);
+    let sun = eph.barycentric_position(eph.sun(), t);
+    let size = 400u32;
+    let points = [
+        "mercury", "venus", "earth", "moon", "mars", "jupiter", "saturn", "uranus", "neptune",
+        "phobos", "deimos", "bennu", "ryugu", "didymos", "apophis", "nereus",
+    ];
+    let disks = ["moon", "mercury", "jupiter", "earth", "mars", "venus"];
+    let mut shown = |id: &str, radii: f64| {
+        let b = eph.lookup(id).unwrap();
+        let (c, radius) = (eph.barycentric_position(b, t), eph.body(b).radius);
+        let to_sun = (sun - c).normalize();
+        let side = to_sun.cross(DVec3::Z).normalize();
+        let a = 10f64.to_radians();
+        let eye = c + (to_sun * a.cos() + side * a.sin()) * radius * radii;
+        // Its brightest pixel at ~100, within f16's precision.
+        let mut draw = |exposure: f32| {
+            let scene = Scene {
+                camera: Some(Camera::looking_at(eye, c, DVec3::Z, 50f64.to_radians())),
+                sun,
+                spheres: bodies::spheres(eph, &[b], t, eye),
+                look: Look {
+                    exposure,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let target = Target::new(&gpu.device, size, size);
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target, &scene, None);
+            gpu.queue.submit(Some(encoder.finish()));
+            gpu.read_rgba16f(&target.hdr)
+        };
+        let peak = draw(1.0).iter().map(|p| p[1]).fold(0f32, f32::max);
+        let got = color_of(&draw(100.0 / peak));
+        let want = photometry::color(eph.body(b)).expect("a color");
+        let off = (0..3).map(|k| (got[k] - want[k]).abs()).fold(0f64, f64::max);
+        println!("{id} from {radii} radii: {got:.3?}, its own {want:.3?}: off {off:.3}");
+        off
+    };
+    for id in points {
+        assert!(shown(id, 5000.0) < 0.003, "{id}'s point");
+    }
+    for id in disks {
+        let off = shown(id, 30.0);
+        if !["earth", "mars", "venus"].contains(&id) {
+            assert!(off < 0.02, "{id}'s disk");
+        }
     }
 }

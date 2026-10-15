@@ -53,9 +53,11 @@ struct Sphere {
     // Unit, toward the Sun; for a glowing sphere, its limb darkening's
     // coefficients.
     light: vec3<f32>,
-    // What a lit sphere's surface reflects is multiplied by (`Sphere::gain`
-    // in scene.rs).
-    gain: f32,
+    _pad: f32,
+    // What a lit sphere's surface reflects is multiplied by, per channel
+    // (`Sphere::gain` in scene.rs).
+    gain: vec3<f32>,
+    _pad2: f32,
     // The quad, view space (unused when full-screen).
     corners: array<vec4<f32>, 4>,
     // The body's x (prime meridian), y (90° east) and z (north) axes, in
@@ -273,10 +275,17 @@ struct SphereFragment {
 // f16's largest finite value, less a margin.
 const HALF_MAX: f32 = 60000.0;
 
+// `c` within f16, scaled down whole where a channel would pass it: its
+// color kept.
+fn within_half(c: vec3<f32>) -> vec3<f32> {
+    let most = max(c.r, max(c.g, c.b));
+    return select(c, c * (HALF_MAX / most), most > HALF_MAX);
+}
+
 // What this pass writes for sphere `s`'s radiance `c` (premultiplied):
 // exposed, within f16, at its opacity.
 fn written(s: Sphere, c: vec4<f32>) -> vec4<f32> {
-    return vec4<f32>(min(c.rgb * frame.exposure, vec3<f32>(HALF_MAX)), c.a) * s.opacity;
+    return vec4<f32>(within_half(c.rgb * frame.exposure), c.a) * s.opacity;
 }
 
 // Premultiplied: the sphere over what is behind it, by how much of the
@@ -1051,8 +1060,7 @@ fn star_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u
         return out;
     }
     let rgb = vec3<f32>(f32(s.color & 255u), f32((s.color >> 8u) & 255u), f32((s.color >> 16u) & 255u)) / 255.0;
-    let color = min(rgb * shown, vec3<f32>(HALF_MAX));
-    return dot_corner(d, SPOT_SIGMA, color, 0u, corner_index(vertex));
+    return dot_corner(d, SPOT_SIGMA, within_half(rgb * shown), 0u, corner_index(vertex));
 }
 
 // A spot's σ, pixels (`SPOT_SIGMA_PX` in scene.rs), and the largest share

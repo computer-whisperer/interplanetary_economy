@@ -7,7 +7,7 @@
 //! read, gets a plain one.
 
 use crate::data_dir;
-use orbit::ephem::Ephemeris;
+use orbit::ephem::{Body, Ephemeris};
 use rayon::prelude::*;
 use render::maps::Weight;
 use render::{Image, Maps, Shading};
@@ -153,7 +153,7 @@ fn body(dir: &Path, id: &str, entry: &Entry, radius: f64) -> Result<BodyMaps, St
 
 /// A plain white map, for a body with an atmosphere and no maps; its
 /// albedo carries its color.
-fn plain(id: &str) -> BodyMaps {
+fn plain(body: &Body) -> BodyMaps {
     BodyMaps {
         maps: Arc::new(Maps {
             color: Image::srgba(1, 1, vec![255; 4]),
@@ -169,7 +169,7 @@ fn plain(id: &str) -> BodyMaps {
             air: None,
             rings: None,
         }),
-        albedo: crate::bodies::albedo(id),
+        albedo: crate::bodies::albedo(body),
     }
 }
 
@@ -204,9 +204,9 @@ pub fn read(
                 Some(Ok(maps)) => maps,
                 Some(Err(why)) => {
                     problems.push(format!("{id}: {why}"));
-                    plain(id)
+                    plain(eph.body(b))
                 }
-                None => plain(id),
+                None => plain(eph.body(b)),
             };
             let made = Arc::get_mut(&mut maps.maps).expect("just made");
             if let Some(a) = crate::atmospheres::of(id, radius) {

@@ -66,12 +66,19 @@ fn up_fs(in: FullOut) -> @location(0) vec4<f32> {
 }
 
 // Linear up to the knee, then a shoulder with slope 1 there that
-// approaches the headroom: continuous in value and slope.
+// approaches the headroom: continuous in value and slope. On the largest
+// channel, the others scaled with it: a color keeps its hue and
+// saturation however bright (a planet's point, its sunlit side), where
+// each channel's own shoulder would take it toward white.
 fn tonemap(x: vec3<f32>, headroom: f32) -> vec3<f32> {
+    let m = max(x.r, max(x.g, x.b));
     let knee = 0.5 * headroom;
+    if (m <= knee) {
+        return x;
+    }
     let room = headroom - knee;
-    let shoulder = knee + room * (1.0 - exp(-(x - knee) / room));
-    return select(shoulder, x, x <= vec3<f32>(knee));
+    let shoulder = knee + room * (1.0 - exp(-(m - knee) / room));
+    return x * (shoulder / m);
 }
 
 fn srgb_encode(c: vec3<f32>) -> vec3<f32> {

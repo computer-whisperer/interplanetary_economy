@@ -1,7 +1,8 @@
-//! The bodies' brightness (M1c.md, Realism): each body's magnitude at 1
-//! au from the Sun and the observer by its phase angle, from published
-//! phase curves, and the gain that brings a sphere's shading to it
-//! (`render::Sphere::gain`).
+//! The bodies' brightness and color (M1c.md, Realism): each body's
+//! magnitude at 1 au from the Sun and the observer by its phase angle,
+//! from published phase curves; its color at full phase, from published
+//! spectra (`tools/photometry/colors.py`); and the gain that brings a
+//! sphere's shading to both (`render::Sphere::gain`).
 //!
 //! The planets' curves are Mallama and Hilton 2018 ("Computing apparent
 //! planetary magnitudes for The Astronomical Almanac", Astronomy and
@@ -203,6 +204,46 @@ fn luminance(c: [f32; 3]) -> f64 {
     0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2])
 }
 
+/// The Sun's color, for a body whose own is not measured.
+const SUN_COLOR: [f64; 3] = [1.0; 3];
+
+/// `body`'s color at full phase: what it reflects of the Sun's light, as
+/// linear sRGB with the Sun's white, luminance 1, from the spectra
+/// `tools/photometry/colors.py` names (and prints these from): the
+/// planets' (their two photometric systems alone differing by up to
+/// 0.09 in a channel) and the Moon's measured whole; Phobos's and Deimos's
+/// like D-type asteroids'; a small body's its class's mean, or the Sun's
+/// where its class is unknown. None for the Sun.
+pub fn color(body: &Body) -> Option<[f64; 3]> {
+    Some(match body.id.as_str() {
+        "mercury" => [1.141, 0.981, 0.768],
+        "venus" => [1.015, 1.002, 0.938],
+        "earth" => [0.883, 1.014, 1.202],
+        "mars" => [1.414, 0.928, 0.491],
+        "jupiter" => [1.030, 1.005, 0.860],
+        "saturn" => [1.212, 0.967, 0.700],
+        "uranus" => [0.676, 1.072, 1.243],
+        "neptune" => [0.636, 1.072, 1.356],
+        "moon" => [1.165, 0.973, 0.778],
+        "phobos" | "deimos" => [1.070, 0.990, 0.890],
+        _ => match &body.kind {
+            BodyKind::Star => return None,
+            // Its class, without a subclass's suffix (S(IV): S).
+            BodyKind::SmallBody { spectral, .. } => match spectral.split('(').next() {
+                Some("B") => [1.007, 1.000, 0.978],
+                Some("C") => [1.014, 1.000, 0.963],
+                Some("Cb") => [0.998, 1.000, 1.009],
+                Some("D") => [1.070, 0.990, 0.890],
+                Some("S") => [1.106, 0.987, 0.818],
+                Some("Sq") => [1.095, 0.989, 0.827],
+                Some("Xe") => [1.072, 0.989, 0.891],
+                _ => SUN_COLOR,
+            },
+            _ => SUN_COLOR,
+        },
+    })
+}
+
 /// The flux of a curve's body at 1 au from the Sun and the observer, over
 /// π (the stars' units: radiance units × sr / π).
 fn true_flux(curve: &Curve, seen: &Seen) -> f64 {
@@ -230,20 +271,55 @@ fn factor(curve: &Curve, sphere: &Sphere, seen: &Seen, (lo, hi): (f64, f64)) -> 
     }
 }
 
-/// The gain (`render::Sphere::gain`) that brings `sphere`'s disk, seen as
-/// `seen`, to `curve`'s brightness: held past the curve's range, and past
-/// [`DISK_MAX_PHASE`].
-pub fn gain(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f32 {
+/// The factor that brings `sphere`'s disk, seen as `seen`, to `curve`'s
+/// brightness: held past the curve's range, and past [`DISK_MAX_PHASE`].
+fn disk_factor(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f64 {
     let (lo, hi) = curve.range();
-    factor(curve, sphere, seen, (lo, hi.min(DISK_MAX_PHASE))) as f32
+    factor(curve, sphere, seen, (lo, hi.min(DISK_MAX_PHASE)))
 }
 
-/// What `sphere`'s point carries over its disk's light
-/// (`render::Sphere::point_scale`): Saturn's rings', which are drawn only
-/// on its disk, and its curve's past [`DISK_MAX_PHASE`].
-pub fn point_scale(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f32 {
-    let point = factor(curve, sphere, seen, curve.range());
-    (point / f64::from(gain(curve, sphere, seen)) * (1.0 + rings_share(curve, seen))) as f32
+/// What brings `sphere`'s reflectance as a whole to `color`, per channel,
+/// its luminance kept: its maps' parts keep their colors over their
+/// mean's. None where it reflects none of a channel.
+fn tint(color: [f64; 3], sphere: &Sphere) -> Option<[f64; 3]> {
+    let (albedo, _) = sphere.reflectance()?;
+    if albedo.iter().any(|&a| a <= 0.0) {
+        return None;
+    }
+    let lum = |c: [f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let k = luminance(albedo) / lum(color);
+    Some(std::array::from_fn(|c| color[c] * k / f64::from(albedo[c])))
+}
+
+/// Whether `body`'s color is its air's, drawn on its disk over its maps:
+/// Earth's blue, Rayleigh scattering's over white clouds. Its point,
+/// which has no air, takes its color; its disk keeps its maps'.
+fn colored_by_air(body: &Body) -> bool {
+    body.id == "earth"
+}
+
+/// Brings `sphere`, `body` seen from `eye` with the Sun at `sun`, to its
+/// measured brightness and color where it has them: its gain
+/// (`render::Sphere::gain`) to its curve's brightness ([`disk_factor`])
+/// and its color ([`color`]); its point's scale
+/// (`render::Sphere::point_scale`) to what its point carries over its
+/// disk: Saturn's rings' light, which is drawn only on its disk; its
+/// curve's past [`DISK_MAX_PHASE`]; and the color of a body whose disk's
+/// air gives it ([`colored_by_air`]).
+pub fn calibrate(body: &Body, sphere: &mut Sphere, eye: DVec3, sun: DVec3) {
+    let (Some(curve), Some(color)) = (Curve::of(body), color(body)) else {
+        return;
+    };
+    let seen = Seen::from(sphere, eye, sun);
+    let disk = disk_factor(&curve, sphere, &seen);
+    let point = factor(&curve, sphere, &seen, curve.range()) / disk * (1.0 + rings_share(&curve, &seen));
+    let tint = tint(color, sphere).unwrap_or([1.0; 3]);
+    let (on_disk, on_point) = match colored_by_air(body) {
+        true => ([1.0; 3], tint),
+        false => (tint, [1.0; 3]),
+    };
+    sphere.gain = on_disk.map(|t| (disk * t) as f32);
+    sphere.point_scale = on_point.map(|t| (point * t) as f32);
 }
 
 /// The albedo of a white, Lambertian surface that would show as `sphere`'s
@@ -252,8 +328,8 @@ pub fn point_scale(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f32 {
 pub fn normal_albedo(curve: Option<&Curve>, sphere: &Sphere, seen: &Seen) -> Option<f64> {
     let (albedo, _) = sphere.reflectance()?;
     let full = Seen { alpha: 0.0, ..*seen };
-    let gain = curve.map_or(1.0, |c| f64::from(gain(c, sphere, &full)));
-    Some(luminance(albedo) * gain)
+    let k = curve.map_or(1.0, |c| disk_factor(c, sphere, &full));
+    Some(luminance(albedo) * k)
 }
 
 #[cfg(test)]

@@ -451,7 +451,11 @@ night lights, below.
 - Exposure adapts to what is in focus.
 - The scene is rendered in linear HDR. Exposure, bloom and a tonemap fit
   it to the output's headroom: up to the panel's peak on an HDR output (a
-  16-bit float scRGB swapchain), and a filmic curve to 1.0 on SDR.
+  16-bit float scRGB swapchain), and a filmic curve to 1.0 on SDR. The
+  curve takes a color's largest channel, the others scaled with it, so
+  that a color keeps its hue however bright (decided 2026-10-15: on each
+  channel alone it showed every bright planet's point white, Mars's
+  too).
 - One exposure for the whole scene (decided 2026-10-15: as accurate as
   we can first; departures where play shows the need). Exposed for a
   sunlit body, as a camera would be, the true sky shows nothing; over
@@ -538,6 +542,32 @@ night lights, below.
     ~1 mag faint (a geometric albedo of 2/3 of it; theirs is 1.4–2.5×
     that), and Mercury, Mars and the Moon too bright at large phase
     angles, to 1.4–1.6 mag.
+- Each body's color is held to its measured color at full phase the same
+  way, the gain per channel, its luminance kept (decided 2026-10-15):
+  what it reflects of the Sun's light, the Sun white, from spectra
+  through the eye's color matching functions
+  (`tools/photometry/colors.py`). The planets from their geometric
+  albedos in nine bands (Mallama et al. 2017; the Johnson-Cousins and
+  Sloan bands alone differ by up to 0.09 in a channel); the Moon's from
+  Lane and Irvine 1973, its red as their 1964 data and other studies
+  have it; Phobos's and Deimos's as D-type asteroids', which theirs are
+  likened to; small bodies' as their class's mean (DeMeo et al. 2009),
+  the Sun's where their class is unknown. A map keeps its parts' colors
+  over its mean. Earth's color is its air's (Rayleigh scattering's over
+  white clouds): its disk keeps its maps' colors, under its air, and
+  its point, which has no air, takes its measured color.
+  - Points show their colors within 0.001; disks without air within
+    0.014 (as the face shown varies). Earth's disk is 0.16 short of its
+    measured blue (in a channel, of luminance 1): its air's share is
+    diluted by its gain (above). Rejected: Earth's gain per channel as
+    the others', which tinted its clouds pale blue.
+  - Before: the maps' means and rough tints. Mars's map reflected 1.7×
+    the blue its measured color does, and Uranus and Neptune were paler
+    than their measured cyan.
+  - A saturated color past the tonemap's knee keeps its hue and loses a
+    little luminance: Mars's sunlit side at `KEY` shows ~8% darker on
+    SDR than under a shoulder per channel (calculated). The Sun's disk,
+    far past it, shows its limb's reddening rather than white.
 
 **Earth and Mars.**
 - Atmospheres by precomputed scattering (Bruneton 2017 or Hillaire
@@ -1108,7 +1138,8 @@ Order of work, each part committed with its tests:
      no threshold and a small weight (energy kept, as a lens's glare),
      and no clamp below f16's range: the Sun's 46,000 survives.
    - Tonemap: linear up to a knee, then a smooth shoulder that
-     approaches the headroom; per channel, so the Sun goes white.
+     approaches the headroom; per channel, so the Sun goes white. (Since
+     2026-10-15, on a color's largest channel, its hue kept: Realism.)
    - Exposure follows the focus: its sunlit side at normal incidence
      maps to a fixed level (key / (albedo × irradiance)), eased over
      0.6 s on refocus. `-` and `=` shift it by a stop.

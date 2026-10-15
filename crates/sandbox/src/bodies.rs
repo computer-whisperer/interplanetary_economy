@@ -1,51 +1,43 @@
 //! How bodies look (M1c.md, step 3 plan, item 3; step 6 plan, item 4):
 //! spheres turned by their rotation models, with their maps once read
-//! (`maps`); without, Lambertian of their Bond albedo, tinted; each held
-//! to its published brightness where it has a phase curve
-//! (`photometry`), which leaves of its albedo only its tint and how its
-//! map's parts compare. And the Sun's radiance.
+//! (`maps`); without, Lambertian of their Bond albedo, in their color
+//! (`photometry::color`); each held to its published brightness and
+//! color where it has a phase curve (`photometry`), which leaves of its
+//! albedo only how its map's parts compare. And the Sun's radiance.
 
-use crate::photometry::{self, Curve, Seen};
+use crate::photometry;
 use glam::{DMat3, DVec3};
-use orbit::ephem::{BodyId, BodyKind, Ephemeris};
+use orbit::ephem::{Body, BodyId, BodyKind, Ephemeris};
 use orbit::rotation::Rotations;
 use orbit::time::Epoch;
 use render::scene::AU_KM;
 use render::{Sphere, Surface};
 
-/// Bond albedo and a tint (linear RGB, scaled to the albedo's luminance)
-/// by body id: for a body with a phase curve, its tint, and its exposure
-/// before its maps are read. Albedos: NASA's planetary fact sheets (Phobos and Deimos:
-/// geometric albedo, 0.071 and 0.068); small bodies without a measured
-/// one take 0.1. Tints are rough: a body with maps takes its color from
-/// them.
-fn look(id: &str) -> (f64, [f64; 3]) {
+/// The Bond albedo of the body `id`: for a body with a phase curve, its
+/// exposure before its maps are read. NASA's planetary fact sheets
+/// (Phobos and Deimos: geometric albedo, 0.071 and 0.068); small bodies
+/// without a measured one take 0.1.
+pub fn bond_albedo(id: &str) -> f64 {
     match id {
-        "mercury" => (0.088, [1.0, 0.92, 0.85]),
-        "venus" => (0.76, [1.0, 0.94, 0.78]),
-        "earth" => (0.306, [0.75, 0.85, 1.0]),
-        "moon" => (0.11, [1.0, 0.96, 0.92]),
-        "mars" => (0.25, [1.0, 0.62, 0.42]),
-        "jupiter" => (0.343, [1.0, 0.9, 0.75]),
-        "saturn" => (0.342, [1.0, 0.92, 0.74]),
-        "uranus" => (0.3, [0.75, 0.95, 1.0]),
-        "neptune" => (0.29, [0.6, 0.74, 1.0]),
-        "phobos" => (0.071, [1.0, 0.95, 0.9]),
-        "deimos" => (0.068, [1.0, 0.95, 0.9]),
-        _ => (0.1, [1.0, 1.0, 1.0]),
+        "mercury" => 0.088,
+        "venus" => 0.76,
+        "earth" => 0.306,
+        "moon" => 0.11,
+        "mars" => 0.25,
+        "jupiter" => 0.343,
+        "saturn" => 0.342,
+        "uranus" => 0.3,
+        "neptune" => 0.29,
+        "phobos" => 0.071,
+        "deimos" => 0.068,
+        _ => 0.1,
     }
 }
 
-/// The Bond albedo of the body `id`.
-pub fn bond_albedo(id: &str) -> f64 {
-    look(id).0
-}
-
-/// The albedo per channel: the Bond albedo, tinted.
-pub fn albedo(id: &str) -> [f32; 3] {
-    let (bond, tint) = look(id);
-    let luminance = 0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2];
-    tint.map(|c| (bond * c / luminance) as f32)
+/// The albedo per channel: the Bond albedo, in the body's color.
+pub fn albedo(body: &Body) -> [f32; 3] {
+    let color = photometry::color(body).unwrap_or([1.0; 3]);
+    color.map(|c| (bond_albedo(&body.id) * c) as f32)
 }
 
 /// The bodies drawn, in the order the focus select lists them: the Sun,
@@ -69,7 +61,7 @@ pub fn sun_radiance(eph: &Ephemeris) -> f64 {
 }
 
 /// `bodies` as spheres at `t` (those the ephemeris covers then), each
-/// brought to its measured brightness as seen from `eye`
+/// brought to its measured brightness and color as seen from `eye`
 /// (`photometry`).
 pub fn spheres(eph: &Ephemeris, bodies: &[BodyId], t: Epoch, eye: DVec3) -> Vec<Sphere> {
     let sun = eph.barycentric_position(eph.sun(), t);
@@ -77,11 +69,7 @@ pub fn spheres(eph: &Ephemeris, bodies: &[BodyId], t: Epoch, eye: DVec3) -> Vec<
         .iter()
         .filter_map(|&b| {
             let mut s = sphere(eph, b, t)?;
-            if let Some(curve) = Curve::of(eph.body(b)) {
-                let seen = Seen::from(&s, eye, sun);
-                s.gain = photometry::gain(&curve, &s, &seen);
-                s.point_scale = photometry::point_scale(&curve, &s, &seen);
-            }
+            photometry::calibrate(eph.body(b), &mut s, eye, sun);
             Some(s)
         })
         .collect()
@@ -102,7 +90,7 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
     } else {
         match maps {
             Some(m) => Surface::Lit(m.albedo),
-            None => Surface::Lit(albedo(id)),
+            None => Surface::Lit(albedo(eph.body(b))),
         }
     };
     Some(Sphere {
@@ -111,8 +99,8 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
         surface,
         axes: Rotations::standard().axes(id, t).unwrap_or(DMat3::IDENTITY),
         maps: maps.map(|m| m.maps.clone()),
-        gain: 1.0,
-        point_scale: 1.0,
+        gain: [1.0; 3],
+        point_scale: [1.0; 3],
     })
 }
 
@@ -122,9 +110,10 @@ mod tests {
 
     #[test]
     fn albedos_keep_their_luminance() {
-        let a = albedo("mars");
+        let eph = Ephemeris::standard();
+        let a = albedo(eph.body(eph.lookup("mars").unwrap()));
         let luminance = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
-        assert!((luminance - 0.25).abs() < 1e-6);
+        assert!((luminance - 0.25).abs() < 1e-3, "{luminance}");
     }
 
     #[test]
