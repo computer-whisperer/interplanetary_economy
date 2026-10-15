@@ -12,10 +12,11 @@ use render::scene::AU_KM;
 /// reach into the headroom.
 pub const KEY: f64 = 0.6;
 
-/// The level the Sun's disk shows at, its focus: past the tonemap's knee,
-/// near white on SDR and into the headroom on HDR (gate item 4). At
-/// [`KEY`] it read as gray.
-pub const SUN_KEY: f64 = 4.0 * KEY;
+/// The level the Sun's disk shows at (its mean), its focus: its center
+/// (×1.25, limb-darkened) past the tonemap's knee and into the headroom
+/// on HDR (gate item 4), its limb below the knee. At [`KEY`] it read as
+/// gray; at 4 × KEY its limb darkening was lost in the shoulder.
+pub const SUN_KEY: f64 = 2.0 * KEY;
 
 /// The exposure the sky and points of light are shown at (`Look::sky`):
 /// the Milky Way's median at ~0.003 of SDR white, stars to V ~8 visible,

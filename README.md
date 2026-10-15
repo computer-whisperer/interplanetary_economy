@@ -21,12 +21,14 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   last arrived, with paths sampled for drawing (`mission`, `track`).
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
 - `crates/render` — the map view's renderer ([M1c.md](M1c.md)): a scene
-  drawn in linear HDR into a texture (bodies, points, markers, paths'
-  lines placed by reference frames' poses), GPU timers, and a windowless
-  device for tests.
+  drawn in linear HDR (the sky's stars and Milky Way; bodies with their
+  maps, atmospheres, rings and eclipses; points; markers; paths' lines
+  placed by reference frames' poses), then bloomed and tonemapped to the
+  output's headroom; GPU timers, and a windowless device for tests.
 - `crates/sandbox` — the creative sandbox: the map view in a window, its
   UI on [damascene](https://github.com/computer-whisperer/damascene)
-  0.8, HDR output where the compositor offers it; mission plans designed
+  0.8, HDR output where the compositor offers it; the bodies turned by
+  their rotation models, with their orbits drawn; mission plans designed
   in the background and played back, in fixed or rotating frames.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden

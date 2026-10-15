@@ -2,11 +2,12 @@
 //! reduction to 32-bit view-space instances for the GPU.
 //!
 //! Radiance is linear, in units of a white Lambertian surface under the
-//! Sun at 1 au; [`Look::exposure`] maps it to the shown image.
+//! Sun at 1 au; [`Look::exposure`] maps it to the shown image. The
+//! scene's pass writes it exposed, so that f16 holds the range shown.
 
 use crate::atmosphere::AtmosphereGpu;
 use crate::camera::{Camera, NEAR_KM};
-use crate::maps::{Maps, SurfaceGpu};
+use crate::maps::{Maps, Shading, SurfaceGpu};
 use crate::paths::{MAX_POSES, Paths, Pose, split};
 use crate::sky::Sky;
 use bytemuck::{Pod, Zeroable};
@@ -27,12 +28,14 @@ pub const SPOT_PEAK: f32 = 0.354;
 /// [`Look::sky`] (1.0 is the SDR white): a saturated star.
 pub const POINT_CAP: f32 = 8.0;
 
-/// Where a sphere is drawn as a disk under this radius, pixels, a spot
-/// over it carries what [`Look::point_gain`] adds to its flux, fading to
-/// none here.
+/// A sphere from one pixel in radius to this fades from its point (a
+/// spot carrying its flux times [`Look::point_gain`]) to its disk: the
+/// spot's share falling and the disk's opacity rising, so that the flux
+/// shown runs on smoothly.
 const FADE_PX: f64 = 3.0;
 
-/// The most a spot's radiance per share reaches: under f16's largest.
+/// The most a spot's radiance per share reaches, exposed: under f16's
+/// largest.
 const SPOT_MAX: f64 = 60_000.0;
 
 /// A sphere's quad is the whole screen when the cone of rays that hit it
@@ -183,7 +186,7 @@ pub struct FrameGpu {
     pub tan_half: f32,
     pub viewport: [f32; 2],
     pub line_px: f32,
-    pub _pad: u32,
+    pub exposure: f32,
     pub slots: [SlotGpu; MAX_POSES],
 }
 
@@ -209,7 +212,7 @@ pub struct SphereGpu {
     pub irradiance: f32,
     pub fullscreen: f32,
     pub color: [f32; 3],
-    pub _pad0: f32,
+    pub opacity: f32,
     pub light: [f32; 3],
     pub _pad1: f32,
     pub corners: [[f32; 4]; 4],
@@ -295,6 +298,36 @@ pub fn lambert_phase(alpha: f64) -> f64 {
     (alpha.sin() + (std::f64::consts::PI - alpha) * alpha.cos()) / std::f64::consts::PI
 }
 
+/// The Lommel–Seeliger law's phase function, likewise (Fairbairn 2005):
+/// 1 − sin(α/2) tan(α/2) ln cot(α/4).
+pub fn lommel_seeliger_phase(alpha: f64) -> f64 {
+    if alpha <= 0.0 {
+        return 1.0;
+    }
+    if alpha >= std::f64::consts::PI {
+        return 0.0;
+    }
+    let half = alpha / 2.0;
+    1.0 - half.sin() * half.tan() * (1.0 / (alpha / 4.0).tan()).ln()
+}
+
+/// A distant sphere's mean radiance over its disk at phase angle `alpha`,
+/// for unit albedo and irradiance, shaded as scene.wgsl's `lit` shades
+/// it: Lambert's (2/3) Φ(α); lunar-Lambert's share L(α) of
+/// Lommel–Seeliger (radiance 2 cos i / (cos i + cos e): 1 over the full
+/// disk), the rest Lambert.
+pub fn disk_mean(shading: Shading, alpha: f64) -> f64 {
+    let lambert = 2.0 / 3.0 * lambert_phase(alpha);
+    match shading {
+        Shading::Lambert => lambert,
+        Shading::LunarLambert => {
+            let a = alpha.to_degrees();
+            let l = (1.0 + a * (-0.019 + a * (2.42e-4 - a * 1.46e-6))).clamp(0.0, 1.0);
+            l * lommel_seeliger_phase(alpha) + (1.0 - l) * lambert
+        }
+    }
+}
+
 impl Scene {
     /// The spheres that may hide part of the Sun from some point of `s`:
     /// nearer the Sun, and with their disks, as seen from `s`, reaching
@@ -370,7 +403,7 @@ impl Scene {
                 tan_half: tan_half as f32,
                 viewport: [w as f32, h as f32],
                 line_px: self.line_px,
-                _pad: 0,
+                exposure: self.look.exposure,
                 slots,
             }),
             ..Default::default()
@@ -414,24 +447,36 @@ impl Scene {
                         radiance.map(|c| f64::from(c) * disk / spread)
                     }
                     Surface::Lit(albedo) => {
-                        // With maps, their mean is the sphere's color.
-                        let albedo = match &s.maps {
-                            Some(m) => std::array::from_fn(|c| albedo[c] * m.mean[c]),
-                            None => albedo,
+                        // With maps, their mean (and their clouds') is the
+                        // sphere's color, shaded as they are.
+                        let (albedo, shading) = match &s.maps {
+                            Some(m) => (
+                                std::array::from_fn(|c| {
+                                    (1.0 - m.cover) * albedo[c] * m.mean[c]
+                                        + m.cover * m.cloud_albedo
+                                }),
+                                m.shading,
+                            ),
+                            None => (albedo, Shading::Lambert),
                         };
                         let (albedo, irradiance, _, to_sun) = lit(albedo);
                         let alpha = to_sun.angle_between(cam.eye - s.center);
-                        let mean = 2.0 / 3.0 * irradiance * lambert_phase(alpha);
+                        let mean = irradiance * disk_mean(shading, alpha);
                         albedo.map(|a| f64::from(a) * mean * disk / spread)
                     }
                 }
             };
-            // That spot's flux times `k`.
+            // That spot's flux times `k`, shown at the frame's exposure;
+            // in front of the sphere's disk (and its air and rings), which
+            // it fades into: along its center's ray, nearer than anything
+            // of it (every pixel of the spot takes the center's depth).
+            let exposure = f64::from(self.look.exposure);
+            let front = v * (1.0 - 1.01 * outer / -v.z).max(0.0);
             let mut spot = |k: f64| {
                 out.points.push(DotGpu {
-                    center: f32x3(v),
+                    center: f32x3(front),
                     size: SPOT_SIGMA_PX,
-                    color: radiance.map(|x| (x * k).min(SPOT_MAX) as f32),
+                    color: radiance.map(|x| (x * k * exposure).min(SPOT_MAX) as f32),
                     shape: Shape::Spot as u32,
                 });
             };
@@ -440,15 +485,15 @@ impl Scene {
             let radius_px = half_angle / local_pixel;
             if radius_px < 1.0 {
                 // Under a pixel: a point of light.
-                if v.z < -NEAR_KM {
+                if front.z < -NEAR_KM {
                     spot(gain);
                 }
                 continue;
             }
-            if radius_px < FADE_PX && gain > 1.0 {
-                // A disk now, carrying the flux as it is; a spot over it
-                // carries what the gain adds, fading out.
-                spot((gain - 1.0) * (FADE_PX - radius_px) / (FADE_PX - 1.0));
+            // Its point's share, while the disk fades in.
+            let fade = ((FADE_PX - radius_px) / (FADE_PX - 1.0)).max(0.0);
+            if fade > 0.0 {
+                spot(gain * fade);
             }
             // The quad: across the cone of rays that hit the sphere (or its
             // atmosphere), in the plane through its center facing the eye;
@@ -490,7 +535,7 @@ impl Scene {
                 irradiance,
                 fullscreen: if billboard.is_some() { 0.0 } else { 1.0 },
                 color,
-                _pad0: 0.0,
+                opacity: (1.0 - fade) as f32,
                 light,
                 _pad1: 0.0,
                 corners: billboard.unwrap_or_default(),
@@ -530,5 +575,50 @@ impl Scene {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `disk_mean` against the laws integrated in f64 over a distant
+    /// sphere's disk (2000² samples), at phase angles from 0 to 170°: the
+    /// closed forms, and their normalization.
+    #[test]
+    fn disk_mean_integrates_the_laws() {
+        let n = 2000;
+        for degrees in [0.0f64, 1.0, 30.0, 60.0, 90.0, 120.0, 170.0] {
+            let alpha = degrees.to_radians();
+            // Seen along -z; the Sun at `alpha` from the eye, toward +x.
+            let light = DVec3::new(alpha.sin(), 0.0, alpha.cos());
+            let a = degrees;
+            let l = (1.0 + a * (-0.019 + a * (2.42e-4 - a * 1.46e-6))).clamp(0.0, 1.0);
+            let (mut lambert, mut lunar) = (0.0, 0.0);
+            for i in 0..n {
+                for j in 0..n {
+                    let x = (f64::from(i) + 0.5) / f64::from(n) * 2.0 - 1.0;
+                    let y = (f64::from(j) + 0.5) / f64::from(n) * 2.0 - 1.0;
+                    let zz = 1.0 - x * x - y * y;
+                    if zz <= 0.0 {
+                        continue;
+                    }
+                    let normal = DVec3::new(x, y, zz.sqrt());
+                    let (cos_i, cos_e) = (normal.dot(light).max(0.0), normal.z);
+                    lambert += cos_i;
+                    lunar += 2.0 * l * cos_i / (cos_i + cos_e) + (1.0 - l) * cos_i;
+                }
+            }
+            // Each sample's area over the disk's.
+            let per = 4.0 / f64::from(n * n) / std::f64::consts::PI;
+            for (shading, integral) in [(Shading::Lambert, lambert), (Shading::LunarLambert, lunar)]
+            {
+                let (got, want) = (disk_mean(shading, alpha), integral * per);
+                assert!(
+                    (got - want).abs() < 2e-3 * want.max(0.01),
+                    "{shading:?} at {degrees}°: {got} vs {want}"
+                );
+            }
+        }
     }
 }

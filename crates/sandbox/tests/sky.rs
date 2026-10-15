@@ -2,6 +2,7 @@
 //! drawn where their published places put them, and carrying their flux.
 
 use glam::{DVec2, DVec3};
+use orbit::rotation::equatorial_to_ecliptic;
 use orbit::time::Epoch;
 use render::camera::Camera;
 use render::offscreen::Offscreen;
@@ -91,7 +92,7 @@ fn stars_land_on_their_places() {
     let fov = 1000.0 * 10.0 / 3600.0 * std::f64::consts::PI / 180.0;
     let gain = 1e5_f32;
     for place in &PLACES {
-        let d = sky::orientation() * place.at(years);
+        let d = equatorial_to_ecliptic() * place.at(years);
         // Aimed off the star, so that it lands off the screen's center.
         let up = if d.z.abs() > 0.9 { DVec3::X } else { DVec3::Z };
         let side = d.cross(up).normalize();
@@ -125,7 +126,7 @@ fn stars_land_on_their_places() {
         let got = sum / weight;
         let error = (got - expected).length();
         let at_j2000 = camera
-            .project(sky::orientation() * place.at(0.0), size)
+            .project(equatorial_to_ecliptic() * place.at(0.0), size)
             .unwrap();
         println!(
             "{}: off by {error:.3} px; {:.1} px from its J2000 place",
@@ -137,32 +138,56 @@ fn stars_land_on_their_places() {
             assert!((got - at_j2000).length() > 50.0);
         }
         if place.name == "Sirius" {
-            // Flux: the green channel's pixels × the sky each subtends.
-            let tan_half = (fov / 2.0).tan();
-            let side = 2.0 * tan_half / f64::from(size.1);
-            let mut flux = 0.0;
-            for y in cy - 6..=cy + 6 {
-                for x in cx - 6..=cx + 6 {
-                    let ndc = DVec2::new(
-                        (x as f64 + 0.5) / f64::from(size.0) * 2.0 - 1.0,
-                        1.0 - (y as f64 + 0.5) / f64::from(size.1) * 2.0,
-                    ) * tan_half;
-                    let r = DVec3::new(ndc.x, ndc.y, -1.0);
-                    let sky = side * side / r.length().powi(3);
-                    flux += f64::from(image[(y * size.0 as i64 + x) as usize][1]) * sky;
+            // Its flux as shown, at this look and at the Sun's (exposure
+            // 2.6e-5, the sandbox's sky): the green channel's pixels × the
+            // sky each subtends. Found in review: at the Sun's, spots were
+            // clipped at f16's largest before exposure, every star
+            // brighter than V ~4 alike.
+            let sun_look = Look {
+                exposure: 2.6e-5,
+                sky: 7.5e5,
+                ..Default::default()
+            };
+            for look in [scene.look, sun_look] {
+                let image = radiance(
+                    &gpu,
+                    &mut renderer,
+                    &Scene {
+                        look,
+                        ..scene.clone()
+                    },
+                    size,
+                );
+                let tan_half = (fov / 2.0).tan();
+                let side = 2.0 * tan_half / f64::from(size.1);
+                let mut flux = 0.0;
+                for y in cy - 6..=cy + 6 {
+                    for x in cx - 6..=cx + 6 {
+                        let ndc = DVec2::new(
+                            (x as f64 + 0.5) / f64::from(size.0) * 2.0 - 1.0,
+                            1.0 - (y as f64 + 0.5) / f64::from(size.1) * 2.0,
+                        ) * tan_half;
+                        let r = DVec3::new(ndc.x, ndc.y, -1.0);
+                        let sky = side * side / r.length().powi(3);
+                        flux += f64::from(image[(y * size.0 as i64 + x) as usize][1]) * sky;
+                    }
                 }
+                // Times the gain the look gives a spot this bright (by
+                // its peak pixel where it lands: pixel² cos³θ of sky), and
+                // the exposure.
+                let star = data.stars[0];
+                let cos = -camera.rotate(d).z;
+                let peak = f64::from(star.flux) / (side * side * cos.powi(3))
+                    * f64::from(render::scene::SPOT_PEAK);
+                let shown = look.point_gain(peak as f32) * look.exposure;
+                let want = f64::from(star.flux) * f64::from((star.color >> 8) & 255) / 255.0
+                    * f64::from(shown);
+                println!(
+                    "Sirius at exposure {}: flux {flux:.4e}, wanted {want:.4e}",
+                    look.exposure
+                );
+                assert!((flux / want - 1.0).abs() < 1e-2, "{flux} vs {want}");
             }
-            // Times the gain the look gives a spot this bright: by its
-            // peak pixel where it lands (pixel² cos³θ of sky).
-            let star = data.stars[0];
-            let cos = -camera.rotate(d).z;
-            let peak = f64::from(star.flux) / (side * side * cos.powi(3))
-                * f64::from(render::scene::SPOT_PEAK);
-            let gain = scene.look.point_gain(peak as f32);
-            let want =
-                f64::from(star.flux) * f64::from((star.color >> 8) & 255) / 255.0 * f64::from(gain);
-            println!("Sirius: flux {flux:.4e}, wanted {want:.4e}");
-            assert!((flux / want - 1.0).abs() < 1e-2, "{flux} vs {want}");
         }
     }
 }
@@ -182,7 +207,7 @@ fn sky_gpu_time() {
         dec: (-29.0, 0.0, 28.0),
         motion: (0.0, 0.0),
     };
-    let d = sky::orientation() * center.at(0.0);
+    let d = equatorial_to_ecliptic() * center.at(0.0);
     for (what, sky) in [("nothing", None), ("the sky", Some(sky::sky(data, t)))] {
         let scene = Scene {
             camera: Some(Camera::looking_at(

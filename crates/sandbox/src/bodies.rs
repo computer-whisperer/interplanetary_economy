@@ -13,7 +13,8 @@ use render::{Sphere, Surface};
 /// Bond albedo and a tint (linear RGB, scaled to the albedo's luminance)
 /// by body id. Albedos: NASA's planetary fact sheets (Phobos and Deimos:
 /// geometric albedo, 0.071 and 0.068); small bodies without a measured
-/// one take 0.1. Tints are rough until textures come.
+/// one take 0.1. Tints are rough: a body with maps takes its color from
+/// them.
 fn look(id: &str) -> (f64, [f64; 3]) {
     match id {
         "mercury" => (0.088, [1.0, 0.92, 0.85]),

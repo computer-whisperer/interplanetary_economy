@@ -3,7 +3,7 @@
 //! process on a thread of its own. The view shows them once they arrive.
 
 use crate::data_dir;
-use orbit::ephem::OBLIQUITY_J2000;
+use orbit::rotation::equatorial_to_ecliptic;
 use orbit::time::Epoch;
 use render::{Image, Star};
 use serde::Deserialize;
@@ -94,19 +94,13 @@ pub fn wait() -> Result<&'static SkyData, String> {
     SKY.wait().as_ref().map_err(Clone::clone)
 }
 
-/// From the sky's coordinates (equatorial, ICRS) to the ephemeris's
-/// (ecliptic J2000): a turn of the obliquity about their shared x axis.
-pub fn orientation() -> glam::DMat3 {
-    glam::DMat3::from_rotation_x(-OBLIQUITY_J2000)
-}
-
 /// The sky as the renderer takes it, at `t`.
 pub fn sky(data: &SkyData, t: Epoch) -> render::Sky {
     render::Sky {
         stars: data.stars.clone(),
         milky_way: Some(data.milky_way.clone()),
         milky_way_radiance: data.milky_way_radiance,
-        orientation: orientation(),
+        orientation: equatorial_to_ecliptic(),
         // Epoch counts days from J2000.
         years: t.0 / 365.25,
     }
@@ -116,16 +110,6 @@ pub fn sky(data: &SkyData, t: Epoch) -> render::Sky {
 mod tests {
     use super::*;
     use glam::DVec3;
-
-    /// The ICRS z axis lands on Earth's pole as `ephem` has it: the
-    /// obliquity from the ecliptic's pole, toward +y.
-    #[test]
-    fn the_celestial_pole_is_earths() {
-        let pole = orientation() * DVec3::Z;
-        let earth = DVec3::new(0.0, OBLIQUITY_J2000.sin(), OBLIQUITY_J2000.cos());
-        assert!((pole - earth).length() < 1e-12, "{pole}");
-        assert!((orientation() * DVec3::X - DVec3::X).length() < 1e-12);
-    }
 
     /// The data reads, and the brightest star is Sirius: at its ICRS place
     /// (RA 6h 45m 8.9s, Dec −16° 42′ 58″), V −1.44, bluish white.

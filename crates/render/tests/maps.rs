@@ -28,6 +28,7 @@ fn radiance(
 fn maps(color: Image, relief: Option<Image>) -> Arc<Maps> {
     Arc::new(Maps {
         mean: [0.5; 3],
+        cover: 0.0,
         color,
         relief,
         clouds: None,

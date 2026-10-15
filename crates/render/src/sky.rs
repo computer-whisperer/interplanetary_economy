@@ -297,8 +297,8 @@ impl SkyPass {
             years: sky.years as f32,
             exposure: look.exposure,
             sky: look.sky,
-            milky_way: sky.milky_way_radiance * look.sky_gain(),
-            faintest: FAINTEST_SHOWN / look.exposure,
+            milky_way: sky.milky_way_radiance * look.sky_gain() * look.exposure,
+            faintest: FAINTEST_SHOWN,
             cap: crate::scene::POINT_CAP,
             _pad: [0.0; 2],
         };

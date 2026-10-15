@@ -21,6 +21,7 @@ fn ringed() -> Arc<Maps> {
     Arc::new(Maps {
         color: Image::srgba(1, 1, vec![255; 4]),
         mean: [1.0; 3],
+        cover: 0.0,
         relief: None,
         clouds: None,
         cloud_albedo: 0.0,
@@ -146,4 +147,56 @@ fn rings_light_as_a_slab_and_take_the_planets_shadow() {
     let aside = place(DVec3::new(105_000.0, 0.0, 0.0));
     println!("in the planet's shadow {shaded}, aside {aside}");
     assert!(shaded == 0.0 && aside > 1e-3, "{shaded}, {aside}");
+}
+
+/// Seen from afar (the rings ~6 px wide, their profile sampled at a
+/// coarse level), rings clear in their inner half (a noisy measurement's
+/// optical depth there, -0.1, taken as 0) and opaque in their outer: their
+/// inner edge is as dark as the clear half. Found in review: the profile
+/// was read with the maps' sampler, which wraps, and the outer edge's
+/// opacity bled into the inner.
+#[test]
+fn the_rings_edges_keep_apart() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let n: u32 = 500;
+    let tau: Vec<f32> = (0..n).map(|k| if k < n / 2 { -0.1 } else { 2.0 }).collect();
+    let maps = Arc::new(Maps {
+        rings: Some(Rings::new(
+            INNER,
+            (OUTER - INNER) / f64::from(n),
+            &tau,
+            &vec![[ALBEDO as f32; 3]; n as usize],
+        )),
+        ..(*ringed()).clone()
+    });
+    let center = DVec3::new(AU_KM, 0.0, 0.0);
+    // 50,000 km over ~6 px, from 1e7 km above the pole; a point 1,000 km
+    // in from the inner edge at the middle pixel's center.
+    let size = (201, 201);
+    let fov = 2.0 * (100.5 * 50_000.0 / 6.0 / 1e7f64).atan();
+    let edge_point = center - DVec3::X * (INNER + 1_000.0);
+    let camera = Camera::looking_at(edge_point + DVec3::Z * 1e7, edge_point, DVec3::Y, fov);
+    let scene = Scene {
+        camera: Some(camera),
+        sun: center + DVec3::new(0.3, 0.2, 1.0).normalize() * AU_KM,
+        spheres: vec![Sphere {
+            maps: Some(maps),
+            ..Sphere::plain(center, PLANET, Surface::Lit([0.5; 3]))
+        }],
+        ..Default::default()
+    };
+    let image = radiance(&gpu, &mut renderer, &scene, size);
+    let at = |r: f64| {
+        let p = camera
+            .project(center + DVec3::new(-r, 0.0, 0.0), size)
+            .unwrap();
+        image[p.y as usize * 201 + p.x as usize][0]
+    };
+    let (edge, opaque) = (at(INNER + 1_000.0), at(OUTER - 12_000.0));
+    println!("inner edge {edge}, opaque half {opaque}");
+    assert!(
+        opaque > 1e-3 && edge.abs() < 0.01 * opaque,
+        "{edge} vs {opaque}"
+    );
 }

@@ -28,6 +28,9 @@ struct Frame {
     viewport: vec2<f32>,
     // Lines' width, pixels.
     line_px: f32,
+    // Radiance to the shown image's units (`Look::exposure`): this pass
+    // writes radiance times it, so that f16 holds the range shown.
+    exposure: f32,
     slots: array<Slot, 8>,
 }
 
@@ -45,7 +48,8 @@ struct Sphere {
     fullscreen: f32,
     // Albedo (lit) or radiance (emissive).
     color: vec3<f32>,
-    _pad0: f32,
+    // Under 1 while it fades in from its point (scene.rs, `FADE_PX`).
+    opacity: f32,
     // Unit, toward the Sun; for a glowing sphere, its limb darkening's
     // coefficients.
     light: vec3<f32>,
@@ -257,6 +261,15 @@ struct SphereFragment {
     @builtin(frag_depth) depth: f32,
 }
 
+// f16's largest finite value, less a margin.
+const HALF_MAX: f32 = 60000.0;
+
+// What this pass writes for sphere `s`'s radiance `c` (premultiplied):
+// exposed, within f16, at its opacity.
+fn written(s: Sphere, c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(min(c.rgb * frame.exposure, vec3<f32>(HALF_MAX)), c.a) * s.opacity;
+}
+
 // Premultiplied: the sphere over what is behind it, by how much of the
 // pixel it covers.
 @fragment
@@ -347,7 +360,7 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
         }
     }
     if (!in_rings) {
-        out.color = base;
+        out.color = written(s, base);
         return out;
     }
     // The rings, in front of the ground (or with none behind) or behind
@@ -360,13 +373,17 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     } else {
         out.color = vec4<f32>(base.rgb + (1.0 - base.a) * ring.rgb, base.a + (1.0 - base.a) * (1.0 - ring.a));
     }
+    out.color = written(s, out.color);
     return out;
 }
 
-// The rings' profile at `r` km from the center, at `level`.
+// The rings' profile at `r` km from the center, at `level` (clamped at
+// its edges: the maps' sampler wraps), its optical depth at least 0
+// (noise in a measured one may take it below, its mean over a pixel not).
 fn ring_profile(s: Sphere, r: f32, level: f32) -> vec4<f32> {
     let u = (r - s.rings.x) / (s.rings.y - s.rings.x);
-    return textureSampleLevel(ring_map, map_sampler, vec2<f32>(u, 0.5), level);
+    let k = textureSampleLevel(ring_map, table_sampler, vec2<f32>(u, 0.5), level);
+    return vec4<f32>(k.rgb, max(k.a, 0.0));
 }
 
 // Where the ray from `p` (view space) toward the Sun crosses the rings'
@@ -606,7 +623,9 @@ fn lit(s: Sphere, up: vec3<f32>, view: vec3<f32>, uv: vec2<f32>, ddx: vec2<f32>,
     if ((s.flags & FLAG_NIGHT) != 0u) {
         let lights = srgb_to_linear(textureSampleGrad(night_map, map_sampler, uv, ddx, ddy).r);
         // The night side, fading in through twilight; dimmed under cloud.
-        let dark = smoothstep(0.05, -0.15, dot(up, s.light));
+        // (smoothstep's edges in order: reversed, SPIR-V and MSL leave it
+        // undefined.)
+        let dark = 1.0 - smoothstep(-0.15, 0.05, dot(up, s.light));
         color += s.night * lights * dark * (1.0 - 0.7 * clouds);
     }
     return color;
@@ -876,11 +895,11 @@ struct Sky {
     // The frame's exposure, and the sky's (`Look` in scene.rs).
     exposure: f32,
     sky: f32,
-    // Radiance written for a unit of the Milky Way's texture: its
-    // radiance, times the sky's exposure over the frame's (at least 1).
+    // What a unit of the Milky Way's texture shows at: its radiance at the
+    // sky's exposure, or the frame's where that is the larger.
     milky_way: f32,
-    // Stars whose brightest pixel would write less than this are left
-    // out: invisible once exposed.
+    // Stars whose brightest pixel would show at less than this are left
+    // out.
     faintest: f32,
     // The brightest a star's brightest pixel shows at through the sky's
     // exposure (`POINT_CAP`).
@@ -935,7 +954,7 @@ fn sky_fs(in: SkyOut) -> @location(0) vec4<f32> {
     let pixel = 2.0 * frame.tan_half / frame.viewport.y * v.z * v.z;
     let level = max(log2(pixel * size.y / PI), 0.0);
     let c = textureSampleLevel(milky_way, sky_sampler, uv, level).rgb * sky.milky_way;
-    return vec4<f32>(min(c, vec3<f32>(60000.0)), 1.0);
+    return vec4<f32>(min(c, vec3<f32>(HALF_MAX)), 1.0);
 }
 
 // Each instance a star, a spot carrying its flux.
@@ -948,18 +967,18 @@ fn star_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u
     let cos = -d.z;
     let omega = pixel * pixel * cos * cos * cos;
     // As `Look::point_gain` in scene.rs: at the sky's exposure, up to the
-    // cap, or the frame's where that is brighter.
+    // cap, or the frame's where that is brighter; as shown.
     let physical = s.flux / max(omega, 1e-30);
     let boosted = min(sky.sky, sky.cap / max(physical * SPOT_PEAK, 1e-30));
-    let radiance = physical * max(boosted, sky.exposure) / sky.exposure;
+    let shown = physical * max(boosted, sky.exposure);
     // Behind the eye, near its side, or too faint to see.
-    if (cos < 0.01 || radiance * SPOT_PEAK < sky.faintest) {
+    if (cos < 0.01 || shown * SPOT_PEAK < sky.faintest) {
         var out: DotOut;
         out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         return out;
     }
     let rgb = vec3<f32>(f32(s.color & 255u), f32((s.color >> 8u) & 255u), f32((s.color >> 16u) & 255u)) / 255.0;
-    let color = min(rgb * radiance, vec3<f32>(60000.0));
+    let color = min(rgb * shown, vec3<f32>(HALF_MAX));
     return dot_corner(d, SPOT_SIGMA, color, 0u, corner_index(vertex));
 }
 

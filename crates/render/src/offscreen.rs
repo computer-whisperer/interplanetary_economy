@@ -235,6 +235,7 @@ mod tests {
         let maps = std::sync::Arc::new(Maps {
             color: Image::srgba(1, 1, vec![255; 4]),
             mean: [1.0; 3],
+            cover: 0.0,
             relief: None,
             clouds: None,
             cloud_albedo: 0.0,

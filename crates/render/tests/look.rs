@@ -144,9 +144,11 @@ fn sdr_dither_follows_a_slow_gradient() {
     assert!(correlation > 0.5, "{correlation}");
 }
 
-/// Bloom moves energy, it does not make it: a bright spot's energy
+/// Bloom moves energy, it does not make it: a bright disk's energy
 /// summed over the shown image is the scene's, within the share that
-/// leaves the image's edges, and some of it lands far from the spot.
+/// leaves the image's edges, and some of it lands far from the disk; at
+/// the Sun's radiance (46,000) as at 100, its glare in proportion. Found
+/// in review: the levels' sum, stored in f16, saturated near the Sun.
 #[test]
 fn bloom_spreads_energy_and_keeps_it() {
     let gpu = Offscreen::new().expect("a GPU");
@@ -154,39 +156,48 @@ fn bloom_spreads_energy_and_keeps_it() {
     let size = (512, 512);
     let center = DVec3::new(AU_KM, 0.0, 0.0);
     let camera = Camera::looking_at(DVec3::ZERO, center, DVec3::Z, 30f64.to_radians());
-    for bloom in [0.0, 0.3] {
-        let scene = Scene {
-            camera: Some(camera),
-            spheres: vec![Sphere::plain(
-                center,
-                // ~10 px across.
-                AU_KM * 10.0 / 512.0 * (15f64.to_radians().tan()),
-                Surface::Emissive {
-                    radiance: [100.0; 3],
-                    darkening: [0.0; 3],
+    let mut glare = Vec::new();
+    for (radiance, across) in [(100.0, 10.0), (46_000.0, 10.0), (46_000.0, 170.0)] {
+        for bloom in [0.0, 0.3] {
+            let scene = Scene {
+                camera: Some(camera),
+                spheres: vec![Sphere::plain(
+                    center,
+                    AU_KM * across / 512.0 * (15f64.to_radians().tan()),
+                    Surface::Emissive {
+                        radiance: [radiance; 3],
+                        darkening: [0.0; 3],
+                    },
+                )],
+                look: Look {
+                    exposure: 1.0,
+                    bloom,
+                    // Linear far past the disk's radiance.
+                    headroom: 1e5,
+                    ..Default::default()
                 },
-            )],
-            look: Look {
-                exposure: 1.0,
-                bloom,
-                // Linear far past the spot's radiance.
-                headroom: 1e5,
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        let (radiance, shown) = draw(&gpu, &mut renderer, &scene, size);
-        let sum = |v: &[[f32; 4]]| v.iter().map(|p| f64::from(p[0])).sum::<f64>();
-        let (before, after) = (sum(&radiance), sum(&shown));
-        let far = shown[256 * 512 + 256 + 40][0];
-        println!("bloom {bloom}: energy {before:.1} → {after:.1}; 40 px off the spot {far:.4}");
-        assert!((after / before - 1.0).abs() < 0.02, "{after} vs {before}");
-        if bloom > 0.0 {
-            assert!(far > 1e-3, "{far}");
-        } else {
-            assert!(far < 1e-6, "{far}");
+            };
+            let (radiance_image, shown) = draw(&gpu, &mut renderer, &scene, size);
+            let sum = |v: &[[f32; 4]]| v.iter().map(|p| f64::from(p[0])).sum::<f64>();
+            let (before, after) = (sum(&radiance_image), sum(&shown));
+            // 40 px past the disk's edge.
+            let far = shown[256 * 512 + 256 + across as usize / 2 + 40][0];
+            println!(
+                "{radiance}, {across} px, bloom {bloom}: energy {before:.4e} → {after:.4e}; 40 px off {far:.4}"
+            );
+            assert!((after / before - 1.0).abs() < 0.02, "{after} vs {before}");
+            if bloom > 0.0 {
+                assert!(far > 1e-3, "{far}");
+                if across < 20.0 {
+                    glare.push(f64::from(far / radiance));
+                }
+            } else {
+                assert!(far < 1e-6, "{far}");
+            }
         }
     }
+    assert!((glare[1] / glare[0] - 1.0).abs() < 0.01, "{glare:?}");
 }
 
 /// Lines and markers are drawn after the tonemap: exposure does not

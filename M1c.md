@@ -1,7 +1,90 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-14: steps 1–4 done; next, step 6 (realism), moved ahead
-of step 5 (panels and labels). See the step 6 plan below.
+Status, 2026-10-14: steps 1–4 and 6 done (6 moved ahead of 5, its
+shape models left out); next, step 5 (panels and labels).
+
+- Step 6: the HDR chain, the sky, the bodies' orbits, rotation models and
+  maps, atmospheres, the Sun's limb, eclipses and Saturn's rings. As
+  built, see the step 6 plan below; where it differs:
+  - Points of light (stars, the Milky Way, bodies under a few pixels)
+    show at a fixed sky exposure where it exceeds the frame's, capped at
+    a saturated star's brightness (part 2, not 1): uncapped, the Moon
+    as a few pixels flared. A body growing into a disk fades from its
+    point over 1–3 px in radius (the point's share falling, the disk's
+    opacity rising). Orbit lines leave a gap where their body is, which
+    they otherwise hid.
+  - The scene's pass writes radiance already exposed, so that f16 holds
+    the range shown (unexposed, a star at the Sun's exposure needed
+    3e5); bloom's levels hold means, not sums, for the same reason. What
+    lies past f16 once exposed (the Sun's disk, at exposures over ~1.3:
+    every focus from Earth outward) loses its excess before bloom, so
+    its glare stops growing there (1.5× under its energy at Earth's
+    exposure, 120× at Saturn's).
+  - The Milky Way: SVS's composite is 0.50 × its background + 1.00 ×
+    its bright-star layer (fitted, residual 0.0005), and that layer's
+    stars integrate to 2.14e-4 × 10^(−0.4 V) (124 unsaturated stars, V
+    4.5–6.5): one stored unit is 1.48e-7 radiance units, its median
+    ~22.8 mag/arcsec². Tycho-2's stars fainter than Hipparcos are left
+    out (a few percent of the background's light).
+  - Orbits are sampled at most 10 days apart (the Sun's reflex motion:
+    Neptune's line missed it by 290 km at a 384th of its period), 6
+    hours for small bodies (1996 FG3's by 460 m at a day).
+  - Earth turns by the IERS rotation angle (UT1 = TT − 69 s), not the
+    IAU's linear W (0.05° off at J2000). The Moon's pole in `ephem`
+    comes from the IAU model, not Cassini's laws; Earth's stays the
+    fixed J2000 axis its J2 acts about.
+  - Earth's map is Blue Marble taken as reflectance (its ice 0.8–0.96,
+    oceans near black: their blue is the air's); thick clouds 0.8;
+    elevation clipped at 6,400 m (GEBCO's scaling). Saturn, Venus,
+    Uranus and Neptune have no maps (no Cassini global map of Saturn was
+    found; the others are near featureless in visible light).
+  - Mars's dust at optical depth 0.35 (0.5 hid the surface toward the
+    terminator); Mars's and Venus's air are estimates, stated in
+    `sandbox::atmospheres`.
+  - Not done: shape models (Phobos, Deimos, Bennu, Ryugu: a mesh
+    pipeline, and sources each needing care).
+  - Checks: Sirius, Betelgeuse and Polaris within 0.003 px of their
+    SIMBAD places at 10″ pixels, Barnard's star 0.2 px (62 px from its
+    J2000 place); orbit lines through their bodies within 0.02 px seen
+    from 10 km over them; sub-observer points against Horizons within
+    0.0005° (the Moon and Earth 0.003°, Jupiter and Saturn 0.002°); a
+    map's mark within 0.06 px of its place; relief within 0.3%; the
+    atmosphere's zenith transmittance within 1e-5 of analytic; an
+    umbra within 0.17 px of the Sun–Moon axis, the penumbra within
+    0.0002 of the covered share; rings within 0.04% of the slab's
+    formulas. The 2045-08-12 eclipse falls off Florida at 17:43 TDB,
+    the axis 1,346 km from Earth's center (NASA: 17:42:39, γ 0.2116).
+  - Cost, GPU at 1920×1080: the post chain 0.19 ms; the sky 0.08 ms;
+    Earth filling the view with its maps 0.05 ms more, with its air
+    0.55 ms more (0.80 ms in all).
+  - Data: `data/sky` 15 MB, `data/bodies` 65 MB (the repository's
+    `.git` 93 MB). Every map seen stays on the GPU while the app holds
+    it (all of them: ~860 MB), and decoded in memory too (~785 MB with
+    the sky's).
+  - Saturn's rings' optical depth is one occultation's, noisy where it is
+    low (σ ≈ 0.085 a 10 km bin, and spans off by up to −0.1): kept as
+    measured, negatives included, so that gaps average empty; the C
+    ring's faint parts are uncertain either way.
+  - Found in review and fixed: the spot over a growing disk was hidden
+    by the disk; bloom saturated f16 near the Sun; bright points were
+    clipped before exposure; points left out clouds (Earth's 4× too
+    faint) and lunar-Lambert shading (the Moon's up to 1.5×); maps were
+    uploaded again each time a body came back into view (70–100 ms for
+    Earth's); one unreadable map left every body plain; the rings'
+    profile wrapped at its edges, and clipping its noise at 0 made every
+    gap a faint ring.
+  - Open: translucent air and rings write depth, so lines behind them
+    are hidden (Saturn's orbit line at the rings' edge), and from inside
+    an atmosphere the sky would hide lines and points; a ringed body as
+    a point carries no ring light; a body as a point before the Sun
+    adds light rather than hiding it.
+  - Open: Mars's air against a Monte Carlo of the same dust (plane-
+    parallel, checked against the analytic single scattering and by
+    binning escapes): single scattering agrees within 5%, but Hillaire's
+    isotropic multiple scattering is 1.2–4× too bright for this
+    forward-scattering dust, and the ground gets no skylight (near the
+    terminator 2.5× its direct light). Near the terminator the surface
+    is 23% of the light shown where it should be 62%: washed out.
 
 - Step 4: plans designed in the background and drawn as lines in fixed
   or rotating frames, with markers for ships and events, and playback.

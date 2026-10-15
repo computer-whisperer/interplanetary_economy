@@ -113,7 +113,7 @@ impl Atmosphere {
 
     /// The transmittance table's coordinates (0 to 1, texel centers
     /// included) of radius `r` and cosine `mu` (Bruneton 2017's mapping:
-    /// fine near the horizon). As `transmittance_uv` in scene.wgsl.
+    /// fine near the horizon). As scene.wgsl's `through_air` reads it.
     pub fn transmittance_uv(&self, r: f64, mu: f64) -> (f64, f64) {
         let h = (self.top * self.top - self.bottom * self.bottom).sqrt();
         let rho = (r * r - self.bottom * self.bottom).max(0.0).sqrt();

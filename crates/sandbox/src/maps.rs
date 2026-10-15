@@ -3,7 +3,8 @@
 //! and tabulated once per process on a thread of its own, the bodies in
 //! parallel, with rings where a body has a `rings.toml` (Saturn, built by
 //! `tools/rings/`). Spheres show them once they arrive. A body with an
-//! atmosphere or rings and no maps (Venus, Saturn) gets a plain one.
+//! atmosphere or rings and no maps (Venus, Saturn), or whose maps do not
+//! read, gets a plain one.
 
 use crate::data_dir;
 use orbit::ephem::Ephemeris;
@@ -121,12 +122,15 @@ fn body(dir: &Path, entry: &Entry, radius: f64) -> Result<BodyMaps, String> {
         other => return Err(format!("no shading {other:?}")),
     };
     let color = color(&dir.join(&entry.color))?;
+    let clouds = optional(&entry.clouds)?;
+    let (mean, cover) = render::maps::means(&color, clouds.as_ref());
     Ok(BodyMaps {
         maps: Arc::new(Maps {
-            mean: render::maps::mean_color(&color),
+            mean,
+            cover,
             color,
             relief,
-            clouds: optional(&entry.clouds)?,
+            clouds,
             cloud_albedo: entry.cloud_albedo.unwrap_or(0.0),
             night: optional(&entry.night)?,
             night_radiance: entry.night_radiance.unwrap_or([0.0; 3]),
@@ -146,6 +150,7 @@ fn plain(id: &str) -> BodyMaps {
         maps: Arc::new(Maps {
             color: Image::srgba(1, 1, vec![255; 4]),
             mean: [1.0; 3],
+            cover: 0.0,
             relief: None,
             clouds: None,
             cloud_albedo: 0.0,
@@ -161,8 +166,13 @@ fn plain(id: &str) -> BodyMaps {
 }
 
 /// Reads `dir`'s maps (`bodies.toml` and each body's directory), for the
-/// bodies `eph` has.
-pub fn read(dir: &Path, eph: &Ephemeris) -> Result<HashMap<String, BodyMaps>, String> {
+/// bodies `eph` has; and what kept any body's maps or rings from reading
+/// (a body whose maps do not read is plain, its atmosphere kept). Only
+/// `bodies.toml` not reading fails it.
+pub fn read(
+    dir: &Path,
+    eph: &Ephemeris,
+) -> Result<(HashMap<String, BodyMaps>, Vec<String>), String> {
     let path = dir.join("bodies.toml");
     let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let file: File = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -174,15 +184,19 @@ pub fn read(dir: &Path, eph: &Ephemeris) -> Result<HashMap<String, BodyMaps>, St
             ids.push(id);
         }
     }
-    ids.par_iter()
+    let read: Vec<(&str, Option<BodyMaps>, Vec<String>)> = ids
+        .par_iter()
         .map(|&id| {
-            let b = eph
-                .lookup(id)
-                .ok_or_else(|| format!("bodies.toml: no body {id:?}"))?;
+            let Some(b) = eph.lookup(id) else {
+                return (id, None, vec![format!("bodies.toml: no body {id:?}")]);
+            };
             let radius = eph.body(b).radius;
-            let mut maps = match file.body.get(id) {
-                Some(entry) => {
-                    body(&dir.join(id), entry, radius).map_err(|e| format!("{id}: {e}"))?
+            let mut problems = Vec::new();
+            let mut maps = match file.body.get(id).map(|e| body(&dir.join(id), e, radius)) {
+                Some(Ok(maps)) => maps,
+                Some(Err(why)) => {
+                    problems.push(format!("{id}: {why}"));
+                    plain(id)
                 }
                 None => plain(id),
             };
@@ -191,13 +205,21 @@ pub fn read(dir: &Path, eph: &Ephemeris) -> Result<HashMap<String, BodyMaps>, St
                 made.air = Some(render::atmosphere::Air::new(a));
             }
             if ringed(id) {
-                made.rings = Some(
-                    rings(&dir.join(id).join("rings.toml")).map_err(|e| format!("{id}: {e}"))?,
-                );
+                match rings(&dir.join(id).join("rings.toml")) {
+                    Ok(r) => made.rings = Some(r),
+                    Err(why) => problems.push(format!("{id}: {why}")),
+                }
             }
-            Ok((id.to_string(), maps))
+            (id, Some(maps), problems)
         })
-        .collect()
+        .collect();
+    let mut maps = HashMap::new();
+    let mut problems = Vec::new();
+    for (id, m, p) in read {
+        maps.extend(m.map(|m| (id.to_string(), m)));
+        problems.extend(p);
+    }
+    Ok((maps, problems))
 }
 
 static MAPS: OnceLock<Result<HashMap<String, BodyMaps>, String>> = OnceLock::new();
@@ -207,7 +229,13 @@ static STARTED: Once = Once::new();
 pub fn start() {
     STARTED.call_once(|| {
         std::thread::spawn(|| {
-            let read = read(&data_dir().join("bodies"), Ephemeris::standard());
+            let read =
+                read(&data_dir().join("bodies"), Ephemeris::standard()).map(|(maps, problems)| {
+                    for p in problems {
+                        eprintln!("sandbox: {p}; drawn without");
+                    }
+                    maps
+                });
             if let Err(why) = &read {
                 eprintln!("sandbox: no maps: {why}");
             }
@@ -226,4 +254,52 @@ pub fn loaded(id: &str) -> Option<&'static BodyMaps> {
 pub fn wait() -> Result<&'static HashMap<String, BodyMaps>, String> {
     start();
     MAPS.wait().as_ref().map_err(Clone::clone)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A body whose maps do not read is plain, and said why; the others,
+    /// and the atmospheres, read as ever (found in review: one missing
+    /// file left every body plain, and without air or rings).
+    #[test]
+    fn a_missing_map_spares_the_rest() {
+        let dir = std::env::temp_dir().join(format!("sandbox-maps-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("mercury")).unwrap();
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([128, 128, 128, 255]))
+            .save(dir.join("mercury").join("color.png"))
+            .unwrap();
+        let toml = "[body.mercury]\ncolor = \"color.png\"\nalbedo = 1.0\nshading = \"lunar-lambert\"\n\
+                    [body.jupiter]\ncolor = \"color.jpg\"\nalbedo = 1.0\nshading = \"lambert\"\n";
+        std::fs::write(dir.join("bodies.toml"), toml).unwrap();
+        let read = read(&dir, Ephemeris::standard());
+        std::fs::remove_dir_all(&dir).unwrap();
+        let (maps, problems) = read.expect("bodies.toml reads");
+        assert_eq!(maps["mercury"].maps.color.width, 4);
+        assert_eq!(maps["jupiter"].maps.color.width, 1, "plain");
+        assert!(
+            problems.len() == 1 && problems[0].starts_with("jupiter"),
+            "{problems:?}"
+        );
+        assert!(maps["earth"].maps.air.is_some());
+    }
+
+    /// Saturn's gaps are empty on the mean, its A ring not: the Roche
+    /// Division's (137,300-139,500 km) mean optical depth under 0.01, the
+    /// A ring's middle (126,000-130,000 km) over 0.2. Found in review:
+    /// with each 10 km bin's noise taken as at least 0, every gap read as
+    /// a faint ring (the Roche Division's 0.016).
+    #[test]
+    fn saturns_gaps_are_empty() {
+        let path = data_dir().join("bodies/saturn/rings.toml");
+        let file: RingFile = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let mean = |lo: f64, hi: f64| {
+            let k = |r: f64| ((r - file.inner_km) / file.step_km) as usize;
+            let span = &file.tau[k(lo)..k(hi)];
+            span.iter().map(|&t| f64::from(t)).sum::<f64>() / span.len() as f64
+        };
+        let (roche, a_ring) = (mean(137_300.0, 139_500.0), mean(126_000.0, 130_000.0));
+        assert!(roche < 0.01 && a_ring > 0.2, "{roche}, {a_ring}");
+    }
 }

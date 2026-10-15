@@ -1,18 +1,15 @@
-// From the scene's radiance to what the app shows (M1c.md, step 6 plan,
-// item 1): bloom, exposure, a tonemap to the output's headroom, and on
-// SDR a dither. Bloom is Hushfold's chain (13-tap downsample, tent
-// upsample), with no threshold: every level keeps the image's energy, and
-// a small weight of their sum stands in for a lens's glare.
+// From the scene's radiance, exposed (scene.wgsl: 1.0 is the SDR white),
+// to what the app shows (M1c.md, step 6 plan, item 1): bloom, a tonemap
+// to the output's headroom, and on SDR a dither. Bloom is Hushfold's
+// chain (13-tap downsample, tent upsample), with no threshold: every
+// level keeps the image's energy, and a small weight of their mean stands
+// in for a lens's glare.
 
 struct Post {
-    // Scene radiance to output: 1.0 out is the SDR white.
-    exposure: f32,
     // The fraction of the image's energy spread by bloom.
     bloom: f32,
     // The output's peak over the SDR white (1 on SDR).
     headroom: f32,
-    // Bloom's levels, whose sum level 0 holds after the upsampling.
-    levels: f32,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -55,7 +52,9 @@ fn down_fs(in: FullOut) -> @location(0) vec4<f32> {
     return vec4<f32>(c, 1.0);
 }
 
-// A 3×3 tent, added onto the next level up.
+// A 3×3 tent, blended onto the next level up: each level ends holding
+// the mean of itself and those below it, within f16 where their sum
+// would not be (post.rs weighs the blend).
 @fragment
 fn up_fs(in: FullOut) -> @location(0) vec4<f32> {
     let t = 1.0 / vec2<f32>(textureDimensions(source));
@@ -95,9 +94,9 @@ fn noise(p: vec2<f32>) -> f32 {
 @fragment
 fn tonemap_fs(in: FullOut) -> @location(0) vec4<f32> {
     let scene = min(textureLoad(source, vec2<i32>(in.position.xy), 0).rgb, vec3<f32>(HALF_MAX));
-    let glare = textureSample(bloom_level, linear_clamp, in.uv).rgb / post.levels;
+    let glare = textureSample(bloom_level, linear_clamp, in.uv).rgb;
     let radiance = mix(scene, glare, post.bloom);
-    var c = tonemap(max(radiance * post.exposure, vec3<f32>(0.0)), post.headroom);
+    var c = tonemap(max(radiance, vec3<f32>(0.0)), post.headroom);
     if (post.headroom <= 1.0) {
         // Triangular noise of one 8-bit step, where the output is encoded.
         let n = noise(in.position.xy) + noise(in.position.xy + vec2<f32>(7919.0, 104729.0)) - 1.0;

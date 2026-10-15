@@ -120,10 +120,12 @@ pub fn relief(width: u32, height: u32, heights: &[f32], radius: f64) -> Image {
     Image::new(width, height, wgpu::TextureFormat::Rg16Float, data)
 }
 
-/// An sRGB equirectangular image's mean over the sphere, linear: each row
-/// weighed by the cosine of its latitude.
-pub fn mean_color(image: &Image) -> [f32; 3] {
-    assert_eq!(image.format, wgpu::TextureFormat::Rgba8UnormSrgb);
+/// An sRGB equirectangular color map's mean over the sphere, linear,
+/// where `clouds` (cover, one channel, at any size) leave it clear; and
+/// the clouds' mean cover. Each row is weighed by the cosine of its
+/// latitude.
+pub fn means(color: &Image, clouds: Option<&Image>) -> ([f32; 3], f32) {
+    assert_eq!(color.format, wgpu::TextureFormat::Rgba8UnormSrgb);
     let decode: Vec<f64> = (0..=255)
         .map(|v| {
             let c = f64::from(v) / 255.0;
@@ -134,23 +136,47 @@ pub fn mean_color(image: &Image) -> [f32; 3] {
             }
         })
         .collect();
-    let (w, h) = (image.width as usize, image.height as usize);
-    let (mut sum, mut weight) = ([0.0f64; 3], 0.0);
+    let (w, h) = (color.width as usize, color.height as usize);
+    // The cover over color texel (x, y): the mean of the clouds' texels
+    // within it, or the one it lies in.
+    let cover = |x: usize, y: usize| {
+        clouds.map_or(0.0, |c| {
+            assert_eq!(c.format, wgpu::TextureFormat::R8Unorm);
+            let (cw, ch) = (c.width as usize, c.height as usize);
+            let span = |k: usize, n: usize, of: usize| {
+                let lo = k * n / of;
+                lo..((k + 1) * n / of).max(lo + 1)
+            };
+            let (xs, ys) = (span(x, cw, w), span(y, ch, h));
+            let count = (xs.len() * ys.len()) as f64;
+            let sum: u32 = ys
+                .flat_map(|cy| xs.clone().map(move |cx| u32::from(c.data[cy * cw + cx])))
+                .sum();
+            f64::from(sum) / 255.0 / count
+        })
+    };
+    let (mut sum, mut clear, mut weight) = ([0.0f64; 3], 0.0, 0.0);
     for y in 0..h {
         let lat = std::f64::consts::FRAC_PI_2 - (y as f64 + 0.5) / h as f64 * std::f64::consts::PI;
-        let row = &image.data[y * w * 4..(y + 1) * w * 4];
-        let mut r = [0.0f64; 3];
-        for p in row.chunks_exact(4) {
+        let row = &color.data[y * w * 4..(y + 1) * w * 4];
+        let (mut r, mut open) = ([0.0f64; 3], 0.0);
+        for (x, p) in row.chunks_exact(4).enumerate() {
+            let k = 1.0 - cover(x, y);
             for c in 0..3 {
-                r[c] += decode[p[c] as usize];
+                r[c] += decode[p[c] as usize] * k;
             }
+            open += k;
         }
         for c in 0..3 {
             sum[c] += r[c] * lat.cos();
         }
+        clear += open * lat.cos();
         weight += w as f64 * lat.cos();
     }
-    sum.map(|s| (s / weight) as f32)
+    (
+        sum.map(|s| (s / clear.max(1e-30)) as f32),
+        (1.0 - clear / weight) as f32,
+    )
 }
 
 /// How a surface reflects.
@@ -167,9 +193,11 @@ pub enum Shading {
 #[derive(Clone, Debug)]
 pub struct Maps {
     pub color: Image,
-    /// `color`'s mean over the sphere, linear (from [`mean_color`]): what
-    /// a point standing in for the sphere reflects.
+    /// `color`'s mean over the sphere where clouds leave it clear, linear,
+    /// and the clouds' mean cover (from [`means`]): with `cloud_albedo`,
+    /// what a point standing in for the sphere reflects.
     pub mean: [f32; 3],
+    pub cover: f32,
     /// From [`relief`].
     pub relief: Option<Image>,
     /// Cloud cover, 0 to 1, one channel.
@@ -202,7 +230,9 @@ pub struct Rings {
 
 impl Rings {
     /// Rings from `inner` km out in steps of `step` km, each step's
-    /// optical depth `tau` and particle albedo `albedo`.
+    /// optical depth `tau` (which noise may take below 0: what is sampled
+    /// is taken as at least 0, so that a pixel's mean stays unbiased) and
+    /// particle albedo `albedo`.
     pub fn new(inner: f64, step: f64, tau: &[f32], albedo: &[[f32; 3]]) -> Rings {
         assert_eq!(tau.len(), albedo.len());
         let data = tau
@@ -246,8 +276,8 @@ impl Maps {
     }
 }
 
-/// Maps on the GPU: a bind group per set of maps (by its `Arc`), and one
-/// for spheres without.
+/// Maps on the GPU: a bind group per set of maps (by its `Arc`, kept while
+/// anyone else holds that), and one for spheres without.
 pub(crate) struct MapsPass {
     pub(crate) layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -257,8 +287,9 @@ pub(crate) struct MapsPass {
 }
 
 /// The textures a sphere's bind group holds, in binding order: the maps,
-/// then (after their sampler) the atmosphere's two tables, and theirs;
-/// then the rings' profile (read with the maps' sampler).
+/// then (after their sampler, which wraps east to west) the atmosphere's
+/// two tables, and theirs (which clamps); then the rings' profile (read
+/// with the tables').
 const TEXTURES: usize = 5;
 const TABLES: usize = 2;
 const RINGS_BINDING: u32 = (TEXTURES + 2 + TABLES) as u32;
@@ -301,9 +332,10 @@ impl MapsPass {
             ..Default::default()
         });
         let table_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("atmosphere tables"),
+            label: Some("atmosphere tables, rings"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         // One texel each: white, a flat normal, nothing.
@@ -333,7 +365,9 @@ impl MapsPass {
     }
 
     /// Uploads the maps of this frame's spheres that are not yet, and lets
-    /// go of those no sphere holds.
+    /// go of those no one else holds: a body leaving the view and coming
+    /// back is not uploaded again (found in review: 70–100 ms each time,
+    /// for Earth's).
     pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -342,12 +376,7 @@ impl MapsPass {
         post: &crate::post::Post,
         maps: &[Option<Arc<Maps>>],
     ) {
-        let held: Vec<usize> = maps
-            .iter()
-            .flatten()
-            .map(|m| Arc::as_ptr(m) as usize)
-            .collect();
-        self.uploaded.retain(|k, _| held.contains(k));
+        self.uploaded.retain(|_, (m, _)| Arc::strong_count(m) > 1);
         for m in maps.iter().flatten() {
             let key = Arc::as_ptr(m) as usize;
             if self.uploaded.contains_key(&key) {
@@ -497,6 +526,68 @@ mod tests {
         }
         assert_eq!(f32_to_f16(1.0), 0x3c00);
         assert_eq!(f32_to_f16(f32::INFINITY), 0x7c00);
+    }
+
+    /// Color counts by how clear the sky over it is, the clouds' map at
+    /// any size: finer, each color texel takes the mean of the clouds'
+    /// over it (found in review: it took one), so black under 0.52 of
+    /// cover and white under 0.018 is 0.67 white, the cover the clouds'
+    /// own mean; under even cover, the plain mean.
+    #[test]
+    fn means_weigh_by_the_clear_sky() {
+        let color = Image::srgba(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
+        let (mean, cover) = means(
+            &color,
+            Some(&Image::gray(4, 2, vec![255, 255, 0, 0, 9, 9, 9, 9])),
+        );
+        let clear = [1.0 - 528.0 / 4.0 / 255.0, 1.0 - 18.0 / 4.0 / 255.0];
+        let want = clear[1] / (clear[0] + clear[1]);
+        assert!(
+            mean.iter().all(|m| (f64::from(*m) - want).abs() < 1e-6)
+                && (f64::from(cover) - 546.0 / 8.0 / 255.0).abs() < 1e-6,
+            "{mean:?} {cover}"
+        );
+        let (mean, cover) = means(&color, Some(&Image::gray(1, 1, vec![51])));
+        assert!(
+            (mean[0] - 0.5).abs() < 1e-6 && (cover - 0.2).abs() < 1e-6,
+            "{mean:?} {cover}"
+        );
+        assert_eq!(means(&color, None), ([0.5; 3], 0.0));
+    }
+
+    /// Maps stay uploaded while anyone else holds them, through frames
+    /// that do not draw them, and go once no one does. Found in review:
+    /// they went the first frame without them, and Earth's took 70–100 ms
+    /// to upload again on its return.
+    #[test]
+    fn maps_stay_while_held() {
+        let gpu = crate::offscreen::Offscreen::new().expect("a GPU");
+        let post = crate::post::Post::new(&gpu.device);
+        let mut pass = MapsPass::new(&gpu.device, &gpu.queue);
+        let maps = Arc::new(Maps {
+            color: Image::srgba(1, 1, vec![255; 4]),
+            mean: [1.0; 3],
+            cover: 0.0,
+            relief: None,
+            clouds: None,
+            cloud_albedo: 0.0,
+            night: None,
+            night_radiance: [0.0; 3],
+            water: None,
+            shading: Shading::Lambert,
+            air: None,
+            rings: None,
+        });
+        let mut frame = |held: &[Option<Arc<Maps>>]| {
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            pass.prepare(&gpu.device, &gpu.queue, &mut encoder, &post, held);
+            gpu.queue.submit(Some(encoder.finish()));
+            pass.uploaded.len()
+        };
+        assert_eq!(frame(&[Some(maps.clone())]), 1);
+        assert_eq!(frame(&[]), 1, "held, not drawn");
+        drop(maps);
+        assert_eq!(frame(&[]), 0);
     }
 
     /// A slope rising eastward by 1 km per 10 km tilts the normal west.

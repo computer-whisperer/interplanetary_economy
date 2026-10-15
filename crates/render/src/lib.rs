@@ -44,7 +44,7 @@ pub struct Target {
     /// The shown image. Shared, since the app's UI holds it too.
     pub color: Arc<wgpu::Texture>,
     pub color_view: wgpu::TextureView,
-    /// The scene's radiance, before exposure.
+    /// The scene's radiance, exposed (before bloom and the tonemap).
     pub hdr: wgpu::Texture,
     pub hdr_view: wgpu::TextureView,
     pub depth_view: wgpu::TextureView,
@@ -395,7 +395,9 @@ impl Renderer {
         let sky = self.sky.prepare(device, queue, encoder, &self.post, scene);
         self.maps
             .prepare(device, queue, encoder, &self.post, &inst.maps);
-        let [r, g, b] = scene.background.map(f64::from);
+        let [r, g, b] = scene
+            .background
+            .map(|c| f64::from((c * scene.look.exposure).min(60_000.0)));
         let [with_points, with_markers] = self.groups.as_ref().expect("bind groups");
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

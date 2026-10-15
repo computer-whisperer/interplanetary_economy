@@ -5,8 +5,9 @@
 use glam::{DVec2, DVec3};
 use render::camera::Camera;
 use render::offscreen::Offscreen;
-use render::scene::{AU_KM, lambert_phase};
-use render::{Marker, Renderer, Scene, Shape, Sphere, Surface, Target};
+use render::scene::{AU_KM, disk_mean, lambert_phase};
+use render::{Image, Look, Maps, Marker, Renderer, Scene, Shading, Shape, Sphere, Surface, Target};
+use std::sync::Arc;
 
 /// A barycentric position of the Moon's size of numbers, km.
 const MOON: DVec3 = DVec3::new(-1.384_1e8, 4.612_3e7, 2.071e4);
@@ -172,18 +173,62 @@ fn radiance_has_its_units() {
     assert!((mid[0] / sun_radiance - 1.0).abs() < 1e-3);
 }
 
+/// A white sphere's maps, shaded as `shading`.
+fn white(shading: Shading) -> Arc<Maps> {
+    Arc::new(Maps {
+        color: Image::srgba(1, 1, vec![255; 4]),
+        mean: [1.0; 3],
+        cover: 0.0,
+        relief: None,
+        clouds: None,
+        cloud_albedo: 0.0,
+        night: None,
+        night_radiance: [0.0; 3],
+        water: None,
+        shading,
+        air: None,
+        rings: None,
+    })
+}
+
+/// A view direction (unnormalized) through `(x, y)` in pixels of a
+/// `size` image through `cam` (`fov` high).
+fn ray(cam: &Camera, fov: f64, size: (u32, u32), x: f64, y: f64) -> DVec3 {
+    let tan_half = (fov / 2.0).tan();
+    let aspect = f64::from(size.0) / f64::from(size.1);
+    let ndc_x = x / f64::from(size.0) * 2.0 - 1.0;
+    let ndc_y = 1.0 - y / f64::from(size.1) * 2.0;
+    cam.forward + cam.right * ndc_x * tan_half * aspect + cam.up * ndc_y * tan_half
+}
+
+/// An image's flux: its pixels, each times the sky it subtends.
+fn flux(image: &[[f32; 4]], cam: &Camera, fov: f64, size: (u32, u32)) -> f64 {
+    let side = 2.0 * (fov / 2.0).tan() / f64::from(size.1);
+    image
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let (x, y) = (f64::from(i as u32 % size.0), f64::from(i as u32 / size.0));
+            let r = ray(cam, fov, size, x + 0.5, y + 0.5);
+            f64::from(p[0]) * side * side / r.length().powi(3)
+        })
+        .sum()
+}
+
 /// The flux a sphere puts on screen, summed over its pixels, each
 /// weighted by the sky it subtends, at the screen's center and near its
-/// corner:
+/// corner, Lambertian and lunar-Lambert, at phase angles 1° and 60°:
 /// - resolved (40 and 200 pixels across), the same as the image
-///   integrated in f64 on the CPU, 8×8 rays a pixel (the Lambertian
-///   formula for a distant sphere runs 2–7% low at these sizes: up close
-///   less than a hemisphere is visible); edges are antialiased, so the
-///   pixels at the limb carry their share (with one ray a pixel, the
-///   reference was itself 0.7% off at 40 px);
-/// - as a point (one pixel across), the distant sphere's flux, (2/3)·A·E·
-///   Φ(α)·Ω (found in review: off the axis, points were too faint by up
-///   to 1/cos³θ).
+///   integrated in f64 on the CPU, 8×8 rays a pixel (the formula for a
+///   distant sphere runs 2–7% low at these sizes: up close less than a
+///   hemisphere is visible); edges are antialiased, so the pixels at the
+///   limb carry their share (with one ray a pixel, the reference was
+///   itself 0.7% off at 40 px), but for their linear ramp's error;
+/// - as a point (one pixel across), the distant sphere's flux, A·E·Ω
+///   times its disk's mean (`disk_mean`; Lambert's (2/3)·Φ(α)). Found in
+///   review: off the axis, points were too faint by up to 1/cos³θ; and
+///   lunar-Lambert bodies' points were shaded as Lambert, up to 1.5× too
+///   faint.
 #[test]
 fn points_carry_their_spheres_flux() {
     let gpu = Offscreen::new().expect("a GPU");
@@ -192,72 +237,163 @@ fn points_carry_their_spheres_flux() {
     let fov = 60f64.to_radians();
     let radius = 1_000.0;
     let center = DVec3::new(AU_KM, 0.0, 0.0);
-    // The Sun 60° off the line of sight: phase angle 60°, at 1 au.
-    let alpha = 60f64.to_radians();
-    let sun = center + DVec3::new(-alpha.cos(), alpha.sin(), 0.0) * AU_KM;
-    let light = (sun - center).normalize();
-    let tan_half = (fov / 2.0).tan();
-    let aspect = f64::from(size.0) / f64::from(size.1);
-    // A view direction (unnormalized) through `(x, y)` in pixels, and
-    // the sky a pixel there subtends.
-    let ray = |cam: &Camera, x: f64, y: f64| {
-        let ndc_x = x / f64::from(size.0) * 2.0 - 1.0;
-        let ndc_y = 1.0 - y / f64::from(size.1) * 2.0;
-        cam.forward + cam.right * ndc_x * tan_half * aspect + cam.up * ndc_y * tan_half
-    };
     const RAYS: u32 = 8;
-    let side = 2.0 * tan_half / f64::from(size.1);
+    let side = 2.0 * (fov / 2.0).tan() / f64::from(size.1);
     let sky = |r: DVec3| side * side / r.length().powi(3);
-    for (place, offset) in [("center", (0.0, 0.0)), ("corner", (0.85, 0.8))] {
-        for pixels_across in [200.0, 40.0, 1.0] {
-            let distance = radius / (pixels_across / 2.0 * side).sin();
-            // Aimed off the sphere so that it lands at `offset` in NDC.
-            let eye = center - DVec3::X * distance;
-            let off = DVec3::new(0.0, -offset.0 * tan_half * aspect, offset.1 * tan_half);
-            let camera = Camera::looking_at(eye, eye + (DVec3::X - off) * distance, DVec3::Z, fov);
-            let scene = Scene {
-                camera: Some(camera),
-                sun,
-                spheres: vec![Sphere::plain(center, radius, Surface::Lit([1.0; 3]))],
-                ..Default::default()
+    for shading in [Shading::Lambert, Shading::LunarLambert] {
+        let maps = white(shading);
+        for degrees in [1.0f64, 60.0] {
+            // The Sun `degrees` off the line of sight, at 1 au.
+            let alpha = degrees.to_radians();
+            let sun = center + DVec3::new(-alpha.cos(), alpha.sin(), 0.0) * AU_KM;
+            let light = (sun - center).normalize();
+            // The law scene.wgsl shades with, at normal `n` seen along `d`.
+            let law = |n: DVec3, d: DVec3| {
+                let cos_i = n.dot(light).max(0.0);
+                match shading {
+                    Shading::Lambert => cos_i,
+                    Shading::LunarLambert => {
+                        let cos_e = n.dot(-d).max(0.0);
+                        let a = light.angle_between(-d).to_degrees();
+                        let l = (1.0 + a * (-0.019 + a * (2.42e-4 - a * 1.46e-6))).clamp(0.0, 1.0);
+                        2.0 * l * cos_i / (cos_i + cos_e).max(1e-4) + (1.0 - l) * cos_i
+                    }
+                }
             };
-            let (image, _) = draw(&gpu, &mut renderer, &scene, size);
-            let (mut flux, mut exact) = (0.0, 0.0);
-            let oc = center - eye;
-            for (i, p) in image.iter().enumerate() {
-                let (x, y) = (f64::from(i as u32 % size.0), f64::from(i as u32 / size.0));
-                flux += f64::from(p[0]) * sky(ray(&camera, x + 0.5, y + 0.5));
-                // The same pixel ray-cast in f64, a sky's worth per ray.
-                for k in 0..RAYS * RAYS {
-                    let (u, v) = (
-                        (f64::from(k % RAYS) + 0.5) / f64::from(RAYS),
-                        (f64::from(k / RAYS) + 0.5) / f64::from(RAYS),
+            for (place, offset) in [("center", (0.0, 0.0)), ("corner", (0.85, 0.8))] {
+                for pixels_across in [200.0, 40.0, 1.0] {
+                    let distance = radius / (pixels_across / 2.0 * side).sin();
+                    // Aimed off the sphere so that it lands at `offset` in NDC.
+                    let eye = center - DVec3::X * distance;
+                    let tan_half = (fov / 2.0).tan();
+                    let aspect = f64::from(size.0) / f64::from(size.1);
+                    let off = DVec3::new(0.0, -offset.0 * tan_half * aspect, offset.1 * tan_half);
+                    let camera =
+                        Camera::looking_at(eye, eye + (DVec3::X - off) * distance, DVec3::Z, fov);
+                    let scene = Scene {
+                        camera: Some(camera),
+                        sun,
+                        spheres: vec![Sphere {
+                            maps: Some(maps.clone()),
+                            ..Sphere::plain(center, radius, Surface::Lit([1.0; 3]))
+                        }],
+                        ..Default::default()
+                    };
+                    let (image, _) = draw(&gpu, &mut renderer, &scene, size);
+                    let got = flux(&image, &camera, fov, size);
+                    // The same pixels ray-cast in f64, a sky's worth per ray.
+                    let mut exact = 0.0;
+                    let oc = center - eye;
+                    if pixels_across > 2.0 {
+                        for i in 0..size.0 * size.1 {
+                            let (x, y) = (f64::from(i % size.0), f64::from(i / size.0));
+                            for k in 0..RAYS * RAYS {
+                                let (u, v) = (
+                                    (f64::from(k % RAYS) + 0.5) / f64::from(RAYS),
+                                    (f64::from(k / RAYS) + 0.5) / f64::from(RAYS),
+                                );
+                                let r = ray(&camera, fov, size, x + u, y + v);
+                                let d = r.normalize();
+                                let b = d.dot(oc);
+                                let disc = b * b - (oc.length_squared() - radius * radius);
+                                if disc >= 0.0 && b > 0.0 {
+                                    let n = (eye + d * (b - disc.sqrt()) - center) / radius;
+                                    exact += law(n, d) * sky(r) / f64::from(RAYS * RAYS);
+                                }
+                            }
+                        }
+                    }
+                    let half = (radius / distance).asin();
+                    let distant = disk_mean(shading, alpha) * std::f64::consts::PI * half * half;
+                    println!(
+                        "{shading:?}, {degrees}°, {place}, {pixels_across} px across: flux {got:.4e}, f64 {exact:.4e}, distant sphere {distant:.4e}"
                     );
-                    let r = ray(&camera, x + u, y + v);
-                    let d = r.normalize();
-                    let b = d.dot(oc);
-                    let disc = b * b - (oc.length_squared() - radius * radius);
-                    if disc >= 0.0 && b > 0.0 {
-                        let n = (eye + d * (b - disc.sqrt()) - center) / radius;
-                        exact += n.dot(light).max(0.0) * sky(r) / f64::from(RAYS * RAYS);
+                    // A disk bright to its limb shows the edge's ramp the
+                    // most: 0.4% at 40 px (Lambert's 0.15%, full).
+                    let within = match shading {
+                        Shading::Lambert => 2e-3,
+                        Shading::LunarLambert => 5e-3,
+                    };
+                    if pixels_across > 2.0 {
+                        assert!(
+                            (got / exact - 1.0).abs() < within,
+                            "{place}: {got} vs {exact}"
+                        );
+                    } else {
+                        assert!(
+                            (got / distant - 1.0).abs() < 1e-2,
+                            "{place}: {got} vs {distant}"
+                        );
                     }
                 }
             }
+        }
+    }
+}
+
+/// A sphere fades from its point to its disk between one and three
+/// pixels in radius, its point's gain over 1 (the sky's exposure 4× the
+/// frame's, the sphere dark enough that the cap leaves that), at the
+/// screen's center and near its corner: the flux shown is the spot's
+/// share of the point's (gain × the sphere's) and the disk's opacity times
+/// its own, within 3%, and runs on across a pixel. Found in review: the
+/// spot over the disk was drawn at the sphere's center, behind its disk,
+/// and hidden (past one pixel the flux dropped 5.5×); then, off the
+/// screen's center, still partly hidden (to 0.6 of it near the corner).
+#[test]
+fn the_point_fades_into_the_disk() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let size = (300, 300);
+    let fov = 60f64.to_radians();
+    let radius = 1_000.0;
+    let center = DVec3::new(AU_KM, 0.0, 0.0);
+    let alpha = 60f64.to_radians();
+    let sun = center + DVec3::new(-alpha.cos(), alpha.sin(), 0.0) * AU_KM;
+    let tan_half = (fov / 2.0).tan();
+    let side = 2.0 * tan_half / f64::from(size.1);
+    let gain = 4.0;
+    let albedo = 0.1;
+    for (place, offset) in [("center", (0.0, 0.0)), ("corner", (0.85, 0.8))] {
+        let mut last: Option<f64> = None;
+        for radius_px in [0.95, 1.05, 1.5, 2.0, 2.5, 3.5] {
+            // Its radius in the pixels where it lands, which subtend
+            // pixel² cos³θ of sky.
+            let toward =
+                (DVec3::X - DVec3::new(0.0, -offset.0 * tan_half, offset.1 * tan_half)).normalize();
+            let local = side * toward.x.powf(1.5);
+            let distance = radius / (radius_px * local).sin();
+            let eye = center - DVec3::X * distance;
+            let camera = Camera::looking_at(eye, eye + toward * distance, DVec3::Z, fov);
+            let scene = Scene {
+                camera: Some(camera),
+                sun,
+                spheres: vec![Sphere::plain(center, radius, Surface::Lit([albedo; 3]))],
+                look: Look {
+                    sky: gain as f32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let (image, _) = draw(&gpu, &mut renderer, &scene, size);
+            let got = flux(&image, &camera, fov, size);
             let half = (radius / distance).asin();
-            let distant = 2.0 / 3.0 * lambert_phase(alpha) * std::f64::consts::PI * half * half;
-            println!(
-                "{place}, {pixels_across} px across: flux {flux:.4e}, f64 {exact:.4e}, distant sphere {distant:.4e}"
+            let sphere = f64::from(albedo)
+                * (2.0 / 3.0 * lambert_phase(alpha) * std::f64::consts::PI * half * half);
+            let point = ((3.0 - radius_px) / 2.0f64).clamp(0.0, 1.0);
+            let want = sphere * (point * gain + 1.0 - point);
+            println!("{place}, {radius_px} px: flux {got:.4e}, wanted {want:.4e}");
+            assert!(
+                (got / want - 1.0).abs() < 0.03,
+                "{place}, {radius_px} px: {got} vs {want}"
             );
-            if pixels_across > 2.0 {
-                assert!(
-                    (flux / exact - 1.0).abs() < 1e-3,
-                    "{place}: {flux} vs {exact}"
-                );
-            } else {
-                assert!(
-                    (flux / distant - 1.0).abs() < 1e-2,
-                    "{place}: {flux} vs {distant}"
-                );
+            if radius_px < 1.2 {
+                // Across a pixel, the flux as a share of the sphere's.
+                let share = got / sphere;
+                if let Some(before) = last {
+                    assert!((share / before - 1.0).abs() < 0.05, "{before} → {share}");
+                }
+                last = Some(share);
             }
         }
     }
@@ -318,5 +454,60 @@ fn limb_darkening_keeps_the_flux() {
         );
         assert!((center_dark / center_even / want - 1.0).abs() < 2e-3);
         assert!((seen[1].1[c] / seen[0].1[c] - 1.0).abs() < 3e-3);
+    }
+}
+
+/// Clouds count in a point as on the disk: covering a dark surface
+/// (albedo 0.2) half over with clouds of albedo 0.8, the point's flux and
+/// the resolved disk's rise alike, by ~(0.5·0.2 + 0.5·0.8) / 0.2. Found in
+/// review: points took the surface's mean alone, Earth's 4× too faint.
+#[test]
+fn clouds_count_in_the_point() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let size = (300, 300);
+    let fov = 60f64.to_radians();
+    let radius = 1_000.0;
+    let center = DVec3::new(AU_KM, 0.0, 0.0);
+    let sun = center + DVec3::new(-1.0, 0.3, 0.0).normalize() * AU_KM;
+    let side = 2.0 * (fov / 2.0).tan() / f64::from(size.1);
+    let clouded = |cover: u8| {
+        let clouds = Image::gray(1, 1, vec![cover]);
+        let (mean, cover) = render::maps::means(&Image::srgba(1, 1, vec![255; 4]), Some(&clouds));
+        Arc::new(Maps {
+            mean,
+            cover,
+            clouds: Some(clouds),
+            cloud_albedo: 0.8,
+            ..(*white(Shading::Lambert)).clone()
+        })
+    };
+    let c = 128.0 / 255.0;
+    let want = ((1.0 - c) * 0.2 + c * 0.8) / 0.2;
+    for pixels_across in [40.0, 1.0] {
+        let distance = radius / (pixels_across / 2.0 * side).sin();
+        let camera = Camera::looking_at(center - DVec3::X * distance, center, DVec3::Z, fov);
+        let [clear, covered] = [0u8, 128].map(|cover| {
+            let scene = Scene {
+                camera: Some(camera),
+                sun,
+                spheres: vec![Sphere {
+                    maps: Some(clouded(cover)),
+                    ..Sphere::plain(center, radius, Surface::Lit([0.2; 3]))
+                }],
+                ..Default::default()
+            };
+            flux(
+                &draw(&gpu, &mut renderer, &scene, size).0,
+                &camera,
+                fov,
+                size,
+            )
+        });
+        let ratio = covered / clear;
+        println!(
+            "{pixels_across} px across: clouds multiply the flux by {ratio:.4} (want {want:.4})"
+        );
+        assert!((ratio / want - 1.0).abs() < 1e-3, "{ratio} vs {want}");
     }
 }

@@ -1,6 +1,6 @@
-//! From the scene's radiance to what the app shows (M1c.md, step 6 plan,
-//! item 1; post.wgsl): bloom down and up a chain of half-size levels,
-//! then exposure, the tonemap and the dither. And, on the same machinery,
+//! From the scene's radiance, exposed, to what the app shows (M1c.md, step
+//! 6 plan, item 1; post.wgsl): bloom down and up a chain of half-size
+//! levels, then the tonemap and the dither. And, on the same machinery,
 //! images' mipmaps.
 
 use crate::{COLOR_FORMAT, Target};
@@ -10,10 +10,8 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct PostGpu {
-    exposure: f32,
     bloom: f32,
     headroom: f32,
-    levels: f32,
 }
 
 /// Bloom's levels at most, each half the last: the widest blurs a
@@ -131,17 +129,24 @@ impl Post {
                 cache: None,
             })
         };
-        let add = wgpu::BlendState {
+        // The level below's share by the blend constant, the rest kept.
+        let weigh = wgpu::BlendState {
             color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
+                src_factor: wgpu::BlendFactor::Constant,
+                dst_factor: wgpu::BlendFactor::OneMinusConstant,
                 operation: wgpu::BlendOperation::Add,
             },
             alpha: wgpu::BlendComponent::REPLACE,
         };
         Post {
             down: pipeline("bloom down", &chain_layout, "down_fs", COLOR_FORMAT, None),
-            up: pipeline("bloom up", &chain_layout, "up_fs", COLOR_FORMAT, Some(add)),
+            up: pipeline(
+                "bloom up",
+                &chain_layout,
+                "up_fs",
+                COLOR_FORMAT,
+                Some(weigh),
+            ),
             tonemap: pipeline("tonemap", &tonemap_layout, "tonemap_fs", COLOR_FORMAT, None),
             blit: crate::maps::Image::FORMATS
                 .iter()
@@ -234,10 +239,8 @@ impl Post {
             &self.uniform,
             0,
             bytemuck::bytes_of(&PostGpu {
-                exposure: look.exposure,
                 bloom: look.bloom,
                 headroom: look.headroom.max(1.0),
-                levels: levels as f32,
             }),
         );
         self.make_groups(device, target);
@@ -247,7 +250,8 @@ impl Post {
                     view: &wgpu::TextureView,
                     pipeline: &wgpu::RenderPipeline,
                     group: &wgpu::BindGroup,
-                    load: wgpu::LoadOp<wgpu::Color>| {
+                    load: wgpu::LoadOp<wgpu::Color>,
+                    weight: f64| {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -266,22 +270,39 @@ impl Post {
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, group, &[]);
+            pass.set_blend_constant(wgpu::Color {
+                r: weight,
+                g: weight,
+                b: weight,
+                a: weight,
+            });
             pass.draw(0..3, 0..1);
         };
         let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
         for (level, group) in groups.down.iter().enumerate() {
-            pass(encoder, &target.bloom[level], down, group, clear);
+            pass(encoder, &target.bloom[level], down, group, clear, 0.0);
         }
+        // Level k, the first of n to the last, becomes their mean: the
+        // level past it holds the other n - 1's, weighing (n - 1) / n.
         for level in (1..levels).rev() {
+            let n = (levels - level + 1) as f64;
             pass(
                 encoder,
                 &target.bloom[level - 1],
                 up,
                 &groups.up[level - 1],
                 wgpu::LoadOp::Load,
+                (n - 1.0) / n,
             );
         }
-        pass(encoder, &target.color_view, tonemap, &groups.tonemap, clear);
+        pass(
+            encoder,
+            &target.color_view,
+            tonemap,
+            &groups.tonemap,
+            clear,
+            0.0,
+        );
     }
 
     /// `image` on the GPU with its full chain of mip levels, each made from

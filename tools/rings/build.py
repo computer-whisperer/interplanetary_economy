@@ -2,8 +2,10 @@
 from what fetch.sh downloads into DIR: the rings' normal optical depth
 every 10 km from 74,000 to 141,000 km (the C ring's inner edge to past
 the F ring), from Cassini UVIS's Gamma Crucis occultation. Depths below 0
-(noise in gaps) are taken as 0, and above what the occultation could
-detect (the B ring's core) as that limit.
+(noise: σ ≈ 0.085 a bin in the gaps) are kept, so that their means over a
+pixel stay unbiased (taken as 0, they made a faint ring of every gap); the
+renderer takes what it samples as at least 0. Those above what the
+occultation could detect (the B ring's core) are taken as that limit.
 
 Also the ring particles' albedo by region, estimated: the C ring and the
 Cassini Division darker and grayer, the A and B rings brighter and tan
@@ -36,13 +38,13 @@ def main(src):
     missing = np.interp(grid, radius, ((tau < -0.5) | (limit < 0)).astype(float)) > 0
     t = np.interp(grid, radius, tau)
     cap = np.interp(grid, radius, limit)
-    t = np.where(missing, cap.clip(0), np.clip(t, 0, cap))
+    t = np.where(missing, cap.clip(0), np.minimum(t, cap))
     print("# Saturn's rings (M1c.md, step 6 plan, item 6), built by tools/rings/build.py:")
     print("# normal optical depth every `step_km` from `inner_km`, from Cassini UVIS's")
     print("# occultation of Gamma Crucis (2008-238, ingress; PDS Ring-Moon Systems")
-    print("# Node, COUVIS_8001; NASA, public domain), negative depths taken as 0 and")
-    print("# those past detection as the limit; and the ring particles' albedo by")
-    print("# region, estimated (Cuzzi et al. 2009, roughly).")
+    print("# Node, COUVIS_8001; NASA, public domain), negative depths (noise) kept and")
+    print("# those past detection taken as the limit; and the ring particles' albedo")
+    print("# by region, estimated (Cuzzi et al. 2009, roughly).")
     print(f"inner_km = {INNER}")
     print(f"step_km = {STEP}")
     print(f"# {len(t)} values; {int(missing.sum())} missing, taken as the limit.")
