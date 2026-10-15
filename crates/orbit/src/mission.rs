@@ -91,6 +91,18 @@ pub struct Spot {
     pub source: toml::Value,
 }
 
+impl Spot {
+    /// The place with id `id`.
+    pub fn named(id: &str, places: &Places) -> Option<Spot> {
+        let p = places.get(id)?;
+        Some(Spot {
+            label: id.to_string(),
+            kind: p.kind.clone(),
+            source: toml::Value::String(id.to_string()),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Step {
     Go(Go),
@@ -187,16 +199,20 @@ impl Plan {
                                 {
                                     return Err(fail("a wait takes no other keys".into()));
                                 }
-                                if days < 0.0 {
-                                    return Err(fail("a wait is not negative".into()));
+                                if !days.is_finite() || days < 0.0 {
+                                    return Err(fail(
+                                        "a wait is a number of days, not negative".into(),
+                                    ));
                                 }
                                 Ok(Step::Wait(days))
                             }
                             (Some(to), None) => Ok(Step::Go(Go {
                                 to: spot(&to, eph, places).map_err(fail)?,
                                 days: match leg.days {
-                                    Some(d) if d.iter().any(|&d| d <= 0.0) => {
-                                        return Err(fail("durations are positive".into()));
+                                    Some(d) if d.iter().any(|&d| !d.is_finite() || d <= 0.0) => {
+                                        return Err(fail(
+                                            "durations are positive numbers of days".into(),
+                                        ));
                                     }
                                     d => d.unwrap_or_default(),
                                 },
@@ -454,22 +470,12 @@ impl World {
         aero: bool,
     ) -> Result<Crossing<'_>, String> {
         let eph = self.eph;
+        between_ends(from, to)?;
         let (from_end, from_body) = match from {
             PlaceKind::Low(orbit) => (End::Low(*orbit), orbit.body),
             PlaceKind::Body(b) => (End::Body(*b), *b),
-            _ => {
-                return Err(
-                    "leaving a station orbit for another planet is not designed yet (M1a step 9); fly through LEO"
-                        .into(),
-                );
-            }
+            _ => return Err("a leg between planets leaves a low orbit or a body".into()),
         };
-        if matches!(to, PlaceKind::Station { .. }) {
-            return Err(
-                "arriving at a station orbit from another planet is not designed yet (M1a step 9)"
-                    .into(),
-            );
-        }
         let to_system = to.system(eph);
         if eph.system(from_body) == to_system {
             return Err("both ends are in one planet's system".into());
@@ -482,6 +488,78 @@ impl World {
             to_system,
         })
     }
+}
+
+/// Why a leg between planets cannot leave `from` or reach `to`, if it
+/// cannot.
+fn between_ends(from: &PlaceKind, to: &PlaceKind) -> Result<(), String> {
+    if matches!(from, PlaceKind::Station { .. }) {
+        return Err(
+            "leaving a station orbit for another planet is not designed yet (M1a step 9); fly through LEO"
+                .into(),
+        );
+    }
+    if matches!(to, PlaceKind::Station { .. }) {
+        return Err(
+            "arriving at a station orbit from another planet is not designed yet (M1a step 9)"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// How a leg is flown, by its ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LegKind {
+    /// From a low orbit to its body's surface, and back.
+    Landing,
+    Ascent,
+    /// Within a planet's system.
+    Within(BodyId),
+    Between,
+}
+
+/// How `go` is flown leaving `from`, by the planner's rules, or why it
+/// cannot be (what the planner says when it reaches it).
+pub fn leg_kind(eph: &Ephemeris, from: &PlaceKind, go: &Go) -> Result<LegKind, String> {
+    let (from_system, to_system) = (from.system(eph), go.to.kind.system(eph));
+    match (from, &go.to.kind) {
+        (PlaceKind::Low(orbit), PlaceKind::Surface(b)) if orbit.body == *b => Ok(LegKind::Landing),
+        (PlaceKind::Surface(b), PlaceKind::Low(orbit)) if orbit.body == *b => Ok(LegKind::Ascent),
+        (PlaceKind::Surface(_), _) => {
+            Err("a surface is left by ascent to a low orbit about its body".into())
+        }
+        (_, PlaceKind::Surface(_)) if !(go.aero && from_system != to_system) => Err(
+            "a surface is reached by landing from a low orbit about its body, or by entry from another planet (`aero`)"
+                .into(),
+        ),
+        _ if from_system == to_system => {
+            if go.days.is_empty() {
+                Err("a leg within a system needs `days`".into())
+            } else if go.depart.is_some() {
+                Err("a pinned departure (`depart`) is for legs between planets and events; within a system, set a `window`".into())
+            } else {
+                Ok(LegKind::Within(from_system))
+            }
+        }
+        _ => between_ends(from, &go.to.kind).map(|_| LegKind::Between),
+    }
+}
+
+/// Each of `ship`'s legs that cannot be flown, by its step, and why: the
+/// planner's rules, checked without designing.
+pub fn check(eph: &Ephemeris, ship: &Ship) -> Vec<(usize, String)> {
+    let mut at = &ship.start.kind;
+    let mut out = Vec::new();
+    for (i, step) in ship.steps.iter().enumerate() {
+        if let Step::Go(go) = step {
+            if let Err(why) = leg_kind(eph, at, go) {
+                out.push((i, why));
+            }
+            at = &go.to.kind;
+        }
+    }
+    out
 }
 
 /// A leg between planets, priced by patched conics (`World::crossing`).
@@ -605,6 +683,7 @@ pub enum MarkerKind {
 #[derive(Clone)]
 pub struct Checkpoint {
     next: usize,
+    place: PlaceKind,
     here: Here,
     label: String,
     since: Epoch,
@@ -671,6 +750,8 @@ pub struct Planner<'w> {
     next: usize,
     /// The step being designed.
     at: usize,
+    /// The place the ship is at.
+    place: PlaceKind,
     here: Here,
     label: String,
     /// When the ship reached where it is, and when it may leave.
@@ -686,6 +767,7 @@ impl<'w> Planner<'w> {
             ship: ship.clone(),
             next: 0,
             at: 0,
+            place: ship.start.kind.clone(),
             here: Here::Body(world.eph.sun()),
             label: ship.start.label.clone(),
             since: ship.epoch,
@@ -712,6 +794,7 @@ impl<'w> Planner<'w> {
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             next: self.next,
+            place: self.place.clone(),
             here: self.here.clone(),
             label: self.label.clone(),
             since: self.since,
@@ -728,6 +811,7 @@ impl<'w> Planner<'w> {
             ship: ship.clone(),
             next: checkpoint.next,
             at: checkpoint.next,
+            place: checkpoint.place,
             here: checkpoint.here,
             label: checkpoint.label,
             since: checkpoint.since,
@@ -834,27 +918,21 @@ impl<'w> Planner<'w> {
                 eph.body(b).id
             ));
         }
-        let from_system = match &self.here {
-            Here::Low { orbit, .. } => eph.system(orbit.body),
-            Here::Station(_) => eph.lookup("earth").unwrap(),
-            Here::Body(b) | Here::Surface(b) => eph.system(*b),
-        };
-        let to_system = go.to.kind.system(eph);
-        match (self.here.clone(), &go.to.kind) {
-            (Here::Low { orbit, .. }, PlaceKind::Surface(b)) if orbit.body == *b => {
+        let kind = leg_kind(eph, &self.place, go)?;
+        let items = match (kind, &self.place, &go.to.kind) {
+            (LegKind::Landing, PlaceKind::Low(orbit), PlaceKind::Surface(b)) => {
                 self.surface_event(go, *b, orbit.radius, true)
             }
-            (Here::Surface(b), PlaceKind::Low(orbit)) if orbit.body == b => {
-                self.surface_event(go, b, orbit.radius, false)
+            (LegKind::Ascent, PlaceKind::Surface(b), PlaceKind::Low(orbit)) => {
+                let (b, radius) = (*b, orbit.radius);
+                self.surface_event(go, b, radius, false)
             }
-            (Here::Surface(_), _) => Err("a surface is left by ascent to a low orbit about its body".into()),
-            (_, PlaceKind::Surface(_)) if !(go.aero && from_system != to_system) => Err(
-                "a surface is reached by landing from a low orbit about its body, or by entry from another planet (`aero`)"
-                    .into(),
-            ),
-            _ if from_system == to_system => self.within(i, go, from_system),
-            _ => self.between(go),
-        }
+            (LegKind::Within(system), _, _) => self.within(i, go, system),
+            (LegKind::Between, _, _) => self.between(go),
+            _ => unreachable!("leg_kind's kinds match their ends"),
+        }?;
+        self.place = go.to.kind.clone();
+        Ok(items)
     }
 
     /// Landing on (`down`) or ascending from a body's surface, from or to a
@@ -926,9 +1004,6 @@ impl<'w> Planner<'w> {
         let world = self.world;
         let eph = world.eph;
         let (field, light) = world.system(system)?;
-        if go.days.is_empty() {
-            return Err("a leg within a system needs `days`".into());
-        }
         let longest = go.days.iter().copied().fold(0.0, f64::max);
         // The window: a revolution of the station left or reached, else
         // the defaults.
@@ -938,12 +1013,6 @@ impl<'w> Planner<'w> {
             _ if Some(system) == eph.lookup("earth") => EARTH_WINDOW_DAYS,
             _ => OTHER_WINDOW_DAYS,
         };
-        if go.depart.is_some() {
-            return Err(
-                "a pinned departure (`depart`) is for legs between planets and events; within a system, set a `window`"
-                    .into(),
-            );
-        }
         let (open, close) = self.window(go, default_days)?;
         if close.0 <= open.0 {
             return Err("a leg within a system needs a window longer than an instant".into());

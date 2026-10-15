@@ -6,6 +6,43 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, part 6: editing. As planned (step 7 plan, item 6); where it
+  differs or adds:
+  - A click on a ship's row in the panel opens its editor in place of
+    the options: its name, its start (a menu of every place) and
+    epoch, and per step a leg's destination (the same menu),
+    durations (by commas), window (two dates; one alone makes it an
+    instant) and aerocapture, or a wait's days; each step moved up or
+    down or removed; "+ Leg" (to the NRHO in 5 days) and "+ Wait" (a
+    day) in its header, which stays in view; "Remove ship". "+ Ship"
+    in the panel's header adds one leaving LEO at the clock's day.
+  - Typed fields keep what is typed until Enter, or a press elsewhere,
+    commits it; Escape drops it. A value that does not read (a date
+    that is not one, a duration not positive, a window that closes
+    before it opens) is refused, saying why. While a field is typed
+    into, the hotkeys without Ctrl are off: damascene matches hotkeys
+    before a field sees its key, so typing "1.5" warped time.
+  - Each change designs the ship again from the first step it changes
+    (`editor::first_change`); a new name alone renames. Ctrl+Z undoes
+    the last change (ships added or removed: the whole plan designed
+    again).
+  - Legs that cannot be flown say why at once, by the planner's own
+    rules, now one function (`mission::leg_kind`; `mission::check` a
+    ship): a surface left other than by ascent, reached other than by
+    landing or entry, a leg within a system without durations or with
+    a pin, a station left or reached from another planet.
+  - Ships have ids of their own in the designer's messages, so adding
+    and removing ships does not send one ship's items to another.
+  - Plan files' waits and durations must be finite (TOML has `nan`
+    and `inf`).
+  - Checks: the editor opened from a ship's row; "1.5" typed over a
+    leg's durations (no time warp while typing), committed by Enter,
+    and the leg designed again at 1.5 days; a wait and legs added; a
+    leg from the surface to the NRHO refused at once in the planner's
+    words; two undos; a ship added (edited at once) and removed. The
+    fields' reading, the steps' moves and `first_change` are
+    unit-tested.
+
 - Step 7, part 5: the options panel. As planned (step 7 plan, item
   5); where it differs or adds:
   - The panel shows the options of the leg of the item selected (a

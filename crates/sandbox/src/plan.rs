@@ -60,6 +60,9 @@ pub struct Ship {
 /// designer of an older one stops after the step it is on, and what it
 /// sent is dropped), and where the ship is before each step designed.
 struct Design {
+    /// The ship's own, as messages name it: its place in the plan moves
+    /// as ships are added and removed.
+    id: u64,
     generation: u64,
     live: Arc<AtomicU64>,
     checkpoints: Vec<Checkpoint>,
@@ -91,8 +94,9 @@ pub struct Loaded {
     /// ship is only done).
     pub generation: u64,
     pool: Arc<rayon::ThreadPool>,
-    sender: Sender<(usize, u64, Message)>,
-    receiver: Receiver<(usize, u64, Message)>,
+    next_id: u64,
+    sender: Sender<(u64, u64, Message)>,
+    receiver: Receiver<(u64, u64, Message)>,
 }
 
 /// Each ship's first leg's place in the plan's legs.
@@ -151,10 +155,9 @@ impl Loaded {
                 first_leg,
             })
             .collect();
-        let designs = plan
-            .ships
-            .iter()
-            .map(|_| Design {
+        let designs = (0..plan.ships.len() as u64)
+            .map(|id| Design {
+                id,
                 generation: 0,
                 live: Arc::new(AtomicU64::new(0)),
                 checkpoints: Vec::new(),
@@ -173,6 +176,7 @@ impl Loaded {
             .build()
             .expect("a thread pool");
         let (sender, receiver) = channel();
+        let next_id = plan.ships.len() as u64;
         let mut loaded = Loaded {
             name: plan.name.clone(),
             plan,
@@ -184,6 +188,7 @@ impl Loaded {
             start,
             generation: 0,
             pool: Arc::new(pool),
+            next_id,
             sender,
             receiver,
         };
@@ -201,13 +206,14 @@ impl Loaded {
     /// it is on.
     fn design(&self, s: usize, from: Option<Checkpoint>) {
         let ship = self.plan.ships[s].clone();
-        let (generation, live) = (self.designs[s].generation, self.designs[s].live.clone());
+        let d = &self.designs[s];
+        let (id, generation, live) = (d.id, d.generation, d.live.clone());
         let sender = self.sender.clone();
         self.pool.spawn(move || {
             let world = world();
             let send = |m| {
                 live.load(Ordering::Relaxed) == generation
-                    && sender.send((s, generation, m)).is_ok()
+                    && sender.send((id, generation, m)).is_ok()
             };
             let designed = catch_unwind(AssertUnwindSafe(|| {
                 let mut planner = match from {
@@ -274,6 +280,60 @@ impl Loaded {
         self.windows.update(&self.plan, &self.pool);
     }
 
+    /// Renames ship `s`: nothing to design again.
+    pub fn rename(&mut self, s: usize, name: &str) {
+        self.plan.ships[s].name = name.to_string();
+        self.ships[s].name = name.to_string();
+        self.generation += 1;
+    }
+
+    /// Adds `ship` to the plan, last, and designs it.
+    pub fn add_ship(&mut self, ship: orbit::mission::Ship) {
+        self.plan.ships.push(ship);
+        self.designs.push(Design {
+            id: self.next_id,
+            generation: 0,
+            live: Arc::new(AtomicU64::new(0)),
+            checkpoints: Vec::new(),
+        });
+        self.next_id += 1;
+        self.ships.push(Ship {
+            name: String::new(),
+            items: Vec::new(),
+            done: false,
+            failure: None,
+            first_leg: 0,
+        });
+        self.reshaped();
+        self.design(self.ships.len() - 1, None);
+    }
+
+    /// Removes ship `s`; its designer stops after the step it is on.
+    pub fn remove_ship(&mut self, s: usize) {
+        let design = self.designs.remove(s);
+        design.live.store(u64::MAX, Ordering::Relaxed);
+        self.plan.ships.remove(s);
+        self.ships.remove(s);
+        self.reshaped();
+    }
+
+    /// After ships were added or removed: their names and first legs,
+    /// the sweeps (by index, all dropped) and the window lanes.
+    fn reshaped(&mut self) {
+        for ((shown, ship), first) in self
+            .ships
+            .iter_mut()
+            .zip(&self.plan.ships)
+            .zip(first_legs(&self.plan))
+        {
+            shown.name = ship.name.clone();
+            shown.first_leg = first;
+        }
+        self.sweeps.clear();
+        self.generation += 1;
+        self.windows.update(&self.plan, &self.pool);
+    }
+
     /// Designs ship `s`'s leg at `step` at each of `durations` in the
     /// background, each alone (as pinning it would: the autopilot's
     /// designs of several durations at once depend on which are asked
@@ -287,7 +347,7 @@ impl Loaded {
         if !matches!(ship.steps.get(step), Some(Step::Go(_))) {
             return;
         }
-        let (generation, live) = (design.generation, design.live.clone());
+        let (id, generation, live) = (design.id, design.generation, design.live.clone());
         self.sweeps.insert(
             (s, step),
             Sweep {
@@ -337,7 +397,7 @@ impl Loaded {
             }))
             .unwrap_or_else(|_| Err("sweeping it panicked".into()));
             if live.load(Ordering::Relaxed) == generation {
-                let _ = sender.send((s, generation, Message::Swept(step, swept)));
+                let _ = sender.send((id, generation, Message::Swept(step, swept)));
             }
         });
     }
@@ -377,9 +437,12 @@ impl Loaded {
         }
     }
 
-    /// Takes a message for ship `s`'s design of `generation`: `false`
-    /// if it is of an older one.
-    fn take(&mut self, s: usize, generation: u64, message: Message) -> bool {
+    /// Takes a message for the ship of `id`'s design of `generation`:
+    /// `false` if it is of an older one, or of a ship removed.
+    fn take(&mut self, id: u64, generation: u64, message: Message) -> bool {
+        let Some(s) = self.designs.iter().position(|d| d.id == id) else {
+            return false;
+        };
         let (ship, design) = (&mut self.ships[s], &mut self.designs[s]);
         if generation != design.generation {
             return false;

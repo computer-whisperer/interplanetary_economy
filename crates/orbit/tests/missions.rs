@@ -7,7 +7,7 @@
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{
-    Checkpoint, Item, ItemKind, MarkerKind, Plan, Planner, Step, World, resume_from,
+    Checkpoint, Item, ItemKind, MarkerKind, Plan, Planner, Step, World, check, resume_from,
 };
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -120,6 +120,9 @@ fn every_plan_parses() {
             .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert!(!p.ships.is_empty());
         assert_round_trip(&p);
+        for ship in &p.ships {
+            assert_eq!(check(Ephemeris::standard(), ship), [], "{}", ship.name);
+        }
         n += 1;
     }
     assert!(n >= 2);
@@ -135,7 +138,9 @@ fn every_plan_parses() {
     for leg in [
         "to = \"nrho\"\ndays = [5]\nwindow = [\"2045-03-02\", \"2045-03-01\"]",
         "wait = -1",
+        "wait = nan",
         "to = \"nrho\"\ndays = [0]",
+        "to = \"nrho\"\ndays = [inf]",
     ] {
         let bad = format!(
             "name = \"x\"\n[[ship]]\nname = \"s\"\nstart = {{ at = \"leo\", epoch = \"2045-03-01\" }}\n\
@@ -457,5 +462,44 @@ days = [190]
             ] => assert!(e.contains(why), "{e}"),
             other => panic!("{other:?}"),
         }
+    }
+}
+
+/// Legs that cannot be flown are found without designing, each with the
+/// planner's own words, which it says on reaching them.
+#[test]
+fn checks_say_what_the_planner_says() {
+    let world = World::standard();
+    let src = r#"
+name = "Bad"
+
+[[ship]]
+name = "s"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+to = "nrho"
+
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+"#;
+    let plan = Plan::parse(src, world.eph, Places::standard()).unwrap();
+    let problems = check(world.eph, &plan.ships[0]);
+    println!("{problems:?}");
+    assert_eq!(problems.iter().map(|p| p.0).collect::<Vec<_>>(), [0, 1, 2]);
+    assert!(problems[0].1.contains("landing from a low orbit"));
+    assert!(problems[1].1.contains("left by ascent"));
+    assert!(problems[2].1.contains("station orbit"));
+    match &fly(&world, &plan, "s")[..] {
+        [
+            Item {
+                kind: ItemKind::Failed(why),
+                ..
+            },
+        ] => assert_eq!(why, &problems[0].1),
+        other => panic!("{other:?}"),
     }
 }

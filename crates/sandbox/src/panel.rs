@@ -12,6 +12,19 @@ use std::sync::Arc;
 /// The panel's list's key.
 pub const LIST_KEY: &str = "plan";
 
+/// The button that adds a ship.
+pub const ADD_SHIP_KEY: &str = "edit:add-ship";
+
+/// A ship's row's key: a click on it edits the ship.
+pub fn ship_key(s: usize) -> String {
+    format!("ship:{s}")
+}
+
+/// The ship a ship's row's key names.
+pub fn parse_ship_key(key: &str) -> Option<usize> {
+    key.strip_prefix("ship:")?.parse().ok()
+}
+
 /// The panel's width, logical pixels.
 pub const WIDTH: f32 = 380.0;
 
@@ -107,7 +120,7 @@ pub fn rows(
         }
         let dv: f64 = ship.items.iter().map(|i| i.dv).sum();
         rows.push(Row {
-            key: format!("ship:{s}"),
+            key: ship_key(s),
             kind: String::new(),
             label: ship.name.clone(),
             dv: if ship.items.is_empty() {
@@ -252,6 +265,9 @@ fn drawn(r: &Row) -> El {
             left: tokens::SPACE_3,
             right: tokens::SPACE_3,
         })
+        .key(r.key.clone())
+        .cursor(Cursor::Pointer)
+        .tooltip("Click to edit")
     } else {
         let el = el.key(r.key.clone()).cursor(Cursor::Pointer);
         if r.selected {
@@ -267,9 +283,16 @@ pub fn panel(title: &str, rows: Vec<Row>) -> El {
     let rows = Arc::new(rows);
     let keys = rows.clone();
     column([
-        text(title.to_string())
-            .bold()
-            .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2)),
+        row([
+            text(title.to_string())
+                .bold()
+                .ellipsis()
+                .width(Size::Fill(1.0)),
+            button("+ Ship").key(ADD_SHIP_KEY),
+        ])
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2)),
         virtual_list_dyn(
             rows.len(),
             ROW_PX,
@@ -290,6 +313,7 @@ mod tests {
     fn item_keys_parse() {
         assert_eq!(parse_item_key(&item_key(3, 14)), Some((3, 14)));
         assert_eq!(parse_item_key("ship:3"), None);
+        assert_eq!(parse_ship_key(&ship_key(3)), Some(3));
         assert_eq!(parse_item_key("item:3"), None);
     }
 }

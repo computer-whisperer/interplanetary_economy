@@ -7,6 +7,7 @@
 use crate::bodies;
 use crate::camera::MapCamera;
 use crate::clock::Clock;
+use crate::editor::{self, Editor, Field};
 use crate::frames::{self, Frame};
 use crate::labels::{self, Anchor, Placed};
 use crate::look::{self, Exposure};
@@ -23,10 +24,11 @@ use damascene_core::prelude::*;
 use damascene_core::scroll::{ScrollAlignment, ScrollRequest};
 use damascene_core::surface::AppTexture;
 use damascene_core::toast::ToastSpec;
+use damascene_core::widgets::text_input;
 use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
-use orbit::mission::{Item, ItemKind, Step};
+use orbit::mission::{Item, ItemKind, Plan, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use render::Timings;
@@ -147,6 +149,11 @@ pub struct Shell {
     options: Options,
     /// Where the pointer is, logical px, if over the window.
     pub pointer: Option<(f32, f32)>,
+    /// The ship being edited, and the text fields' shared selection.
+    pub editor: Option<Editor>,
+    selection: Selection,
+    /// The plan before each change, for undo.
+    undo: Vec<Plan>,
     pub panel_open: bool,
     seen: Option<Seen>,
     /// Labels' sizes by their text.
@@ -195,6 +202,9 @@ impl Shell {
             leg: None,
             options: Options::default(),
             pointer: None,
+            editor: None,
+            selection: Selection::default(),
+            undo: Vec::new(),
             panel_open: true,
             seen: None,
             sizes: HashMap::new(),
@@ -321,6 +331,205 @@ impl Shell {
         Some(options::section(&leg, body))
     }
 
+    /// Replaces ship `s` with `ship`, designing it again from where it
+    /// first changed (a new name alone is only a rename); the plan before
+    /// is kept for undo.
+    pub fn change(&mut self, s: usize, ship: orbit::mission::Ship) {
+        let Some(plan) = self.plan.as_mut() else {
+            return;
+        };
+        let Some(changed) = editor::first_change(&plan.plan.ships[s], &ship) else {
+            if ship.name != plan.plan.ships[s].name {
+                self.undo.push(plan.plan.clone());
+                plan.rename(s, &ship.name);
+            }
+            return;
+        };
+        self.undo.push(plan.plan.clone());
+        plan.edit(s, ship, changed);
+        self.selected = None;
+    }
+
+    /// Back to the plan before the last change: the ships changed
+    /// designed again from where they differ, or, if ships were added or
+    /// removed, the whole plan.
+    pub fn undo(&mut self) {
+        let (Some(plan), Some(before)) = (self.plan.as_mut(), self.undo.pop()) else {
+            return;
+        };
+        self.selected = None;
+        if before.ships.len() != plan.plan.ships.len() {
+            let path = plan.path.clone();
+            let mut restarted = Loaded::start(before);
+            restarted.path = path;
+            self.plan = Some(restarted);
+            self.leg = None;
+            self.editor = None;
+            self.built = None;
+            return;
+        }
+        for (s, ship) in before.ships.into_iter().enumerate() {
+            match editor::first_change(&plan.plan.ships[s], &ship) {
+                Some(changed) => plan.edit(s, ship, changed),
+                None if ship.name != plan.plan.ships[s].name => plan.rename(s, &ship.name),
+                None => {}
+            }
+        }
+    }
+
+    /// Commits the editor's drafts: each that reads as a value changes
+    /// the ship; the first that does not says why.
+    fn commit_drafts(&mut self) {
+        let Some(ed) = self.editor.as_mut() else {
+            return;
+        };
+        let drafts: Vec<(Field, String)> = ed.drafts.drain().collect();
+        for (field, text) in drafts {
+            self.commit(field, &text);
+        }
+    }
+
+    /// Commits `text` typed into `field` of the ship edited.
+    fn commit(&mut self, field: Field, text: &str) {
+        let (Some(ed), Some(plan)) = (self.editor.as_ref(), self.plan.as_ref()) else {
+            return;
+        };
+        let s = ed.ship;
+        let result = editor::set(&plan.plan.ships[s], field, text);
+        match result {
+            Ok(ship) => {
+                self.change(s, ship);
+                if let Some(ed) = self.editor.as_mut() {
+                    ed.refused = None;
+                }
+            }
+            Err(why) => {
+                if let Some(ed) = self.editor.as_mut() {
+                    ed.refused = Some(why);
+                }
+            }
+        }
+    }
+
+    /// An event for the editor: `true` if it took it.
+    fn editor_event(&mut self, event: &UiEvent) -> bool {
+        let Some(ed) = self.editor.as_ref() else {
+            return false;
+        };
+        let s = ed.ship;
+        let routed = event.route().and_then(Field::parse);
+        let target = event.target_key().and_then(Field::parse);
+        // A press on a field starts typing into it; anywhere else, ends
+        // it.
+        if event.kind == UiEventKind::PointerDown
+            && let Some(ed) = self.editor.as_mut()
+        {
+            ed.typing = routed.is_some_and(|f| f.typed());
+        }
+        let ed = self.editor.as_ref().unwrap();
+        // A press anywhere but on a draft's field commits the drafts.
+        if event.kind == UiEventKind::PointerDown && ed.drafts.keys().any(|f| Some(*f) != routed) {
+            let keep = routed.and_then(|f| self.editor.as_mut()?.drafts.remove_entry(&f));
+            self.commit_drafts();
+            if let (Some((f, t)), Some(ed)) = (keep, self.editor.as_mut()) {
+                ed.drafts.insert(f, t);
+            }
+        }
+        let Some(plan) = self.plan.as_ref() else {
+            return false;
+        };
+        let ship = plan.plan.ships[s].clone();
+        // Typing into a field.
+        if let Some(f) = target.or(routed).filter(|f| f.typed()) {
+            let ed = self.editor.as_mut().unwrap();
+            // Enter: an Activate, or, in a field capturing keys, a raw
+            // key down.
+            let enter = event.kind == UiEventKind::Activate
+                || (event.kind == UiEventKind::KeyDown
+                    && event
+                        .key_press
+                        .as_ref()
+                        .is_some_and(|k| k.logical == LogicalKey::Named(NamedKey::Enter)));
+            match event.kind {
+                _ if enter => {
+                    let text = ed
+                        .drafts
+                        .remove(&f)
+                        .unwrap_or_else(|| editor::value(&ship, f));
+                    self.commit(f, &text);
+                    return true;
+                }
+                UiEventKind::Escape => {
+                    // Damascene takes the focus away after it.
+                    ed.drafts.remove(&f);
+                    ed.typing = false;
+                    return true;
+                }
+                _ => {}
+            }
+            let mut text = ed
+                .drafts
+                .get(&f)
+                .cloned()
+                .unwrap_or_else(|| editor::value(&ship, f));
+            if text_input::apply_event(&mut text, &mut self.selection, event, &f.key()) {
+                ed.drafts.insert(f, text);
+                return true;
+            }
+            if matches!(event.kind, UiEventKind::KeyDown | UiEventKind::TextInput) {
+                return true;
+            }
+        }
+        let clicked = matches!(event.kind, UiEventKind::Click | UiEventKind::Activate);
+        // A place menu's option, or its trigger.
+        let ed = self.editor.as_mut().unwrap();
+        if let Some(f) = ed.menu {
+            if clicked && let Some(id) = event.route_suffix(&format!("{}:option", f.key())) {
+                ed.menu = None;
+                let changed = editor::place(&ship, f, id, Places::standard());
+                match changed {
+                    Ok(ship) => self.change(s, ship),
+                    Err(why) => self.editor.as_mut().unwrap().refused = Some(why),
+                }
+                return true;
+            }
+            if event.is_click_or_activate(&format!("{}:dismiss", f.key()))
+                || event.kind == UiEventKind::Escape
+            {
+                ed.menu = None;
+                return true;
+            }
+        }
+        if !clicked {
+            return false;
+        }
+        match routed {
+            Some(f @ (Field::Start | Field::To(_))) => {
+                ed.menu = if ed.menu == Some(f) { None } else { Some(f) };
+            }
+            Some(Field::Done) => {
+                self.commit_drafts();
+                self.editor = None;
+            }
+            Some(Field::RemoveShip) => {
+                if let Some(plan) = self.plan.as_mut() {
+                    self.undo.push(plan.plan.clone());
+                    plan.remove_ship(s);
+                }
+                self.editor = None;
+                self.selected = None;
+                self.leg = None;
+            }
+            Some(f) if !f.typed() => {
+                if let Some(ship) = editor::press(&ship, f, Places::standard()) {
+                    self.change(s, ship);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn close_menus(&mut self) {
         self.focus_open = false;
         self.frame_open = false;
@@ -335,6 +544,8 @@ impl Shell {
         self.plan = Some(plan);
         self.selected = None;
         self.leg = None;
+        self.editor = None;
+        self.undo.clear();
         self.built = None;
         self.timeline.refit();
         self.poll();
@@ -783,7 +994,18 @@ impl App for Shell {
                             &plan.name,
                             panel::rows(self.eph, &plan.ships, self.clock.t, self.selected),
                         )),
-                        self.options_section(cx).map(|o| column([divider(), o])),
+                        match &self.editor {
+                            Some(ed) if ed.ship < plan.plan.ships.len() => Some(column([
+                                divider(),
+                                editor::section(
+                                    ed,
+                                    &plan.plan.ships[ed.ship],
+                                    &orbit::mission::check(self.eph, &plan.plan.ships[ed.ship]),
+                                    &self.selection,
+                                ),
+                            ])),
+                            _ => self.options_section(cx).map(|o| column([divider(), o])),
+                        },
                     ]
                     .into_iter()
                     .flatten(),
@@ -879,11 +1101,17 @@ impl App for Shell {
         if self.settings_open {
             layers.push(settings::menu(&self.settings));
         }
+        if let Some(f) = self.editor.as_ref().and_then(|e| e.menu) {
+            layers.push(editor::place_menu(f, Places::standard()));
+        }
         stack(layers).width(Size::Fill(1.0)).height(Size::Fill(1.0))
     }
 
     fn on_event(&mut self, event: UiEvent, cx: &EventCx) {
         let clicked = matches!(event.kind, UiEventKind::Click | UiEventKind::Activate);
+        if self.editor_event(&event) {
+            return;
+        }
         if event.is_hotkey("pause") {
             self.clock.paused = !self.clock.paused;
         } else if event.is_hotkey("faster") {
@@ -902,6 +1130,27 @@ impl App for Shell {
             self.panel_open = !self.panel_open;
         } else if event.is_hotkey("save") {
             self.save();
+        } else if event.is_hotkey("undo") {
+            self.undo();
+        } else if clicked && let Some(s) = event.route().and_then(panel::parse_ship_key) {
+            self.editor = match &self.editor {
+                Some(ed) if ed.ship == s => None,
+                _ => Some(Editor {
+                    ship: s,
+                    ..Editor::default()
+                }),
+            };
+        } else if event.is_click_or_activate(panel::ADD_SHIP_KEY)
+            && let Some(plan) = self.plan.as_mut()
+        {
+            self.undo.push(plan.plan.clone());
+            let name = format!("Ship {}", plan.plan.ships.len() + 1);
+            plan.add_ship(editor::new_ship(name, self.clock.t, Places::standard()));
+            let s = plan.plan.ships.len() - 1;
+            self.editor = Some(Editor {
+                ship: s,
+                ..Editor::default()
+            });
         } else if event.kind == UiEventKind::Click
             && event.route() == Some(VIEWPORT_KEY)
             && let (Some(rect), Some((x, y))) = (event.target_rect(), event.pointer)
@@ -1032,12 +1281,25 @@ impl App for Shell {
         }
     }
 
+    fn selection(&self) -> Selection {
+        self.selection.clone()
+    }
+
     fn drain_toasts(&mut self) -> Vec<ToastSpec> {
         std::mem::take(&mut self.toasts)
     }
 
+    /// While a text field is being typed into, only the chords with
+    /// Ctrl: damascene matches hotkeys before the field sees the key.
     fn hotkeys(&self) -> Vec<(KeyChord, String)> {
-        vec![
+        let ctrl = vec![
+            (KeyChord::ctrl('s'), "save".into()),
+            (KeyChord::ctrl('z'), "undo".into()),
+        ];
+        if self.editor.as_ref().is_some_and(|e| e.typing) {
+            return ctrl;
+        }
+        let mut keys: Vec<(KeyChord, String)> = vec![
             (
                 KeyChord::named(LogicalKey::Named(NamedKey::Space)),
                 "pause".into(),
@@ -1049,8 +1311,9 @@ impl App for Shell {
             (KeyChord::vim('='), "brighter".into()),
             (KeyChord::vim('-'), "darker".into()),
             (KeyChord::vim('p'), "panel".into()),
-            (KeyChord::ctrl('s'), "save".into()),
-        ]
+        ];
+        keys.extend(ctrl);
+        keys
     }
 
     fn drain_scroll_requests(&mut self) -> Vec<ScrollRequest> {
