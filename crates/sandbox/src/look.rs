@@ -32,8 +32,9 @@ pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
 /// Stops the sky (the stars and the Milky Way) shows over the scene's
 /// exposure, so that it shows beside a sunlit body. Over Earth's
 /// exposure, +17 shows stars to about magnitude 11. (18 while Earth's
-/// curve was Mallama's, 0.75 mag too bright, which put its exposure 1
-/// stop lower; the look kept.)
+/// curve was Mallama's, 0.77 mag too bright at full phase, which put its
+/// exposure 1 stop lower: Earth's look kept, other foci's skies show 1
+/// stop dimmer than then.)
 pub const BACKGROUND_LIFT: i32 = 17;
 
 /// Stops bodies drawn as points of light show over the scene's exposure:

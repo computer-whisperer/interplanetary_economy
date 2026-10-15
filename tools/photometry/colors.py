@@ -12,8 +12,11 @@ these wavelengths (tools/color.py):
   wavelengths (its Tables 1 and 2). The two systems' colors alone differ
   by up to 0.09 in a channel (printed).
 - Earth: its geometric albedos in B (400-500 nm), V (500-600) and R
-  (600-700) bands (Robinson 2025, PSJ, arXiv 2507.22258, Sec. 5), at the
-  bands' centers: the same work as its phase curve. Mallama et al.'s
+  (600-700) bands (Robinson 2025, PSJ, arXiv 2507.22258, Sec. 5), the
+  same work as its phase curve: means over the bands, so taken as values
+  at their centers whose spectrum has those means. The values themselves
+  at the centers came 0.06 short in blue; a step at the bands' edges
+  gives 0.03 less blue than these. Mallama et al.'s
   were extrapolated to full phase by a model that swapped forward and
   backward scattering (Robinson's Sec. 6.1).
 - The Moon: Lane and Irvine 1973 (AJ 78, 267), Table VIII's narrow
@@ -38,7 +41,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from color import reflected_rgb  # noqa: E402
+from color import NM, reflected_rgb  # noqa: E402
 
 # Effective wavelengths, nm.
 JOHNSON_COUSINS = [360, 436, 549, 641, 798]  # U B V Rc Ic
@@ -55,8 +58,8 @@ PLANETS = {
     "neptune": [0.578, 0.562, 0.442, 0.226, 0.072, 0.564, 0.533, 0.307, 0.101],
 }
 
-# Robinson 2025: (nm, geometric albedo).
-EARTH = [(450.0, 0.277), (550.0, 0.226), (650.0, 0.221)]
+# Robinson 2025: (from nm, to nm, geometric albedo).
+EARTH = [(400.0, 500.0, 0.277), (500.0, 600.0, 0.226), (600.0, 700.0, 0.221)]
 
 # Lane and Irvine 1973, Table VIII: (nm, geometric albedo).
 MOON = [(359.0, 0.072), (392.6, 0.085), (415.5, 0.088), (457.3, 0.098), (501.2, 0.106),
@@ -81,6 +84,19 @@ def class_rgb(r):
     return reflected_rgb([(380.0, r[0] - slope * 70.0)] + list(zip(CLASS_NM, r)))
 
 
+def band_means(bands):
+    """(nm, reflectance) at `bands`' centers whose spectrum, linear between
+    them and held past the ends, has the bands' means."""
+    centers = [(a + b) / 2 for a, b, _ in bands]
+
+    def means(values):
+        r = np.interp(NM, centers, values)
+        return [r[(NM >= a) & (NM <= b)].mean() for a, b, _ in bands]
+
+    basis = np.array([means(e) for e in np.eye(len(bands))]).T
+    return list(zip(centers, np.linalg.solve(basis, [p for _, _, p in bands])))
+
+
 def rust(name, rgb, note):
     return f'        {name} => [{rgb[0]:.3f}, {rgb[1]:.3f}, {rgb[2]:.3f}], // {note}'
 
@@ -93,7 +109,7 @@ def main():
         both = reflected_rgb(jc + sloan)
         spread = np.abs(reflected_rgb(jc) - reflected_rgb(sloan)).max()
         lines.append(rust(f'"{id}"', both, f"systems differ by {spread:.2f}"))
-    lines.insert(2, rust('"earth"', reflected_rgb(EARTH), "Robinson"))
+    lines.insert(2, rust('"earth"', reflected_rgb(band_means(EARTH)), "Robinson"))
     moon = [(nm, p * (MOON_RED if nm > 600 else 1.0)) for nm, p in MOON]
     lines.append(rust('"moon"', reflected_rgb(moon), "Lane and Irvine"))
     lines.append(rust('"phobos" | "deimos"', class_rgb(CLASSES["D"]), "class D"))

@@ -14,9 +14,8 @@ const EARTH_RAYLEIGH: [f64; 3] = [5.802e-3, 13.558e-3, 33.1e-3];
 /// (AeroCom's models 0.13, MODIS 0.155), by an Ångström exponent of 1 at
 /// the channels' wavelengths; single-scattering albedo 0.95 (0.93 over
 /// land, 0.97 over the ocean); over a scale height of 1.2 km. Hillaire's
-/// (optical depth 0.005, albedo 0.48), a clear day's, left Earth's
-/// crescent without the forward scattering that brightens it (Robinson
-/// 2025).
+/// were a clear day's: optical depth 0.010 (0.005 of it scattering),
+/// albedo 0.48.
 const EARTH_AEROSOL_DEPTH: f64 = 0.14;
 const EARTH_AEROSOL_ALBEDO: f64 = 0.95;
 const EARTH_AEROSOL_HEIGHT: f64 = 1.2;
@@ -35,8 +34,9 @@ pub fn of(id: &str, radius: f64) -> Option<Atmosphere> {
                 mie_scattering: extinction.map(|e| e * EARTH_AEROSOL_ALBEDO),
                 mie_absorption: extinction.map(|e| e * (1.0 - EARTH_AEROSOL_ALBEDO)),
                 mie_height: EARTH_AEROSOL_HEIGHT,
-                // Ambient aerosols' asymmetry at 550 nm, ~0.7.
-                mie_g: 0.7,
+                // Cornette–Shanks's parameter for an asymmetry of 0.70,
+                // ambient aerosols' at 550 nm.
+                mie_g: 0.637,
                 absorption: [0.650e-3, 1.881e-3, 0.085e-3],
                 absorption_center: 25.0,
                 absorption_width: 15.0,

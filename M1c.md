@@ -510,10 +510,11 @@ night lights, below.
   G system for Phobos, Deimos and the small bodies. Earth's is Robinson
   2025's fit to Earthshine and spacecraft photometry (decided
   2026-10-15): Mallama's full phase, EPOXI's 57.7° extrapolated by a
-  model that swapped forward and backward scattering, is 0.75 mag too
-  bright (a geometric albedo of 0.434 against 0.23, which with its own
-  phase integral made Earth reflect 0.57 of its light, against 0.29). A sphere's shading spreads its
-  light over its disk, and a gain brings the total to the curve at the
+  model that swapped forward and backward scattering, is 0.77 mag too
+  bright (a geometric albedo in V of 0.434 against 0.215, which with its
+  own phase integral made Earth reflect 0.57 of its light, against
+  0.29); past ~116° Mallama's curve is the fainter, by 1.2 mag at 144°.
+  A sphere's shading spreads its light over its disk, and a gain brings the total to the curve at the
   camera's phase angle (held at the curve's range's edge beyond it);
   Saturn's point carries its rings' light. A map's mean is weighed as
   its disk shows it from its equator (the Moon's, its near side's). The
@@ -530,8 +531,8 @@ night lights, below.
   - Disks, against their curves, seen from 100 radii: bodies without air
     or maps within 0.03 to 120° of phase, Jupiter 0.02 (nearer, a disk
     shows less than a hemisphere: from 12 radii, 0.2 under at 120°).
-    Earth with its air within −0.14 to +0.02 to 144°, and its face
-    lit moves it ±0.2. The Moon from Earth −0.25 to +0.34 to
+    Earth with its air −0.25 to +0.02 to 144° (from 100 and 500 radii,
+    two dates: its air is drawn over its calibrated surface, below). The Moon from Earth −0.25 to +0.34 to
     150°, its waxing and waning differing by up to 0.33 near 100°, where
     its curve is one for both.
   - Open: the Moon's thinner crescents show limb highlands brighter than
@@ -542,17 +543,20 @@ night lights, below.
     rings as drawn show ~2.5× under its curve's with them at small phase
     angles, so resolved Saturn shows 0.35–0.6 mag under its point.
   - Earth's model (its maps, clouds, air and glint) is close to physical
-    (2026-10-15): with no gain, 0.06–0.36 mag under its curve to 120° of
-    phase, and ~10% under its spherical albedo (0.294). Its gain is
-    1.2–1.7 to 90°: at full phase its Lambert clouds lack backscatter.
-    Past 90° it climbs (2.7 at 120°, 9.5 at 144°): its Lambert clouds
-    lack the forward scattering that brightens a crescent. Its air is
-    drawn over its surface as calibrated, so its disk shows up to 0.14
-    mag over its curve. Its cloud map's mean value, 0.24, is cover
-    weighed by brightness: 60% of the area has some (over 0.1 of full).
-    Its aerosols are the global mean's (optical depth 0.14 at 550 nm;
-    Hillaire's, 0.005, a clear day's). Before, held to Mallama's curve,
-    its gain was 3.4 at full phase.
+    (2026-10-15): with no gain, 0.02–0.36 mag under its curve to 120° of
+    phase, and its spherical albedo (luminance) 0.245–0.247, ~11% under
+    Robinson's in V (0.275: the visual 0.294 scaled as the geometric
+    albedo is). Its gain is 1.2–1.7 to 90°: at full phase its Lambert
+    clouds lack backscatter. Past 90° it climbs (2.7 at 120°, 9.5 at
+    144°): its Lambert clouds lack the forward scattering that brightens
+    a crescent. Its air is drawn over its surface as calibrated, so its
+    disk shows up to 0.25 mag over its curve. Its cloud map's mean
+    value, 0.24, is cover weighed by brightness: 60% of the area has
+    some (over 0.1 of full). Its aerosols are the global mean's
+    (extinction optical depth 0.14 at 550 nm, asymmetry 0.70; Hillaire's,
+    a clear day's, 0.010), which brighten its disk by at most 0.06 mag
+    to 144°. Before, held to Mallama's curve, its gain was 3.4 at full
+    phase.
   - Before: Lambert shading of the Bond albedo, which left the giants
     ~1 mag faint (a geometric albedo of 2/3 of it; theirs is 1.4–2.5×
     that), and Mercury, Mars and the Moon too bright at large phase
@@ -572,12 +576,13 @@ night lights, below.
   white clouds): its disk keeps its maps' colors, under its air, and
   its point, which has no air, takes its measured color.
   - Points show their colors within 0.001; disks without air within
-    0.014 (as the face shown varies). Earth's disk is 0.10 over its
+    0.014 (as the face shown varies). Earth's disk is 0.04 over its
     measured blue (in a channel, of luminance 1), its air drawn over its
     calibrated surface (above). Rejected: Earth's gain per channel as
     the others', which tinted its clouds pale blue. Earth's color is
     Robinson 2025's, with its curve (Mallama et al.'s came from the same
-    extrapolation as its full phase).
+    extrapolation as its full phase), from its means over 100 nm bands
+    (taken as their centers' values, the blue came 0.06 short).
   - Before: the maps' means and rough tints. Mars's map reflected 1.7×
     the blue its measured color does, and Uranus and Neptune were paler
     than their measured cyan.
@@ -1223,7 +1228,8 @@ Order of work, each part committed with its tests:
    atmosphere's top. The surface is seen through it (transmittance and
    in-scattering), and beyond the limb it blends over the sky. Lit from
    behind, the shell glows as a ring.
-   - Earth: Rayleigh, Mie, ozone (Hillaire's values); clouds folded into
+   - Earth: Rayleigh, Mie, ozone (Hillaire's values; built, the Mie the
+     global mean's, Realism); clouds folded into
      the surface's albedo; night lights (Black Marble 2016) shown with a
      fixed boost, like the stars, since at the day side's exposure they
      would not show; a sun glint off the oceans.
@@ -1331,5 +1337,7 @@ As built (2026-10-15), where it differs, each found against the fixture:
   of τ/2 under a thin Rayleigh sky on a flat planet.
 - Cost: Earth filling a 1080p view with its maps and air, 1.05 ms (0.80
   before).
-- Earth's air shares all of it, unchecked against a Monte Carlo (its
-  Mie is thin, its multiple scattering near isotropic).
+- Earth's air shares all of it, unchecked against a Monte Carlo. Its
+  aerosols, the global mean's since 2026-10-15, are 14× Hillaire's in
+  optical depth: its large phase angles lean on the haze, which at 130°
+  left Mars 19% under its Monte Carlo (above).

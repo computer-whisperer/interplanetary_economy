@@ -8,12 +8,13 @@
 //! planetary magnitudes for The Astronomical Almanac", Astronomy and
 //! Computing 25, 10-24; arXiv 1808.01973), as JPL Horizons computes them,
 //! but Earth's: Robinson 2025 (PSJ; arXiv 2507.22258), fitted to
-//! Earthshine and spacecraft photometry, ~0.75 mag under Mallama's, whose
-//! full phase was extrapolated by a model that swapped forward and
-//! backward scattering (Robinson's Sec. 6.1). The Moon's is Allen's, as
-//! Horizons'. Phobos, Deimos and the small bodies take the IAU's H, G
-//! system (Bowell et al. 1989) with G = 0.15: Horizons applies no phase
-//! law to Phobos and Deimos.
+//! Earthshine and spacecraft photometry. Mallama's full phase was
+//! extrapolated by a model that swapped forward and backward scattering
+//! (Robinson's Sec. 6.1): it is 0.77 mag brighter at full phase, 0.91
+//! at 30° and 0.68 at 90°; past ~116° it is the fainter, by 1.2 mag at
+//! 144°. The Moon's is Allen's, as Horizons'. Phobos, Deimos and the
+//! small bodies take the IAU's H, G system (Bowell et al. 1989) with
+//! G = 0.15: Horizons applies no phase law to Phobos and Deimos.
 
 use glam::DVec3;
 use orbit::ephem::{Body, BodyKind};
@@ -34,7 +35,7 @@ const URANUS_FLATTENING: f64 = 0.0022927;
 const EARTH_G: f64 = -0.33;
 const EARTH_ALBEDO_V: f64 = 0.23 * 0.226 / 0.242;
 
-/// Earth's mean radius, km, as its albedo takes it.
+/// Earth's mean radius, km, its disk's size for its albedo.
 const EARTH_RADIUS_KM: f64 = 6371.0;
 
 /// The slope parameter the small bodies take, the IAU's default.
@@ -256,7 +257,7 @@ pub fn color(body: &Body) -> Option<[f64; 3]> {
     Some(match body.id.as_str() {
         "mercury" => [1.141, 0.981, 0.768],
         "venus" => [1.015, 1.002, 0.938],
-        "earth" => [0.939, 0.998, 1.198],
+        "earth" => [0.946, 0.990, 1.262],
         "mars" => [1.414, 0.928, 0.491],
         "jupiter" => [1.030, 1.005, 0.860],
         "saturn" => [1.212, 0.967, 0.700],
