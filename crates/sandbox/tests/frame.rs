@@ -30,7 +30,7 @@ fn scene_shows_in_the_map_view() {
     assert_eq!(s.target, Some((map.w.round() as u32, map.h.round() as u32)));
     assert_eq!(map.w, w as f32, "the map view spans the window");
     assert!(
-        map.h > 0.8 * h as f32 && map.h < h as f32,
+        map.h > 0.6 * h as f32 && map.h < h as f32,
         "bars above and below"
     );
     let pixel = |x: f32, y: f32| {

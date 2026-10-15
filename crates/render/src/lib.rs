@@ -8,13 +8,15 @@
 
 pub mod camera;
 pub mod offscreen;
+pub mod paths;
 pub mod scene;
 pub mod timer;
 
 use std::sync::Arc;
 
 pub use camera::Camera;
-pub use scene::{Marker, Scene, Sphere, Surface};
+pub use paths::{Path, Paths, Pose, Sample};
+pub use scene::{Marker, Scene, Shape, Sphere, Surface};
 pub use timer::{GpuTimer, Timings};
 
 /// The scene's color format.
@@ -112,19 +114,32 @@ impl Storage {
     }
 }
 
-/// Draws scenes (scene.wgsl): ray-cast spheres, then points (additive),
-/// then markers.
+/// Draws scenes (scene.wgsl) in two passes: the scene (ray-cast spheres,
+/// then points, additive), and over it, depth-tested against it, the
+/// overlay (paths' lines, then markers). Step 6 puts its exposure and
+/// tonemap between the two.
 pub struct Renderer {
     frame: wgpu::Buffer,
     spheres: Storage,
     points: Storage,
     markers: Storage,
+    vertices: Storage,
+    path_infos: Storage,
+    runs: Storage,
+    splits: Storage,
+    pieces: Storage,
     layout: wgpu::BindGroupLayout,
+    path_layout: wgpu::BindGroupLayout,
     /// Over the point and marker buffers respectively (spheres in both).
     groups: Option<[wgpu::BindGroup; 2]>,
+    path_group: Option<wgpu::BindGroup>,
+    /// The paths uploaded, and their chunks.
+    uploaded: Option<(Arc<Paths>, paths::Prepared)>,
     sphere_pipeline: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
     marker_pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline,
+    piece_pipeline: wgpu::RenderPipeline,
 }
 
 impl Renderer {
@@ -159,15 +174,30 @@ impl Renderer {
                 entry(2, storage),
             ],
         });
+        let path_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("paths"),
+            entries: &[
+                entry(0, storage),
+                entry(1, storage),
+                entry(2, storage),
+                entry(3, storage),
+                entry(4, storage),
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |label, vs, fs, blend: wgpu::BlendState, write_depth| {
+        let line_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lines"),
+            bind_group_layouts: &[Some(&layout), Some(&path_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = |label, layout, vs, fs, blend: wgpu::BlendState, write_depth| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some(vs),
@@ -206,6 +236,7 @@ impl Renderer {
             },
             alpha: wgpu::BlendComponent::REPLACE,
         };
+        let over = wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
         Renderer {
             frame: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("scene frame"),
@@ -216,28 +247,40 @@ impl Renderer {
             spheres: Storage::new(device, "spheres"),
             points: Storage::new(device, "points"),
             markers: Storage::new(device, "markers"),
+            vertices: Storage::new(device, "path vertices"),
+            path_infos: Storage::new(device, "paths"),
+            runs: Storage::new(device, "path runs"),
+            splits: Storage::new(device, "path splits"),
+            pieces: Storage::new(device, "path pieces"),
             groups: None,
+            path_group: None,
+            uploaded: None,
             sphere_pipeline: pipeline(
                 "spheres",
+                &pipeline_layout,
                 "sphere_vs",
                 "sphere_fs",
                 wgpu::BlendState::REPLACE,
                 true,
             ),
-            point_pipeline: pipeline("points", "dot_vs", "dot_fs", additive, false),
-            marker_pipeline: pipeline(
-                "markers",
+            point_pipeline: pipeline(
+                "points",
+                &pipeline_layout,
                 "dot_vs",
                 "dot_fs",
-                wgpu::BlendState::REPLACE,
-                true,
+                additive,
+                false,
             ),
+            marker_pipeline: pipeline("markers", &pipeline_layout, "dot_vs", "dot_fs", over, false),
+            line_pipeline: pipeline("lines", &line_layout, "line_vs", "line_fs", over, false),
+            piece_pipeline: pipeline("pieces", &line_layout, "piece_vs", "line_fs", over, false),
             layout,
+            path_layout,
         }
     }
 
-    /// Records `scene` into `target`, with the pass's timestamps if
-    /// given.
+    /// Records `scene` into `target`: its passes timed by `timestamps` if
+    /// given, from the first's start to the last's end.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -248,13 +291,36 @@ impl Renderer {
         timestamps: Option<wgpu::RenderPassTimestampWrites>,
     ) {
         let inst = scene.instances(target.size);
+        let mut grew = false;
+        // Paths: uploaded when the scene holds others; culled and cut each
+        // frame.
+        let new_paths = match (&scene.paths, &self.uploaded) {
+            (Some(p), Some((q, _))) => !Arc::ptr_eq(p, q),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if let Some(p) = scene.paths.as_ref().filter(|_| new_paths) {
+            let prepared = paths::Prepared::new(p);
+            grew |= self.vertices.write(device, queue, &prepared.vertices);
+            grew |= self.path_infos.write(device, queue, &prepared.paths);
+            self.uploaded = Some((p.clone(), prepared));
+        }
+        let visible = match (&scene.camera, &self.uploaded) {
+            (Some(cam), Some((paths, prepared))) if scene.paths.is_some() => {
+                prepared.visible(paths, cam, &scene.poses, target.size, scene.now)
+            }
+            _ => paths::Visible::default(),
+        };
+        grew |= self.runs.write(device, queue, &visible.instances);
+        grew |= self.splits.write(device, queue, &visible.splits);
+        grew |= self.pieces.write(device, queue, &visible.pieces);
         if let Some(frame) = &inst.frame {
             queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(frame));
         }
-        let mut grew = self.spheres.write(device, queue, &inst.spheres);
+        grew |= self.spheres.write(device, queue, &inst.spheres);
         grew |= self.points.write(device, queue, &inst.points);
         grew |= self.markers.write(device, queue, &inst.markers);
-        if grew || self.groups.is_none() {
+        if grew || self.groups.is_none() || self.path_group.is_none() {
             let group = |dots: &Storage| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("scene"),
@@ -276,46 +342,123 @@ impl Renderer {
                 })
             };
             self.groups = Some([group(&self.points), group(&self.markers)]);
+            let entries: Vec<wgpu::BindGroupEntry> = [
+                &self.vertices,
+                &self.path_infos,
+                &self.runs,
+                &self.splits,
+                &self.pieces,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(binding, s)| wgpu::BindGroupEntry {
+                binding: binding as u32,
+                resource: s.buffer.as_entire_binding(),
+            })
+            .collect();
+            self.path_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("paths"),
+                layout: &self.path_layout,
+                entries: &entries,
+            }));
         }
+        let (first, last) = match &timestamps {
+            Some(t) => (
+                Some(wgpu::RenderPassTimestampWrites {
+                    query_set: t.query_set,
+                    beginning_of_pass_write_index: t.beginning_of_pass_write_index,
+                    end_of_pass_write_index: None,
+                }),
+                Some(wgpu::RenderPassTimestampWrites {
+                    query_set: t.query_set,
+                    beginning_of_pass_write_index: None,
+                    end_of_pass_write_index: t.end_of_pass_write_index,
+                }),
+            ),
+            None => (None, None),
+        };
         let [r, g, b] = scene.background.map(f64::from);
+        let [with_points, with_markers] = self.groups.as_ref().expect("bind groups");
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &target.depth_view,
+                    // Reversed: infinitely far is 0.
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: first,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if inst.frame.is_some() {
+                for (pipeline, count) in [
+                    (&self.sphere_pipeline, inst.spheres.len()),
+                    (&self.point_pipeline, inst.points.len()),
+                ] {
+                    if count > 0 {
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(0, with_points, &[]);
+                        pass.draw(0..6, 0..count as u32);
+                    }
+                }
+            }
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("scene"),
+            label: Some("overlay"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &target.color_view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &target.depth_view,
-                // Reversed: infinitely far is 0.
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(0.0),
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: None,
             }),
-            timestamp_writes: timestamps,
+            timestamp_writes: last,
             occlusion_query_set: None,
             multiview_mask: None,
         });
         if inst.frame.is_none() {
             return;
         }
-        let [with_points, with_markers] = self.groups.as_ref().expect("bind groups");
-        for (pipeline, group, count) in [
-            (&self.sphere_pipeline, with_points, inst.spheres.len()),
-            (&self.point_pipeline, with_points, inst.points.len()),
-            (&self.marker_pipeline, with_markers, inst.markers.len()),
-        ] {
-            if count > 0 {
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, group, &[]);
-                pass.draw(0..6, 0..count as u32);
+        if !visible.draws.is_empty() || !visible.pieces.is_empty() {
+            pass.set_bind_group(0, with_markers, &[]);
+            pass.set_bind_group(1, self.path_group.as_ref().expect("bind group"), &[]);
+            pass.set_pipeline(&self.line_pipeline);
+            for (segments, pieces, instances) in &visible.draws {
+                pass.draw(0..6 * segments * pieces, instances.clone());
             }
+            if !visible.pieces.is_empty() {
+                pass.set_pipeline(&self.piece_pipeline);
+                pass.draw(0..6, 0..visible.pieces.len() as u32);
+            }
+        }
+        if !inst.markers.is_empty() {
+            pass.set_pipeline(&self.marker_pipeline);
+            pass.set_bind_group(0, with_markers, &[]);
+            pass.draw(0..6, 0..inst.markers.len() as u32);
         }
     }
 }

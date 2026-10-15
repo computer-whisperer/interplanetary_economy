@@ -1,10 +1,10 @@
 //! The map view's camera (M1c.md, step 3 plan, item 6): focused on a
-//! body and following it, a turntable about ecliptic north, zoomed by
-//! altitude above the body from 10 km to 1e10 km, and flown to a new
-//! focus in 0.6 s.
+//! body and following it, a turntable about the frame's z axis (ecliptic
+//! north in fixed frames; step 4 plan, item 2), zoomed by altitude above
+//! the body from 10 km to 1e10 km, and flown to a new focus in 0.6 s.
 
 use damascene_core::PointerButton;
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::time::Epoch;
 
@@ -37,8 +37,8 @@ pub struct MapCamera {
     pub focus: BodyId,
     /// From the focus's center, km.
     pub distance: f64,
-    /// Of the eye about the focus, radians: azimuth in the ecliptic plane,
-    /// elevation above it.
+    /// Of the eye about the focus, radians, about the frame's axes:
+    /// azimuth in its x-y plane, elevation above it.
     pub azimuth: f64,
     pub elevation: f64,
     /// Vertical field of view, radians.
@@ -180,13 +180,26 @@ impl MapCamera {
         }
     }
 
-    /// The eye at `t`.
-    pub fn camera(&self, eph: &Ephemeris, t: Epoch) -> render::Camera {
+    /// The eye at `t`, its turntable about the frame's `axes` (columns)
+    /// then.
+    pub fn camera(&self, eph: &Ephemeris, t: Epoch, axes: DMat3) -> render::Camera {
         let (target, distance) = self.center(eph, t);
+        let out = axes * self.direction();
+        render::Camera::looking_at(target + out * distance, target, axes.z_axis, self.fov_y)
+    }
+
+    /// The eye's direction from the focus, in the frame's coordinates.
+    fn direction(&self) -> DVec3 {
         let (ca, sa) = (self.azimuth.cos(), self.azimuth.sin());
         let (ce, se) = (self.elevation.cos(), self.elevation.sin());
-        let out = DVec3::new(ce * ca, ce * sa, se);
-        render::Camera::looking_at(target + out * distance, target, DVec3::Z, self.fov_y)
+        DVec3::new(ce * ca, ce * sa, se)
+    }
+
+    /// The frame's axes changed from `from` to `to`: the eye keeps its
+    /// direction in the world (its elevation stopping short of the poles).
+    pub fn reorient(&mut self, from: DMat3, to: DMat3) {
+        let d = to.transpose() * (from * self.direction());
+        self.set_direction(d.y.atan2(d.x), d.z.clamp(-1.0, 1.0).asin());
     }
 
     /// The eye's altitude above the focus's surface, km.
@@ -217,12 +230,12 @@ mod tests {
         assert_eq!(c.distance, MAX_DISTANCE_KM);
         c.wheel(eph, 10.0);
         let t = Epoch::from_ymd(2045, 3, 1);
-        let before = c.camera(eph, t);
+        let before = c.camera(eph, t, DMat3::IDENTITY);
         c.press(PointerButton::Secondary, (0.0, 0.0));
         assert!(c.moved((40.0, -20.0)));
         c.release(PointerButton::Secondary);
         assert!(!c.moved((80.0, 0.0)));
-        let after = c.camera(eph, t);
+        let after = c.camera(eph, t, DMat3::IDENTITY);
         let focus = eph.barycentric_position(moon, t);
         assert!(((after.eye - focus).length() / c.distance - 1.0).abs() < 1e-12);
         assert!(after.forward.angle_between(before.forward) > 0.1);
@@ -243,17 +256,17 @@ mod tests {
             eph.barycentric_position(earth, t),
             eph.barycentric_position(moon, t),
         );
-        let start = c.camera(eph, t);
+        let start = c.camera(eph, t, DMat3::IDENTITY);
         assert!(((start.eye - e).length() / (5.0 * 6_371.0) - 1.0).abs() < 1e-9);
         // Halfway, the view's axis passes through the midpoint.
         c.tick(0.3);
         assert!(c.flying());
-        let mid = c.camera(eph, t);
+        let mid = c.camera(eph, t, DMat3::IDENTITY);
         let off_axis = ((e + m) / 2.0 - mid.eye).cross(mid.forward).length();
         assert!(off_axis < 1e-3, "{off_axis} km");
         c.tick(0.4);
         assert!(!c.flying());
-        let end = c.camera(eph, t);
+        let end = c.camera(eph, t, DMat3::IDENTITY);
         assert!(((end.eye - m).length() - 5.0 * 1_737.4).abs() < 1e-3);
     }
 
@@ -268,9 +281,9 @@ mod tests {
         let mut c = MapCamera::new(eph, id("earth"));
         c.focus_on(eph, id("moon"), t);
         c.tick(0.1);
-        let before = c.camera(eph, t);
+        let before = c.camera(eph, t, DMat3::IDENTITY);
         c.focus_on(eph, id("mars"), t);
-        let after = c.camera(eph, t);
+        let after = c.camera(eph, t, DMat3::IDENTITY);
         assert!(
             (after.eye - before.eye).length() < 1e-3,
             "{}",
@@ -282,5 +295,27 @@ mod tests {
         assert_eq!(small.elevation, MAX_ELEVATION);
         small.set_altitude(eph, -5.0);
         assert_eq!(small.altitude(eph), MIN_ALTITUDE_KM);
+    }
+
+    /// Changing the frame keeps the eye where it is; in a turning frame
+    /// the eye turns with it, its up the frame's z.
+    #[test]
+    fn frames_turn_the_turntable() {
+        let eph = Ephemeris::standard();
+        let t = Epoch::from_ymd(2045, 3, 1);
+        let mut c = MapCamera::new(eph, eph.lookup("earth").unwrap());
+        let turned = DMat3::from_rotation_z(1.1) * DMat3::from_rotation_x(0.09);
+        let before = c.camera(eph, t, DMat3::IDENTITY);
+        c.reorient(DMat3::IDENTITY, turned);
+        let after = c.camera(eph, t, turned);
+        assert!(
+            (after.eye - before.eye).length() < 1e-6,
+            "{}",
+            (after.eye - before.eye).length()
+        );
+        let later = DMat3::from_rotation_z(0.2) * turned;
+        let moved = c.camera(eph, t, later);
+        assert!((moved.forward - DMat3::from_rotation_z(0.2) * after.forward).length() < 1e-9);
+        assert!(moved.up.dot(later.z_axis) > 0.9);
     }
 }

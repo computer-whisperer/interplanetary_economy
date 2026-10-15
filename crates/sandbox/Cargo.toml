@@ -12,6 +12,7 @@ glam = "0.34.1"
 orbit = { path = "../orbit" }
 png = "0.18.1"
 pollster = "1.0"
+rayon = "1.12.0"
 render = { path = "../render" }
 wgpu = "30"
 winit = "0.30"

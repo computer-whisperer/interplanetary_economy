@@ -30,11 +30,12 @@ const TOL: Tolerance = Tolerance {
 /// is below the noise of integrating through an NRHO's perilune passes.
 const CONTINUOUS: f64 = 1e-8;
 
-/// The Earth–Moon rotating frame at one moment: Earth-centered axes with x
-/// toward the Moon and z along the Moon's orbital angular momentum, the
+/// Two bodies' rotating frame at one moment (Earth and the Moon, or the Sun
+/// and a planet): axes with x from the primary toward the secondary and z
+/// along the secondary's orbital angular momentum about it, the
 /// separation, its rate, and the rotation rate.
 #[derive(Clone, Copy, Debug)]
-pub struct EarthMoonFrame {
+pub struct RotatingFrame {
     pub x: DVec3,
     pub y: DVec3,
     pub z: DVec3,
@@ -43,15 +44,15 @@ pub struct EarthMoonFrame {
     pub rate: f64,
 }
 
-impl EarthMoonFrame {
-    pub fn at(eph: &Ephemeris, earth: BodyId, moon: BodyId, t: Epoch) -> Self {
-        let (e, m) = (eph.barycentric(earth, t), eph.barycentric(moon, t));
+impl RotatingFrame {
+    pub fn at(eph: &Ephemeris, primary: BodyId, secondary: BodyId, t: Epoch) -> Self {
+        let (e, m) = (eph.barycentric(primary, t), eph.barycentric(secondary, t));
         let (r, v) = (m.r - e.r, m.v - e.v);
         let h = r.cross(v);
         let distance = r.length();
         let x = r / distance;
         let z = h.normalize();
-        EarthMoonFrame {
+        RotatingFrame {
             x,
             y: z.cross(x),
             z,
@@ -62,7 +63,7 @@ impl EarthMoonFrame {
     }
 
     /// A CR3BP state (barycentric, rotating, in units of separation and
-    /// 1/rate) in Earth-centered inertial km and km/s, scaled to this
+    /// 1/rate) in primary-centered inertial km and km/s, scaled to this
     /// moment's separation and rotation rate.
     pub fn to_inertial(&self, mu: f64, s: &[f64; 6]) -> [f64; 6] {
         let rho = DVec3::new(s[0] + mu, s[1], s[2]);
@@ -130,12 +131,12 @@ fn turn_time(
     from: Epoch,
     angle: f64,
 ) -> Result<f64, NotContinuous> {
-    let frame = |t: f64| EarthMoonFrame::at(eph, earth, moon, Epoch(from.0 + t / SECONDS_PER_DAY));
+    let frame = |t: f64| RotatingFrame::at(eph, earth, moon, Epoch(from.0 + t / SECONDS_PER_DAY));
     let steps = (angle.abs() / 0.5).ceil().max(1.0) as usize;
     let step = angle / steps as f64;
     let (mut t, mut at) = (0.0, frame(0.0));
     for _ in 0..steps {
-        let turned = |f: &EarthMoonFrame| at.x.cross(f.x).dot(at.z).atan2(at.x.dot(f.x));
+        let turned = |f: &RotatingFrame| at.x.cross(f.x).dot(at.z).atan2(at.x.dot(f.x));
         let mut dt = step / at.rate;
         let mut converged = false;
         for _ in 0..20 {
@@ -204,8 +205,7 @@ pub fn continue_orbit(
     for k in 0..=n {
         let phase = (offset + k as f64 * dt).rem_euclid(orbit.period);
         let seconds = turn_time(eph, earth, moon, start, k as f64 * dt)?;
-        let frame =
-            EarthMoonFrame::at(eph, earth, moon, Epoch(start.0 + seconds / SECONDS_PER_DAY));
+        let frame = RotatingFrame::at(eph, earth, moon, Epoch(start.0 + seconds / SECONDS_PER_DAY));
         times.push(seconds);
         states.push(frame.to_inertial(mu, &one_period.at(phase)));
     }

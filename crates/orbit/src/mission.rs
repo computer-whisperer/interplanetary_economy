@@ -531,6 +531,27 @@ impl<'w> Planner<'w> {
 
     fn go(&mut self, i: usize, go: &Go) -> Result<Vec<Item>, String> {
         let eph = self.world.eph;
+        // A small body's orbit is known from 2040.
+        let (open, _) = self.window(go, 0.0)?;
+        let from = match self.here {
+            Here::Body(b) => Some(b),
+            _ => None,
+        };
+        let to = match go.to.kind {
+            PlaceKind::Body(b) => Some(b),
+            _ => None,
+        };
+        if let Some(b) = [from, to]
+            .into_iter()
+            .flatten()
+            .find(|&b| !eph.covers(b, open))
+        {
+            let (first, last) = eph.span_of(b);
+            return Err(format!(
+                "{}'s orbit is known from {first} to {last}, not at {open}",
+                eph.body(b).id
+            ));
+        }
         let from_system = match &self.here {
             Here::Low { orbit, .. } => eph.system(orbit.body),
             Here::Station(_) => eph.lookup("earth").unwrap(),

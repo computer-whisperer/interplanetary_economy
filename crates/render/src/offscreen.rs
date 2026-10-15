@@ -1,5 +1,5 @@
-//! A GPU device with no window, and texture readback, for tests and
-//! screenshots (M1c.md, step 2 plan, item 7).
+//! A GPU device with no window, texture readback, and timing, for tests
+//! and screenshots (M1c.md, step 2 plan, item 7; step 4 plan, item 7).
 
 /// A windowless adapter and device, with the renderer's features where
 /// the adapter has them.
@@ -89,6 +89,47 @@ impl Offscreen {
                 std::array::from_fn(|i| f16_to_f32(u16::from_le_bytes([p[2 * i], p[2 * i + 1]])))
             })
             .collect()
+    }
+
+    /// The GPU time of drawing `scene` at `size` pixels, ms: the median of
+    /// 30 frames after 5. `None` without timestamps.
+    pub fn time_scene(
+        &self,
+        renderer: &mut crate::Renderer,
+        scene: &crate::Scene,
+        size: (u32, u32),
+    ) -> Option<f32> {
+        let mut timer = crate::GpuTimer::new(&self.device, &self.queue)?;
+        let target = crate::Target::new(&self.device, size.0, size.1);
+        let mut times = Vec::new();
+        for frame in 0..35 {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            let m = timer.begin(&mut encoder);
+            let writes = timer.scene_pass(m);
+            renderer.render(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &target,
+                scene,
+                writes,
+            );
+            timer.after_scene(&mut encoder, m);
+            timer.end(&mut encoder, m);
+            self.queue.submit(Some(encoder.finish()));
+            timer.submitted(m);
+            self.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("the GPU finishes");
+            let done = timer.collect(&self.device);
+            if frame >= 5 {
+                times.extend(done.into_iter().map(|t| t.scene));
+            }
+        }
+        times.sort_by(f32::total_cmp);
+        times.get(times.len() / 2).copied()
     }
 }
 

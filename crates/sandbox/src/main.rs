@@ -18,17 +18,25 @@ struct Cli {
     /// Close the window after this many frames, and print their times.
     #[arg(long)]
     frames: Option<u64>,
-    /// The date the clock starts at.
-    #[arg(long, default_value = "2045-03-01")]
-    date: orbit::time::Epoch,
+    /// A mission plan to design and play (data/missions/).
+    #[arg(long)]
+    plan: Option<PathBuf>,
+    /// The date the clock starts at: by default the plan's first ship's
+    /// start, or 2045-03-01.
+    #[arg(long)]
+    date: Option<orbit::time::Epoch>,
+    /// The frame paths are drawn in: focus, earth-moon,
+    /// earth-moon-pulsating, sun-earth or sun-mars.
+    #[arg(long, default_value = "focus")]
+    frame: String,
     /// The body the camera starts focused on, by ephemeris id.
     #[arg(long, default_value = "earth")]
     focus: String,
     /// The camera's starting altitude above the focus, km.
     #[arg(long, allow_hyphen_values = true)]
     altitude: Option<f64>,
-    /// The camera's starting azimuth and elevation about the focus,
-    /// degrees.
+    /// The camera's starting azimuth and elevation about the focus, about
+    /// the frame's axes, degrees.
     #[arg(long, allow_hyphen_values = true)]
     azimuth: Option<f64>,
     #[arg(long, allow_hyphen_values = true)]
@@ -44,15 +52,38 @@ fn size(s: &str) -> Result<(u32, u32), String> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let eph = orbit::ephem::Ephemeris::standard();
+    let plan = cli
+        .plan
+        .as_deref()
+        .map(sandbox::plan::Loaded::open)
+        .transpose()?;
+    let date = cli
+        .date
+        .or(plan.as_ref().map(|p| p.start))
+        .unwrap_or(orbit::time::Epoch::from_ymd(2045, 3, 1));
     let (first, last) = eph.span();
-    if cli.date.0 < first.0 || cli.date.0 > last.0 {
+    if date.0 < first.0 || date.0 > last.0 {
         return Err(format!("the ephemeris covers {first} to {last}").into());
     }
-    let mut app = sandbox::app::Shell::new(cli.date);
+    let frames = sandbox::frames::Frame::offered(eph);
+    let frame = frames
+        .iter()
+        .find(|(id, _, _)| *id == cli.frame)
+        .map(|&(_, _, f)| f)
+        .ok_or_else(|| {
+            let ids: Vec<&str> = frames.iter().map(|(id, _, _)| *id).collect();
+            format!(
+                "no frame {:?}; the frames are {}",
+                cli.frame,
+                ids.join(", ")
+            )
+        })?;
+    let mut app = sandbox::app::Shell::new(date);
+    app.plan = plan;
     let focus = eph
         .lookup(&cli.focus)
-        .filter(|&b| sandbox::bodies::drawn(eph).contains(&b) && eph.covers(b, cli.date))
-        .ok_or_else(|| format!("no body {:?} drawn on {}", cli.focus, cli.date))?;
+        .filter(|&b| sandbox::bodies::drawn(eph).contains(&b) && eph.covers(b, date))
+        .ok_or_else(|| format!("no body {:?} drawn on {}", cli.focus, date))?;
     let mut camera = sandbox::camera::MapCamera::new(eph, focus);
     if let Some(a) = cli.altitude {
         camera.set_altitude(eph, a);
@@ -62,8 +93,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.elevation.map_or(camera.elevation, f64::to_radians),
     );
     app.camera = camera;
+    app.follow_focus();
+    // The view's direction is about this frame's axes.
+    app.frame = frame;
     match cli.screenshot {
         Some(path) => {
+            if let Some(plan) = app.plan.as_mut() {
+                plan.wait();
+                eprintln!("{}", plan.progress());
+            }
             let gpu = render::offscreen::Offscreen::new()?;
             let (w, h) = cli.size;
             let shot = sandbox::frame::shot(&gpu, &mut app, None, w, h);

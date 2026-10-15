@@ -1,7 +1,62 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-14: steps 1–3 done; next, step 4 (paths: trajectories
-drawn, frames, playback).
+Status, 2026-10-14: steps 1–4 done; next, step 5 (panels and labels).
+
+- Step 4: plans designed in the background and drawn as lines in fixed
+  or rotating frames, with markers for ships and events, and playback.
+  As built, see the step 4 plan below (amended in three places, each
+  saying why).
+  - Gate item 2's check for lines: a low lunar orbit in a frame scaled
+    to 1 au and centered far from it (as the Sun–Earth frame is), seen
+    from 100 km to 5 au, draws within a pixel of its f64 projection (lit
+    pixels within 0.70–1.06 px of the curve, for a line 1.5 px wide; the
+    curve within 0.71 px of a lit pixel). With the high parts alone it
+    is ~9 km off.
+  - Between samples the line follows the Hermite curve: from 30 km over
+    LEO within 0.81 px where the chords bow 22 px; from 300 km, cut on
+    the GPU into 8–16 pieces, within 0.81 px; a 650,000 km cruise
+    segment from 10 km and a 13,000 km NRHO segment bowing ~80 km from
+    18 km, cut and placed by the CPU, within 1.0 and 1.2 px (on the GPU
+    alone, 14.5 px off). A segment passing behind the eye draws its
+    front part only. Past and future meet within a pixel of where the
+    curve is at the moment: on curving segments, on one receding from
+    100 to 10,000 km, and 100 days into a low orbit seen from 30 km.
+  - Frames: in all five, samples' velocities match their positions'
+    change (5e-8), and lines stay within 0.2 m of the tracks between
+    samples (a ship's marker is drawn on its line, within 1 m of
+    `Track::at`). The station loops (L1, L2, NRHO, DRO) close; the
+    NRHO's perilune is 2,733 km from the Moon's center.
+  - Each of these tests fails with the feature it checks removed
+    (checked by breaking each in turn).
+  - Cost, GPU timestamps: the published plan (104,670 samples) 0.37–0.84
+    ms at 1920×1080. Two million segments (20 low orbits of 100,000
+    samples): seen whole, 2.4–2.5 ms GPU and 0.8 ms CPU a frame; from 10
+    km inside their tangle, 3.7–4.5 ms GPU and 3.0 ms CPU. Building a
+    plan's paths in another frame: 4–13 ms for the published plan, and at
+    most 82 ms while every core is designing it. In a
+    window, the plan added nothing measurable (0.85 ms of GPU a frame
+    against 0.89 without); frames came every 18.5 ms both ways, because
+    the compositor put the window on another output (headroom 1.23×).
+  - Shapes, in the crew rotation: in the Earth–Moon frame the outbound
+    and return legs swing either side of the Earth–Moon line and the
+    NRHO stays retrace their loop; in the unscaled frame, the low lunar
+    orbits a week apart draw ~16,000 km apart, as the Moon's distance
+    changes (the scaled frame keeps them at the Moon).
+  - A review (a sub-agent, with runtime probes) found: a crash focusing
+    a small body with any time before 2040 in view or in the plan; the
+    window stalling up to 2.7 s while a plan designed (the UI's rebuilds
+    queued behind the designer on rayon's pool); past and future split
+    across the screen rather than along the curve (100+ px on receding
+    segments), and drifting with f32 times (200 px after 100 days); f32
+    not precise enough near long segments (20 px from 10 km); the bow
+    estimate missing S-shaped segments; ascent markers off their jump
+    times; a ship whose design panicked shown as designing forever (and
+    the planner panicking on a small body before 2040). All fixed, each
+    with a test; the line fixes are the plan's three amendments.
+  - Left as they are: a landing straight from a plan's start, or an
+    ascent as its last step, has no track to place a marker on (they
+    are still jump targets), and a ship's marker is not drawn during a
+    landing or an ascent, which have no path.
 
 - Step 3: the renderer draws the ephemeris's bodies as ray-cast spheres
   in 64-bit positions, with a camera that follows a body. As built, see
@@ -597,3 +652,119 @@ Hushfold's procedural sky, polychora's 4D renderers and its vulkano glue.
    - A lit sphere's center pixel has the radiance the units say, and
      the Sun's disk its radiance.
    - A point's summed flux matches the sphere it stands in for.
+
+### Step 4 plan (2026-10-14)
+
+Sizes measured first: the missions in `data/missions/` hold ~116k
+samples in all (the crew rotation's first stay in LEO, 2.6 days, is
+7,685); an ephemeris frame at one moment takes ~240 ns.
+
+1. **Lines** (`render::paths`). A path is samples (time, position,
+   velocity) in some frame's coordinates, and a pose per frame at the
+   moment drawn maps them into the world (origin, axes, scale).
+   - Positions reach the GPU as two f32s per coordinate (high and low
+     parts), and the eye, in the same frame's coordinates, likewise;
+     the vertex shader subtracts the eye first. The error is then
+     ~6e-8 of the distance from the eye, as for bodies. This replaces
+     The view's "chunks with 64-bit anchors and 32-bit offsets": cruise
+     samples are 650,000 km apart, so an anchored chunk of a few dozen
+     of them is off by ~10 km; holding that under a pixel 10 km from a
+     ship needs chunks under ~45,000 km, and thousands of anchors moved
+     every frame.
+   - Chunks of 64 segments stay, as the units of culling and of detail:
+     each frame the CPU culls them against the view in f64. Where a
+     straight segment's chord would bow visibly from the Hermite curve
+     (over 0.25 px; 2° of LEO bows ~1 km), its segments are cut into
+     pieces along the curve on the GPU, a power of two up to 32, the
+     chunk's parts of 8 segments each cut as finely as it needs
+     (amended after measuring: cutting every segment of a near chunk in
+     32 took 18.8 ms of GPU time for two million segments seen from 10
+     km).
+     The bow is bounded as 4/27·(|h·v₀ − Δp| + |h·v₁ − Δp|), which also
+     bounds the curve for culling (amended in review: the midpoint's
+     offset alone missed an S-shaped segment).
+   - Where f32 is not enough, the CPU places the pieces (amended in
+     review): segments whose pieces would number over 32, or whose
+     Hermite terms (up to a segment's length, 650,000 km in cruise)
+     would round by more than 0.25 px seen from the eye, are cut and
+     made relative to the eye in f64, a few dozen near the eye. In f32
+     a cruise segment seen from 10 km is off by ~20 px between samples.
+     So a ship's marker on its line stays on it at any zoom.
+   - Segments are clipped at the near plane before projection, drawn as
+     antialiased capsules a fixed width in pixels, depth-tested against
+     the bodies. Two samples at one time (a burn, or two motions
+     meeting) are not joined.
+   - Each path has two colors, past and future. The CPU finds each
+     path's segment and fraction at the clock's time in f64 each frame,
+     and the fragment shader colors by that (amended in review: times
+     as f32 seconds since a path's start drift by a second after 30
+     days, 2 km of LEO; and the fraction along a piece is recovered
+     perspective-correctly from the screen).
+   - Lines and markers are drawn in a second pass over the scene's
+     depth; step 6 moves that pass after the tonemap, so exposure does
+     not touch them.
+   - Paths are uploaded when they change (a new item, another frame),
+     and stay on the GPU between frames.
+2. **Frames** (`sandbox::frames`):
+   - **Focus** (the default): fixed ecliptic axes centered on the
+     camera's focus, as in KSP.
+   - **Rotating with two bodies**: Earth–Moon, Sun–Earth, Sun–Mars;
+     the origin at their barycenter, axes from `reference::EarthMoonFrame`
+     (renamed `RotatingFrame`, since it serves any two bodies);
+     optionally scaled by their distance ("pulsating").
+   - A path's samples are mapped into the frame at their own times
+     (positions and velocities, in parallel), and drawn by the frame's
+     pose now.
+   - The camera's turntable turns with the frame: its azimuth and
+     elevation are about the frame's axes now, so in the Earth–Moon
+     frame a halo stays still while the ship moves along it. Changing
+     the frame keeps the view's direction.
+   - A select in the top bar picks the frame; `--frame` on the command
+     line.
+3. **Station orbits as reference loops.** Each station place's catalog
+   orbit, one revolution in the CR3BP, drawn in the Earth–Moon
+   pulsating frame at its pose now: in that frame it is still, and in
+   any other it turns with the Moon. Faint, in every view.
+4. **Plans in the sandbox.** `sandbox --plan FILE` reads a plan and
+   designs its ships on a background thread (ships in parallel), and
+   each item appears when it is ready. Paths are colored by leg (a
+   categorical palette in plan order); a stay takes the color of the
+   leg that arrived, dimmer, and before the first leg it is gray. A
+   stay resting on or at a body (its track is the body's own motion)
+   draws no line. The status line counts ships designed and failures;
+   the panels are step 5.
+5. **Markers.** Shapes: a disc for each ship where it is now (none
+   before its first item or after its last); a diamond for a burn; a
+   ring for a flyby or an atmospheric pass; a square for a landing
+   (where the ship leaves its orbit) or an ascent (where it reaches
+   orbit); a cross for a junction's jump. Each sits on its path, mapped
+   like the samples; past ones dimmer. Δv and altitude labels are step
+   5's.
+6. **Playback** (`clock.rs`):
+   - time warp in named steps: 1 s, 10 s, 1 min, 10 min, 1 h, 6 h,
+     1 day, 1 week, 1 month and 1 year per second (`,` and `.`), and
+     space pauses;
+   - a scrubber under the map spanning the plan (the ephemeris without
+     one); dragging it sets the time;
+   - `[` and `]` jump to the previous and next marker;
+   - with a plan, the clock starts at its first ship's start.
+7. **Tests** (offscreen unless said):
+   - A line about the Moon, in a rotated and scaled frame, seen from
+     100 km to 5 au: its pixels within a pixel of the path projected in
+     f64 (gate item 2's check, for lines).
+   - From 10 km off a LEO path, the drawn line passes within a pixel of
+     the Hermite curve between samples.
+   - A segment passing behind the eye draws only its part in front.
+   - The past and future colors meet within a pixel of the clock's
+     time.
+   - Frames (unit): poses invert; the Moon on the rotating frame's x
+     axis; samples' velocities in a rotating frame match their
+     positions' change; a catalog loop closes.
+   - Playback (unit): warp steps, jumps to markers, the scrubber's
+     mapping.
+   - GPU time for the published plan's paths, and for a synthetic two
+     million segments (gate item 3 needs headroom).
+8. **Not here:** the panels, labels and picking (step 5); a lighter
+   form for long stays' tracks themselves (each sample is 56 bytes in
+   `Track`, 48 on the GPU; at two million samples, worth revisiting when
+   step 8's plan is written).

@@ -6,7 +6,7 @@ use glam::{DVec2, DVec3};
 use render::camera::Camera;
 use render::offscreen::Offscreen;
 use render::scene::{AU_KM, lambert_phase};
-use render::{Marker, Renderer, Scene, Sphere, Surface, Target};
+use render::{Marker, Renderer, Scene, Shape, Sphere, Surface, Target};
 
 /// A barycentric position of the Moon's size of numbers, km.
 const MOON: DVec3 = DVec3::new(-1.384_1e8, 4.612_3e7, 2.071e4);
@@ -63,6 +63,7 @@ fn marker_in_low_lunar_orbit_lands_within_a_pixel() {
                     position: ship,
                     color: [0.0, 1.0, 0.0],
                     size_px: 5.0,
+                    shape: Shape::Disc,
                 }],
                 ..Default::default()
             };

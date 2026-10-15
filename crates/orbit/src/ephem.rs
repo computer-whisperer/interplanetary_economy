@@ -582,6 +582,24 @@ impl Ephemeris {
         self.span
     }
 
+    /// When the body's state is known: the DE440 tables' span, and for a
+    /// small body its integration's (from 2040), a millisecond inside its
+    /// ends so that every moment within [`Self::covers`] it.
+    pub fn span_of(&self, id: BodyId) -> (Epoch, Epoch) {
+        match &self.bodies[id.0].motion {
+            Motion::Integrated { epoch, path } => {
+                let (t0, t1) = path.span();
+                let ms = 1e-3 / SECONDS_PER_DAY;
+                (
+                    Epoch((epoch.0 + t0 / SECONDS_PER_DAY + ms).max(self.span.0.0)),
+                    Epoch((epoch.0 + t1 / SECONDS_PER_DAY - ms).min(self.span.1.0)),
+                )
+            }
+            Motion::Ellipse(el) => self.span_of(el.center),
+            _ => self.span,
+        }
+    }
+
     /// Whether the body's state is known at `t`: within the DE440 tables'
     /// span, and for a small body, within its integration (from 2040).
     pub fn covers(&self, id: BodyId, t: Epoch) -> bool {

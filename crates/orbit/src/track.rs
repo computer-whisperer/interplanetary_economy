@@ -88,6 +88,12 @@ impl Track {
         (ANGLE * d / v.max(circular)).min(LONGEST_S)
     }
 
+    /// Whether the motion is the center's own: every state zero, as for a
+    /// ship resting on or at a body.
+    pub fn rests(&self) -> bool {
+        self.center.is_some() && self.states.iter().all(|s| s.iter().all(|&x| x == 0.0))
+    }
+
     /// First and last sample times.
     pub fn span(&self) -> Option<(f64, f64)> {
         Some((*self.times.first()?, *self.times.last()?))

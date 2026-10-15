@@ -21,11 +21,13 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   last arrived, with paths sampled for drawing (`mission`, `track`).
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
 - `crates/render` — the map view's renderer ([M1c.md](M1c.md)): a scene
-  drawn in linear HDR into a texture, GPU timers, and a windowless device
-  for tests.
+  drawn in linear HDR into a texture (bodies, points, markers, paths'
+  lines placed by reference frames' poses), GPU timers, and a windowless
+  device for tests.
 - `crates/sandbox` — the creative sandbox: the map view in a window, its
   UI on [damascene](https://github.com/computer-whisperer/damascene)
-  0.8, HDR output where the compositor offers it.
+  0.8, HDR output where the compositor offers it; mission plans designed
+  in the background and played back, in fixed or rotating frames.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
   parameters, and a sweep that classifies the plans' development paths.
@@ -77,16 +79,25 @@ arrival). Units are km/s for speeds and days for time; dates are
 
 ```sh
 cargo run --release -p sandbox                              # the map view
+cargo run --release -p sandbox -- --plan data/missions/gateway-rotation.toml --frame earth-moon
 cargo run --release -p sandbox -- --frames 600               # close after 600 frames, print timings
 cargo run --release -p sandbox -- --screenshot shot.png      # one frame offscreen
 ```
 
-The top bar picks the body the camera follows. Right drag orbits it, the
-wheel zooms (down to 10 km above its surface), space pauses the clock
-and `,` and `.` change its rate tenfold. `--focus ID --altitude KM
---azimuth DEG --elevation DEG --date YYYY-MM-DD` set the starting view,
-for screenshots too. `DAMASCENE_COLOR_DEBUG=1` prints the color
-negotiation with the compositor.
+`--plan` designs a plan's ships in the background and draws each item as
+it is ready, colored by leg, the past dimmer; the clock starts at the
+first ship's start. The top bar picks the body the camera follows and
+the frame paths are drawn in (centered on the focus, or rotating with
+Earth and the Moon, the Sun and Earth, or the Sun and Mars; `--frame`).
+Right drag orbits, the wheel zooms (down to 10 km above the focus's
+surface), space pauses, `,` and `.` step the time warp from 1 s to 1
+year per second, `[` and `]` jump between burns and events, and the
+scrubber under the map spans the plan. `--focus ID --altitude KM
+--azimuth DEG --elevation DEG --date YYYY-MM-DD` set the starting view
+(the direction about the frame's axes), for screenshots too; with a
+plan, a screenshot waits for it to be designed.
+`DAMASCENE_COLOR_DEBUG=1` prints the color negotiation with the
+compositor.
 
 ## The `plan` command
 

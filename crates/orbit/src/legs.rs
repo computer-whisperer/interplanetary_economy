@@ -16,7 +16,7 @@
 use crate::ephem::{BodyId, Ephemeris};
 use crate::gravity::Field;
 use crate::integrate::{DenseStep, Dop853, Tolerance};
-use crate::reference::{EarthMoonFrame, Reference};
+use crate::reference::{Reference, RotatingFrame};
 use crate::shooting::{Design, End, Failure, Leg, LowOrbit, Pass, Path, excess_velocity};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
@@ -1352,7 +1352,7 @@ const REPLAN_TRIES: usize = 2;
 /// The period of `secondary`'s phase about `primary` as seen from the Sun
 /// at `t`, s: a synodic month for the Moon.
 fn synodic_period(eph: &Ephemeris, primary: BodyId, secondary: BodyId, t: Epoch) -> f64 {
-    let around = EarthMoonFrame::at(eph, primary, secondary, t).rate;
+    let around = RotatingFrame::at(eph, primary, secondary, t).rate;
     let (p, sun) = (eph.barycentric(primary, t), eph.barycentric(eph.sun(), t));
     let (r, v) = (p.r - sun.r, p.v - sun.v);
     let year = r.cross(v).length() / r.length_squared();
@@ -1392,8 +1392,8 @@ fn redesign(
         let mut burn = previous.burns[0].dv;
         if let Some((primary, secondary)) = pair {
             let (f0, f1) = (
-                EarthMoonFrame::at(eph, primary, secondary, t0),
-                EarthMoonFrame::at(eph, primary, secondary, t1),
+                RotatingFrame::at(eph, primary, secondary, t0),
+                RotatingFrame::at(eph, primary, secondary, t1),
             );
             burn = f1.x * burn.dot(f0.x) + f1.y * burn.dot(f0.y) + f1.z * burn.dot(f0.z);
         }
@@ -1454,8 +1454,8 @@ fn carry(eph: &Ephemeris, primary: BodyId, secondary: BodyId, path: &Path, dt: f
             let t0 = path.epoch.plus_days(t / SECONDS_PER_DAY);
             let t1 = t0.plus_days(dt / SECONDS_PER_DAY);
             let (f0, f1) = (
-                EarthMoonFrame::at(eph, primary, secondary, t0),
-                EarthMoonFrame::at(eph, primary, secondary, t1),
+                RotatingFrame::at(eph, primary, secondary, t0),
+                RotatingFrame::at(eph, primary, secondary, t1),
             );
             let turn = |w: DVec3| f1.x * w.dot(f0.x) + f1.y * w.dot(f0.y) + f1.z * w.dot(f0.z);
             let (r, v) = (DVec3::new(s[0], s[1], s[2]), DVec3::new(s[3], s[4], s[5]));

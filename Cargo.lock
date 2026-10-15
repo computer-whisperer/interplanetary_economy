@@ -3278,6 +3278,7 @@ dependencies = [
  "orbit",
  "png",
  "pollster",
+ "rayon",
  "render",
  "wgpu",
  "winit",

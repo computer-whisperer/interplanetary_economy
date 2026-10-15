@@ -1,8 +1,20 @@
 // The scene (M1c.md, step 3 plan): spheres ray-cast per pixel, and dots
-// of a fixed size in pixels (points for bodies under a pixel, markers).
-// Every position arrives in view space, already relative to the eye in
-// 64 bits on the CPU: x right, y up, looking down -z. Depth is reversed
-// with no far plane: depth = near / distance along -z.
+// of a fixed size in pixels (points for bodies under a pixel, markers);
+// and over it, paths' lines (step 4 plan, item 1). Spheres and dots
+// arrive in view space, already relative to the eye in 64 bits on the
+// CPU: x right, y up, looking down -z. Paths arrive in their frames'
+// coordinates as high and low f32 parts, and are made relative to the eye
+// here, before anything else; near the eye, pieces of them arrive placed
+// in view space by the CPU. Depth is reversed with no far plane:
+// depth = near / distance along -z.
+
+// A pose seen from the eye: the eye in the frame's coordinates (high and
+// low parts), and the map from a vector in them to view space.
+struct Slot {
+    eye_hi: vec3<f32>,
+    eye_lo: vec3<f32>,
+    to_view: mat3x3<f32>,
+}
 
 struct Frame {
     // 1 / tan(fov_y / 2), the viewport's width / height, the near plane
@@ -13,7 +25,9 @@ struct Frame {
     tan_half: f32,
     // Pixels.
     viewport: vec2<f32>,
-    _pad: vec2<f32>,
+    // Lines' width, pixels.
+    line_px: f32,
+    slots: array<Slot, 4>,
 }
 
 struct Sphere {
@@ -43,13 +57,51 @@ struct Dot {
     // Pixels across.
     size: f32,
     color: vec3<f32>,
-    // 1 for a round dot, 0 square.
-    round: f32,
+    // `Shape` in scene.rs: 0 a hard square of light; otherwise a shape
+    // with a dark rim, antialiased.
+    shape: u32,
+}
+
+struct PathVertex {
+    hi: vec3<f32>,
+    // s to the next sample; 0 where the two are not joined.
+    h: f32,
+    lo: vec3<f32>,
+    path: u32,
+    // Frame units per s.
+    velocity: vec3<f32>,
+}
+
+struct PathInfo {
+    pose: u32,
+    future: vec4<f32>,
+    past: vec4<f32>,
+}
+
+// A piece of a segment placed by the CPU, in view space.
+struct Piece {
+    a: vec3<f32>,
+    // The segment's first vertex.
+    segment: u32,
+    b: vec3<f32>,
+    path: u32,
+    // The fractions of the segment at the piece's ends.
+    fractions: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> spheres: array<Sphere>;
 @group(0) @binding(2) var<storage, read> dots: array<Dot>;
+@group(1) @binding(0) var<storage, read> vertices: array<PathVertex>;
+@group(1) @binding(1) var<storage, read> paths: array<PathInfo>;
+// Per instance, a run of segments: its first vertex, and its segments
+// with the pieces each is cut into above them (segments | pieces << 16).
+@group(1) @binding(2) var<storage, read> runs: array<vec2<u32>>;
+// Per path, where it is at the scene's moment: the first vertex of the
+// segment it is on, and the fraction along it (an f32's bits). Segments
+// before are past, after future.
+@group(1) @binding(3) var<storage, read> splits: array<vec2<u32>>;
+@group(1) @binding(4) var<storage, read> pieces: array<Piece>;
 
 // Two triangles over a quad's corners 0..3 (x, y in {0, 1}).
 fn corner_index(vertex: u32) -> u32 {
@@ -118,32 +170,231 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
 
 struct DotOut {
     @builtin(position) position: vec4<f32>,
-    // -1..1 across the dot.
-    @location(0) uv: vec2<f32>,
+    // Pixels from the dot's center.
+    @location(0) offset: vec2<f32>,
     @location(1) @interpolate(flat) color: vec3<f32>,
-    @location(2) @interpolate(flat) round: f32,
+    @location(2) @interpolate(flat) shape: u32,
+    @location(3) @interpolate(flat) size: f32,
 }
+
+// Pixels a shape's quad reaches past its size, for its antialiasing.
+const DOT_MARGIN: f32 = 1.5;
 
 @vertex
 fn dot_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u32) -> DotOut {
     let p = dots[index];
     let k = corner_index(vertex);
     let uv = vec2<f32>(f32(k & 1u) * 2.0 - 1.0, f32(k >> 1u) * 2.0 - 1.0);
+    let half = p.size * 0.5 + select(DOT_MARGIN, 0.0, p.shape == 0u);
     var clip = clip_of(p.center);
     // A fixed size in pixels: an offset in NDC, scaled by w.
-    clip = vec4<f32>(clip.xy + uv * p.size / frame.viewport * clip.w, clip.zw);
+    clip = vec4<f32>(clip.xy + uv * 2.0 * half / frame.viewport * clip.w, clip.zw);
     var out: DotOut;
     out.position = clip;
-    out.uv = uv;
+    // NDC's y is up, pixels' down.
+    out.offset = vec2<f32>(uv.x, -uv.y) * half;
     out.color = p.color;
-    out.round = p.round;
+    out.shape = p.shape;
+    out.size = p.size;
     return out;
 }
 
+// Signed distance to a shape of radius `r` (pixels): negative inside.
+fn shape_distance(shape: u32, q: vec2<f32>, r: f32) -> f32 {
+    let a = abs(q);
+    switch shape {
+        case 1u: {
+            return length(q) - r;
+        }
+        case 2u: {
+            return abs(length(q) - 0.7 * r) - 0.3 * r;
+        }
+        case 3u: {
+            return (a.x + a.y - r) * 0.70710678;
+        }
+        case 4u: {
+            let arm = min(abs(q.x - q.y), abs(q.x + q.y)) * 0.70710678;
+            return max(arm - max(0.75, 0.2 * r), max(a.x, a.y) - 0.8 * r);
+        }
+        default: {
+            return max(a.x, a.y) - 0.8 * r;
+        }
+    }
+}
+
+// Premultiplied: points of light are drawn additively, shapes over.
 @fragment
 fn dot_fs(in: DotOut) -> @location(0) vec4<f32> {
-    if (in.round > 0.5 && dot(in.uv, in.uv) > 1.0) {
+    if (in.shape == 0u) {
+        return vec4<f32>(in.color, 1.0);
+    }
+    let d = shape_distance(in.shape, in.offset, in.size * 0.5);
+    let coverage = clamp(0.5 - d, 0.0, 1.0);
+    if (coverage <= 0.0) {
         discard;
     }
-    return vec4<f32>(in.color, 1.0);
+    // A pixel-wide dark rim inside the edge.
+    let fill = clamp(-0.5 - d, 0.0, 1.0);
+    let color = mix(vec3<f32>(0.01), in.color, fill);
+    return vec4<f32>(color * coverage, coverage);
+}
+
+struct LineOut {
+    @builtin(position) position: vec4<f32>,
+    // The piece's ends: pixels, their distances along -z, and the
+    // fractions of the segment there.
+    @location(0) @interpolate(flat) a: vec2<f32>,
+    @location(1) @interpolate(flat) b: vec2<f32>,
+    @location(2) @interpolate(flat) depths: vec2<f32>,
+    @location(3) @interpolate(flat) fractions: vec2<f32>,
+    @location(4) @interpolate(flat) segment: u32,
+    @location(5) @interpolate(flat) path: u32,
+}
+
+// Outside the clip volume: a quad of these draws nothing.
+fn hidden() -> LineOut {
+    var out: LineOut;
+    out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    return out;
+}
+
+// The cubic Hermite curve at `u` between `r0` and `r1` (relative to the
+// eye) with velocities `v0`, `v1`, `h` s apart.
+fn hermite(r0: vec3<f32>, v0: vec3<f32>, r1: vec3<f32>, v1: vec3<f32>, h: f32, u: f32) -> vec3<f32> {
+    let u2 = u * u;
+    let u3 = u2 * u;
+    return (2.0 * u3 - 3.0 * u2 + 1.0) * r0 + (-2.0 * u3 + 3.0 * u2) * r1
+        + h * ((u3 - 2.0 * u2 + u) * v0 + (u3 - u2) * v1);
+}
+
+// View space to pixels (x right, y down, from the top-left corner).
+fn to_pixels(v: vec3<f32>) -> vec2<f32> {
+    let ndc = vec2<f32>(v.x * frame.focal / frame.aspect, v.y * frame.focal) / -v.z;
+    return vec2<f32>(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * frame.viewport;
+}
+
+// How far past the screen's edges lines are clipped, in screen widths
+// and heights from its center: far enough that clipping is never seen,
+// near enough that pixel coordinates keep their precision in f32.
+const GUARD: f32 = 2.0;
+
+// A piece from `p0` to `q0` (view space), at fractions `fa`, `fb` of its
+// segment: clipped at the near plane and at the guard band around the
+// screen, and the corner `k` of a capsule around it, the width and a
+// pixel of antialiasing past it on every side.
+fn capsule(p0: vec3<f32>, q0: vec3<f32>, fa: f32, fb: f32, segment: u32, path: u32, k: u32) -> LineOut {
+    // Each plane's side a point must be on: n · (x, y, z, 1) ≥ 0.
+    let gx = frame.focal / frame.aspect;
+    let gy = frame.focal;
+    let planes = array<vec4<f32>, 5>(
+        vec4<f32>(0.0, 0.0, -1.0, -frame.near),
+        vec4<f32>(-gx, 0.0, -GUARD, 0.0),
+        vec4<f32>(gx, 0.0, -GUARD, 0.0),
+        vec4<f32>(0.0, -gy, -GUARD, 0.0),
+        vec4<f32>(0.0, gy, -GUARD, 0.0),
+    );
+    var enter = 0.0;
+    var leave = 1.0;
+    for (var i = 0u; i < 5u; i++) {
+        let fp = dot(planes[i], vec4<f32>(p0, 1.0));
+        let fq = dot(planes[i], vec4<f32>(q0, 1.0));
+        if (fp < 0.0 && fq < 0.0) {
+            return hidden();
+        }
+        if (fp < 0.0) {
+            enter = max(enter, fp / (fp - fq));
+        } else if (fq < 0.0) {
+            leave = min(leave, fp / (fp - fq));
+        }
+    }
+    if (enter > leave) {
+        return hidden();
+    }
+    let p = mix(p0, q0, enter);
+    let q = mix(p0, q0, leave);
+    let f = vec2<f32>(mix(fa, fb, enter), mix(fa, fb, leave));
+    let a = to_pixels(p);
+    let b = to_pixels(q);
+    let reach = frame.line_px * 0.5 + 1.0;
+    let ab = b - a;
+    let along = select(vec2<f32>(1.0, 0.0), normalize(ab), dot(ab, ab) > 0.0);
+    let across = vec2<f32>(-along.y, along.x);
+    let side = f32(k >> 1u) * 2.0 - 1.0;
+    let at_b = (k & 1u) == 1u;
+    let end = select(a - along * reach, b + along * reach, at_b);
+    let corner = end + across * side * reach;
+    let w = select(-p.z, -q.z, at_b);
+    let ndc = vec2<f32>(corner.x / frame.viewport.x * 2.0 - 1.0, 1.0 - corner.y / frame.viewport.y * 2.0);
+    var out: LineOut;
+    out.position = vec4<f32>(ndc * w, frame.near, w);
+    out.a = a;
+    out.b = b;
+    out.depths = vec2<f32>(-p.z, -q.z);
+    out.fractions = f;
+    out.segment = segment;
+    out.path = path;
+    return out;
+}
+
+// Each instance a run of segments, each six vertices a quad over one
+// piece of a segment: the segment itself, or one of its pieces along the
+// curve.
+@vertex
+fn line_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> LineOut {
+    let run = runs[instance];
+    let pieces = run.y >> 16u;
+    let piece = (vertex / 6u) % pieces;
+    let segment = vertex / (6u * pieces);
+    if (segment >= (run.y & 0xffffu)) {
+        return hidden();
+    }
+    let first = run.x + segment;
+    let v0 = vertices[first];
+    let v1 = vertices[first + 1u];
+    if (v0.h <= 0.0) {
+        return hidden();
+    }
+    let slot = frame.slots[paths[v0.path].pose];
+    // Relative to the eye first: the high parts' difference is exact
+    // where they are close.
+    let r0 = (v0.hi - slot.eye_hi) + (v0.lo - slot.eye_lo);
+    let r1 = (v1.hi - slot.eye_hi) + (v1.lo - slot.eye_lo);
+    let u0 = f32(piece) / f32(pieces);
+    let u1 = f32(piece + 1u) / f32(pieces);
+    let p = slot.to_view * hermite(r0, v0.velocity, r1, v1.velocity, v0.h, u0);
+    let q = slot.to_view * hermite(r0, v0.velocity, r1, v1.velocity, v0.h, u1);
+    return capsule(p, q, u0, u1, first, v0.path, corner_index(vertex % 6u));
+}
+
+// Each instance a piece the CPU placed.
+@vertex
+fn piece_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> LineOut {
+    let c = pieces[instance];
+    return capsule(c.a, c.b, c.fractions.x, c.fractions.y, c.segment, c.path, corner_index(vertex));
+}
+
+// Premultiplied coverage of the capsule, in the past or future color by
+// where along its segment the fragment is: the fraction across the
+// screen made perspective-correct (1/depth is linear on the screen).
+@fragment
+fn line_fs(in: LineOut) -> @location(0) vec4<f32> {
+    let p = in.position.xy;
+    let ab = in.b - in.a;
+    let length2 = dot(ab, ab);
+    var s = 0.0;
+    if (length2 > 0.0) {
+        s = clamp(dot(p - in.a, ab) / length2, 0.0, 1.0);
+    }
+    let d = length(p - (in.a + s * ab));
+    let coverage = clamp(frame.line_px * 0.5 + 0.5 - d, 0.0, 1.0);
+    if (coverage <= 0.0) {
+        discard;
+    }
+    let along = s * in.depths.x / ((1.0 - s) * in.depths.y + s * in.depths.x);
+    let u = mix(in.fractions.x, in.fractions.y, along);
+    let split = splits[in.path];
+    let past = in.segment < split.x || (in.segment == split.x && u < bitcast<f32>(split.y));
+    let info = paths[in.path];
+    let color = select(info.future.rgb, info.past.rgb, past);
+    return vec4<f32>(color * coverage, coverage);
 }

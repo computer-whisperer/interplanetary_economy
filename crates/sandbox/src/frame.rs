@@ -173,7 +173,10 @@ pub fn shot(
     ui.set_theme(app.theme());
     ui.set_surface_size(width, height);
     let mut view = View::new(device, queue);
-    let scene = scene.unwrap_or_else(|| app.scene());
+    let scene = scene.unwrap_or_else(|| {
+        app.update_paths();
+        app.scene(1.0)
+    });
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("offscreen frame"),
         size: wgpu::Extent3d {

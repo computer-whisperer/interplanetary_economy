@@ -4,7 +4,7 @@ use orbit::ephem::Ephemeris;
 use orbit::families::Catalog;
 use orbit::gravity::Field;
 use orbit::integrate::{Dop853, Tolerance};
-use orbit::reference::{EarthMoonFrame, continue_orbit};
+use orbit::reference::{RotatingFrame, continue_orbit};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 
 #[test]
@@ -12,7 +12,7 @@ fn frame_round_trip() {
     let eph = Ephemeris::standard();
     let cat = Catalog::standard();
     let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
-    let frame = EarthMoonFrame::at(eph, earth, moon, Epoch::from_ymd(2045, 3, 1));
+    let frame = RotatingFrame::at(eph, earth, moon, Epoch::from_ymd(2045, 3, 1));
     let s = cat.nearest("l2-halo-south", 6.57).unwrap().orbit.state;
     let back = frame.to_rotating(cat.system.mu, &frame.to_inertial(cat.system.mu, &s));
     for i in 0..6 {

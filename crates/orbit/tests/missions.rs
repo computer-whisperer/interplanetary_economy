@@ -243,3 +243,30 @@ fn junction_when_leaving_on_arrival() {
     };
     assert_eq!((jumps(legs[1]), jumps(legs[2])), (1, 1));
 }
+
+/// A leg to a small body before its orbit is known (from 2040) fails with
+/// the reason (found in M1c step 4's review: the planner asserted).
+#[test]
+fn small_body_before_its_orbit_is_known() {
+    let src = r#"
+name = "Early"
+
+[[ship]]
+name = "Too early"
+start = { at = "leo", epoch = "2035-01-01" }
+
+[[ship.leg]]
+to = "2000-sg344"
+"#;
+    let plan = Plan::parse(src, Ephemeris::standard(), Places::standard()).unwrap();
+    let items = fly(&World::standard(), &plan, "Too early");
+    match &items[..] {
+        [
+            Item {
+                kind: ItemKind::Failed(why),
+                ..
+            },
+        ] => assert!(why.contains("known from 2040-01-01"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
