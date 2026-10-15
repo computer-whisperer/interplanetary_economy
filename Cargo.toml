@@ -5,6 +5,7 @@ members = ["crates/orbit", "crates/orbit-cli", "crates/plan", "crates/render", "
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+license = "MIT OR Apache-2.0"
 
 # The tests integrate orbits for months; unoptimized they take minutes.
 # Debug assertions and overflow checks stay on.

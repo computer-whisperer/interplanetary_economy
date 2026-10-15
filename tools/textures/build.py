@@ -139,10 +139,11 @@ def earth(src, out, toml):
     toml.append(f"""
 [body.earth]
 # NASA Earth Observatory's Blue Marble Next Generation (July 2004, R.
-# Stöckli), its clouds, and GEBCO's elevation (scaled 0-6400 m: higher is
-# clipped) and bathymetry (water: any depth); Black Marble 2016 (NASA
-# Earth Observatory, M. Román et al.). NASA imagery: free to use, credit
-# requested.
+# Stöckli), its clouds, and its renderings of the GEBCO_08 Grid's
+# elevation (scaled 0-6400 m: higher is clipped) and bathymetry (water:
+# any depth); Black Marble 2016 (NASA Earth Observatory, M. Román et
+# al.). NASA imagery: free to use, credit requested. The GEBCO Grid
+# (GEBCO, www.gebco.net): public domain, credit required.
 color = "color.jpg"
 albedo = 1.0
 shading = "lambert"

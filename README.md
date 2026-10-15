@@ -175,3 +175,21 @@ GPU; CI's runners have none and draw on lavapipe, Mesa's Vulkan on the
 CPU. Locally, `VK_DRIVER_FILES` set to its ICD file and
 `LIBGL_ALWAYS_SOFTWARE=1` (else wgpu takes a GPU through OpenGL) do the
 same; the suite takes ~3 minutes on it.
+
+## License
+
+The code is licensed under either of the [Apache License, Version
+2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.
+
+The data in `data/` keep their sources' terms, named beside them (in
+`data/bodies/bodies.toml`, `data/sky/sky.toml` and the other files'
+headers) and in the `tools/` that build them: NASA's, JPL's, USGS's and
+the PDS's imagery and data (public domain, or free to use with credit
+requested), the GEBCO Grid (public domain, credit required), and ESA's
+Hipparcos catalog and Gaia DR2 (free to use with credit: ESA, and
+ESA/Gaia/DPAC). None restricts commercial use or requires derived works
+to share its terms.
