@@ -1,21 +1,26 @@
 //! The sandbox's UI (M1c.md, step 2 plan, item 5; step 3 plan, items 6
-//! and 7; step 4 plan, items 2, 4 and 6; step 6 plan, item 1): a top bar
-//! with the focus, the frame and the clock; the map view; a scrubber; and
-//! a status line.
+//! and 7; step 4 plan, items 2, 4 and 6; step 5 plan; step 6 plan, item
+//! 1): a top bar with the focus, the frame and the clock; the map view,
+//! labeled and picked by clicks, with the plan's panel beside it; a
+//! scrubber; and a status line.
 
 use crate::bodies;
 use crate::camera::MapCamera;
 use crate::clock::{self, Clock};
 use crate::frames::{self, Frame};
+use crate::labels::{self, Anchor, Placed};
 use crate::look::{self, Exposure};
 use crate::orbits::Orbits;
+use crate::panel;
 use crate::paths::{self, Event, PAST_DIM};
+use crate::pick::{self, Pick};
 use crate::plan::{Loaded, on_track, position};
 use crate::sky;
 use damascene_core::prelude::*;
+use damascene_core::scroll::{ScrollAlignment, ScrollRequest};
 use damascene_core::surface::AppTexture;
 use damascene_core::widgets::slider;
-use glam::DVec3;
+use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
 use orbit::places::Places;
@@ -58,6 +63,18 @@ pub struct Stats {
     pub hdr: bool,
 }
 
+/// What the map view showed in the last frame: its projection, the
+/// poses its paths were placed by, what was drawn on it, and the labels
+/// placed.
+struct Seen {
+    view: labels::View,
+    poses: Vec<render::Pose>,
+    /// The bodies drawn as disks.
+    balls: Vec<labels::Ball>,
+    anchors: Vec<Anchor>,
+    placed: Vec<Placed>,
+}
+
 impl Stats {
     /// The output's headroom over SDR white: 1 on SDR, or where the
     /// compositor does not say.
@@ -90,8 +107,9 @@ pub struct Shell {
     pub exposure: Exposure,
     /// The bodies the focus select offers.
     bodies: Vec<BodyId>,
-    /// Station orbits' reference loops.
+    /// Station orbits' reference loops, and their places' ids.
     loops: Vec<render::Path>,
+    loop_names: Vec<String>,
     orbits: Orbits,
     built: Option<BuiltFor>,
     paths: Arc<render::Paths>,
@@ -102,6 +120,14 @@ pub struct Shell {
     event_times: Vec<Epoch>,
     focus_open: bool,
     frame_open: bool,
+    /// The item selected, by its ship and place: in the panel, its
+    /// markers' labels first.
+    pub selected: Option<(usize, usize)>,
+    pub panel_open: bool,
+    seen: Option<Seen>,
+    /// Labels' sizes by their text.
+    sizes: HashMap<String, Vec2>,
+    scrolls: Vec<ScrollRequest>,
 }
 
 impl Shell {
@@ -111,6 +137,10 @@ impl Shell {
         let earth = eph.lookup("earth").expect("Earth is in the ephemeris");
         sky::start();
         crate::maps::start();
+        let (loop_names, loops): (Vec<String>, Vec<_>) =
+            frames::station_loops(Places::standard(), Catalog::standard())
+                .into_iter()
+                .unzip();
         Shell {
             eph,
             viewport: None,
@@ -122,10 +152,8 @@ impl Shell {
             exposure: Exposure::default(),
             bodies: bodies::drawn(eph),
             orbits: Orbits::new(eph, &bodies::drawn(eph), t),
-            loops: paths::loop_paths(&frames::station_loops(
-                Places::standard(),
-                Catalog::standard(),
-            )),
+            loops: paths::loop_paths(loops),
+            loop_names,
             built: None,
             paths: Arc::default(),
             owners: HashMap::new(),
@@ -133,6 +161,11 @@ impl Shell {
             event_times: Vec::new(),
             focus_open: false,
             frame_open: false,
+            selected: None,
+            panel_open: true,
+            seen: None,
+            sizes: HashMap::new(),
+            scrolls: Vec::new(),
         }
     }
 
@@ -283,6 +316,125 @@ impl Shell {
             .or_else(|| position(self.eph, &ship.items[k..=k], t, true))
     }
 
+    /// Projects what the map view shows in `scene` onto its target of
+    /// `size` pixels, `scale` to a logical one, and places their labels
+    /// (none without a target yet).
+    pub fn place_labels(&mut self, scene: &render::Scene, size: Option<(u32, u32)>, scale: f32) {
+        let (Some(camera), Some(size)) = (scene.camera, size) else {
+            self.seen = None;
+            return;
+        };
+        let view = labels::View {
+            camera,
+            size,
+            scale,
+        };
+        let (eph, t) = (self.eph, self.clock.t);
+        let (balls, mut anchors) = labels::bodies(eph, t, &self.bodies, self.camera.focus, &view);
+        let pose = scene.poses[paths::VIEW_POSE];
+        if let Some(plan) = &self.plan {
+            for (s, ship) in plan.ships.iter().enumerate() {
+                if let Some(p) = self.ship_position(s, t, &pose) {
+                    anchors.extend(labels::ship(&view, &balls, s, &ship.name, p, SHIP_PX));
+                }
+            }
+            for e in &self.events {
+                let m = &plan.ships[e.ship].items[e.item].markers[e.marker];
+                anchors.extend(labels::marker(
+                    eph,
+                    &view,
+                    &balls,
+                    e,
+                    m,
+                    &pose,
+                    t,
+                    self.selected,
+                ));
+            }
+        }
+        let loop_pose = scene.poses[paths::LOOP_POSE];
+        for (i, (name, path)) in self.loop_names.iter().zip(&self.loops).enumerate() {
+            if let Some(first) = path.samples.first() {
+                let p = loop_pose.to_world(first.position);
+                anchors.extend(labels::station(&view, &balls, i, name, p));
+            }
+        }
+        let sizes = &mut self.sizes;
+        let placed = labels::declutter(&anchors, view.extent(), |text| {
+            *sizes
+                .entry(text.to_string())
+                .or_insert_with(|| labels::measure(text))
+        });
+        self.seen = Some(Seen {
+            view,
+            poses: scene.poses.clone(),
+            balls,
+            anchors,
+            placed,
+        });
+    }
+
+    /// What a click at `at` (logical px on the map view) picks, in what
+    /// the view showed last.
+    pub fn pick(&self, at: Vec2) -> Option<Pick> {
+        let seen = self.seen.as_ref()?;
+        pick::marked(at, &seen.placed, &seen.anchors)
+            .or_else(|| {
+                let (s, k) =
+                    pick::line(at, &seen.view, &self.paths, &seen.poses, &self.owners, &seen.balls)?;
+                Some(Pick::Item(s, k))
+            })
+            .or_else(|| pick::body(at, &seen.anchors))
+    }
+
+    /// A click on the map view at `at`: a body is focused; a ship's item
+    /// (the one it is in), a marker's or a line's is selected; empty
+    /// space clears the selection.
+    pub fn clicked_map(&mut self, at: Vec2) {
+        match self.pick(at) {
+            Some(Pick::Body(b)) => {
+                self.camera.focus_on(self.eph, b, self.clock.t);
+                self.follow_focus();
+            }
+            Some(Pick::Ship(s)) => {
+                let k = self
+                    .plan
+                    .as_ref()
+                    .and_then(|p| panel::current(&p.ships[s], self.clock.t));
+                self.select(k.map(|k| (s, k)));
+            }
+            Some(Pick::Item(s, k)) => self.select(Some((s, k))),
+            None => self.select(None),
+        }
+    }
+
+    /// Selects `item`, scrolling the panel to it.
+    pub fn select(&mut self, item: Option<(usize, usize)>) {
+        self.selected = item;
+        if let Some((s, k)) = item {
+            self.scrolls.push(ScrollRequest::to_row_key(
+                panel::LIST_KEY,
+                panel::item_key(s, k),
+                ScrollAlignment::Visible,
+            ));
+        }
+    }
+
+    /// The labels placed in the last frame.
+    pub fn placed(&self) -> &[Placed] {
+        self.seen.as_ref().map_or(&[], |s| &s.placed)
+    }
+
+    /// The map view's projection in the last frame.
+    pub fn view(&self) -> Option<labels::View> {
+        self.seen.as_ref().map(|s| s.view)
+    }
+
+    /// What the map view showed in the last frame.
+    pub fn anchors(&self) -> &[Anchor] {
+        self.seen.as_ref().map_or(&[], |s| &s.anchors)
+    }
+
     fn status(&self) -> String {
         let ms = |x: Option<f32>| x.map_or("–".to_string(), |x| format!("{x:.2} ms"));
         let frame = ms(self.stats.frame_ms);
@@ -332,15 +484,33 @@ impl App for Shell {
             (true, None) => "HDR".to_string(),
             (false, _) => "SDR".to_string(),
         };
-        let map = match &self.viewport {
+        let scene = match &self.viewport {
             Some(texture) => surface(texture.clone())
                 .surface_alpha(SurfaceAlpha::Opaque)
-                .surface_fit(ImageFit::Fill),
+                .surface_fit(ImageFit::Fill)
+                .fill_size(),
             None => spacer(),
-        }
-        .key(VIEWPORT_KEY)
-        .fill_size()
-        .clip();
+        };
+        let labels = match &self.seen {
+            Some(seen) => labels::layer(&seen.placed, seen.view.extent()),
+            None => spacer(),
+        };
+        let map = stack([scene, labels])
+            .key(VIEWPORT_KEY)
+            .fill_size()
+            .clip();
+        let middle = match (&self.plan, self.panel_open) {
+            (Some(plan), true) => row([
+                map,
+                panel::panel(
+                    &plan.name,
+                    panel::rows(self.eph, &plan.ships, self.clock.t, self.selected),
+                ),
+            ])
+            .width(Size::Fill(1.0))
+            .height(Size::Fill(1.0)),
+            _ => map,
+        };
         let focus_name = self.eph.body(self.camera.focus).name.as_str();
         let timeline = self.timeline();
         let main = column([
@@ -358,7 +528,7 @@ impl App for Shell {
                 ))
                 .caption()
                 .tabular_numerals(),
-                text("space pause · , . warp · [ ] events · - = exposure")
+                text("space pause · , . warp · [ ] events · - = exposure · p plan")
                     .muted()
                     .caption(),
                 text(output).muted().caption(),
@@ -366,7 +536,7 @@ impl App for Shell {
             .gap(tokens::SPACE_3)
             .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
             .align(Align::Center),
-            map,
+            middle,
             row([
                 text(orbit::mission::when(timeline.0))
                     .muted()
@@ -432,6 +602,19 @@ impl App for Shell {
             self.exposure.bias = (self.exposure.bias + 1).min(MAX_BIAS);
         } else if event.is_hotkey("darker") {
             self.exposure.bias = (self.exposure.bias - 1).max(-MAX_BIAS);
+        } else if event.is_hotkey("panel") {
+            self.panel_open = !self.panel_open;
+        } else if event.kind == UiEventKind::Click
+            && event.route() == Some(VIEWPORT_KEY)
+            && let (Some(rect), Some((x, y))) = (event.target_rect(), event.pointer)
+        {
+            self.clicked_map(Vec2::new(x - rect.x, y - rect.y));
+        } else if clicked
+            && let Some((s, k)) = event.route().and_then(panel::parse_item_key)
+            && let Some(item) = self.plan.as_ref().and_then(|p| p.ships.get(s)?.items.get(k))
+        {
+            self.clock.seek(item.start);
+            self.select(Some((s, k)));
         } else if matches!(event.kind, UiEventKind::PointerDown | UiEventKind::Drag)
             && event.route() == Some(SCRUBBER_KEY)
             && let (Some(rect), Some(x)) = (event.target_rect(), event.pointer_x())
@@ -479,7 +662,12 @@ impl App for Shell {
             (KeyChord::vim('['), "previous".into()),
             (KeyChord::vim('='), "brighter".into()),
             (KeyChord::vim('-'), "darker".into()),
+            (KeyChord::vim('p'), "panel".into()),
         ]
+    }
+
+    fn drain_scroll_requests(&mut self) -> Vec<ScrollRequest> {
+        std::mem::take(&mut self.scrolls)
     }
 
     fn theme(&self) -> Theme {

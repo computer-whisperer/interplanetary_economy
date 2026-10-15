@@ -65,6 +65,9 @@ pub fn draw(
         app.stats.gpu = Some(t);
     }
     app.stats.timestamps = view.timer.is_some();
+    // On the target as it is: a map view that changed size shows its new
+    // one from the next frame.
+    app.place_labels(scene, view.target.as_ref().map(|t| t.size), scale);
     app.before_build();
     let theme = app.theme();
     let palette = theme.palette().clone();
@@ -146,8 +149,8 @@ pub fn draw(
 pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// A whole frame drawn offscreen, after the UI settles (at most a few
-/// frames): its RGBA8 pixels, the map view's rect in pixels, and the
-/// app's final state.
+/// frames): its RGBA8 pixels, the map view's rect in logical pixels, and
+/// the app's final state.
 pub struct Shot {
     pub width: u32,
     pub height: u32,
@@ -157,14 +160,15 @@ pub struct Shot {
     pub target: Option<(u32, u32)>,
 }
 
-/// Draws `app` offscreen at `width` × `height` pixels, with `scene` in
-/// its map view (its own if `None`).
+/// Draws `app` offscreen at `width` × `height` pixels, `scale` of them
+/// to a logical one, with `scene` in its map view (its own if `None`).
 pub fn shot(
     gpu: &render::offscreen::Offscreen,
     app: &mut Shell,
     scene: Option<render::Scene>,
     width: u32,
     height: u32,
+    scale: f32,
 ) -> Shot {
     let (device, queue) = (&gpu.device, &gpu.queue);
     let mut ui = Runner::new(device, queue, OFFSCREEN_FORMAT);
@@ -175,7 +179,7 @@ pub fn shot(
     let mut view = View::new(device, queue);
     let scene = scene.unwrap_or_else(|| {
         app.update_paths();
-        app.scene(1.0)
+        app.scene(scale)
     });
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("offscreen frame"),
@@ -194,7 +198,7 @@ pub fn shot(
         view_formats: &[],
     });
     let texture_view = texture.create_view(&Default::default());
-    let viewport = Rect::new(0.0, 0.0, width as f32, height as f32);
+    let viewport = Rect::new(0.0, 0.0, width as f32 / scale, height as f32 / scale);
     for _ in 0..8 {
         let out = Output {
             texture: &texture,
@@ -202,7 +206,7 @@ pub fn shot(
             msaa: None,
         };
         if !draw(
-            device, queue, &mut ui, app, &mut view, &scene, out, viewport, 1.0, None,
+            device, queue, &mut ui, app, &mut view, &scene, out, viewport, scale, None,
         )
         .again
         {

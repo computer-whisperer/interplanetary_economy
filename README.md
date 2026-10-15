@@ -29,7 +29,8 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   UI on [damascene](https://github.com/computer-whisperer/damascene)
   0.8, HDR output where the compositor offers it; the bodies turned by
   their rotation models, with their orbits drawn; mission plans designed
-  in the background and played back, in fixed or rotating frames.
+  in the background and played back, in fixed or rotating frames; labels,
+  picking by click, and the plan's panel.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
   parameters, and a sweep that classifies the plans' development paths.
@@ -116,7 +117,11 @@ Earth and the Moon, the Sun and Earth, or the Sun and Mars; `--frame`).
 Right drag orbits, the wheel zooms (down to 10 km above the focus's
 surface), space pauses, `,` and `.` step the time warp from 1 s to 1
 year per second, `[` and `]` jump between burns and events, and the
-scrubber under the map spans the plan. Exposure follows the focus (its
+scrubber under the map spans the plan. Bodies, ships, burns and events
+and station orbits are labeled where there is room. A click on a body
+focuses it; on a ship, a marker, a label or a line, it selects that
+item in the plan's panel (`p` shows or hides it), where a click on an
+item jumps to its start. Exposure follows the focus (its
 sunlit side at a fixed level); `-` and `=` shift it a stop at a time. On
 an HDR output, highlights use the display's headroom. `--focus ID --altitude KM
 --azimuth DEG --elevation DEG --date YYYY-MM-DD[THH:MM]` set the starting view

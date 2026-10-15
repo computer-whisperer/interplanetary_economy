@@ -24,7 +24,7 @@ fn scene_shows_in_the_map_view() {
         ..Default::default()
     };
     let (w, h) = (640, 400);
-    let s = shot(&gpu, &mut app, Some(scene), w, h);
+    let s = shot(&gpu, &mut app, Some(scene), w, h, 1.0);
     let map = s.viewport.expect("the map view is laid out");
     println!("map view {map:?}, target {:?}", s.target);
     assert_eq!(s.target, Some((map.w.round() as u32, map.h.round() as u32)));

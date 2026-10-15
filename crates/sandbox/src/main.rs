@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let gpu = render::offscreen::Offscreen::new()?;
             let (w, h) = cli.size;
-            let shot = sandbox::frame::shot(&gpu, &mut app, None, w, h);
+            let shot = sandbox::frame::shot(&gpu, &mut app, None, w, h, 1.0);
             let file = std::fs::File::create(&path)?;
             let mut png = png::Encoder::new(std::io::BufWriter::new(file), shot.width, shot.height);
             png.set_color(png::ColorType::Rgba);

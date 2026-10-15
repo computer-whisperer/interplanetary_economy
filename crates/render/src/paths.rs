@@ -26,7 +26,7 @@
 use crate::camera::Camera;
 use crate::scene::Frustum;
 use bytemuck::{Pod, Zeroable};
-use glam::{DMat3, DVec3};
+use glam::{DMat3, DVec2, DVec3};
 use std::ops::Range;
 
 /// Segments per chunk, and per part of one.
@@ -131,6 +131,81 @@ impl Path {
         }
         let (a, b) = (&s[b - 1], &s[b]);
         Some(hermite(a, b, (t - a.t) / (b.t - a.t), DVec3::ZERO))
+    }
+
+    /// How near the line comes to `at` (pixels from the top-left corner,
+    /// y down) on a viewport of `size` pixels seen by `camera`, the path
+    /// placed by `pose`: along the Hermite curve it is drawn along, in f64,
+    /// within a quarter pixel, counting only parts whose middle (in the
+    /// world) is `shown`. `None` where it comes no nearer than `within`
+    /// pixels, or is behind the eye.
+    ///
+    /// Each segment is halved until its halves are straight to a quarter
+    /// pixel on the screen, or certainly too far from `at`, or behind the
+    /// eye. Over part of a segment the curve is again a cubic Hermite, so
+    /// [`bow`] bounds it in the world; a point moved by δ at view depth z,
+    /// |(x, y)| / z off the view's axis, moves δ (1 + |(x, y)| / z) / z on
+    /// the screen, and the curve may come nearer the eye than the chord by
+    /// its bow (along the chord, |(x, y)| / z is largest at an end).
+    pub fn near(
+        &self,
+        pose: &Pose,
+        camera: &Camera,
+        size: (u32, u32),
+        at: DVec2,
+        within: f64,
+        shown: impl Fn(DVec3) -> bool,
+    ) -> Option<f64> {
+        let px_per_radian = 1.0 / camera.pixel_angle(size.1);
+        let mut best = f64::INFINITY;
+        let mut parts: Vec<(f64, f64)> = Vec::new();
+        for i in 1..self.samples.len() {
+            let (a, b) = (&self.samples[i - 1], &self.samples[i]);
+            if b.t <= a.t {
+                continue;
+            }
+            // The part from u0 to u1 as a Hermite segment of its own, in
+            // the world: its ends, and its tangents over its span.
+            let part = |u: f64, span: f64| {
+                let p = pose.to_world(hermite(a, b, u, DVec3::ZERO));
+                (p, pose.axes * hermite_du(a, b, u) * (pose.scale * span))
+            };
+            parts.push((0.0, 1.0));
+            while let Some((u0, u1)) = parts.pop() {
+                let ((p0, t0), (p1, t1)) = (part(u0, u1 - u0), part(u1, u1 - u0));
+                let chord = p1 - p0;
+                let bow_km = 4.0 / 27.0 * ((t0 - chord).length() + (t1 - chord).length());
+                let (v0, v1) = (camera.to_view(p0), camera.to_view(p1));
+                let nearest = (-v0.z).min(-v1.z) - bow_km;
+                let split = u1 - u0 > 1.0 / 65_536.0;
+                if nearest <= 0.0 {
+                    // Behind the eye, or reaching past it.
+                    if v0.z.min(v1.z) <= bow_km && split {
+                        parts.extend([(u0, 0.5 * (u0 + u1)), (0.5 * (u0 + u1), u1)]);
+                    }
+                    continue;
+                }
+                let (Some(q0), Some(q1)) = (camera.project_view(v0, size), camera.project_view(v1, size))
+                else {
+                    continue;
+                };
+                let off_axis = [v0, v1]
+                    .map(|v| v.truncate().length() / -v.z)
+                    .into_iter()
+                    .fold(0.0, f64::max);
+                let stray_px = bow_km * (1.0 + off_axis) / nearest * px_per_radian;
+                let d = segment_distance(at, q0, q1);
+                if d - stray_px > within.min(best) {
+                    continue;
+                }
+                if stray_px > 0.25 && split {
+                    parts.extend([(u0, 0.5 * (u0 + u1)), (0.5 * (u0 + u1), u1)]);
+                } else if d < best && shown(part(0.5 * (u0 + u1), 0.0).0) {
+                    best = d;
+                }
+            }
+        }
+        (best <= within).then_some(best)
     }
 
     /// Where the path is at `t`: the segment (by its first sample) and the
@@ -270,12 +345,31 @@ fn f32x3(v: DVec3) -> [f32; 3] {
     [v.x as f32, v.y as f32, v.z as f32]
 }
 
+/// The cubic Hermite curve's derivative in `u` between `a` and `b`.
+fn hermite_du(a: &Sample, b: &Sample, u: f64) -> DVec3 {
+    let h = b.t - a.t;
+    let u2 = u * u;
+    (6.0 * u2 - 6.0 * u) * (a.position - b.position)
+        + h * ((3.0 * u2 - 4.0 * u + 1.0) * a.velocity + (3.0 * u2 - 2.0 * u) * b.velocity)
+}
+
 /// How far the Hermite curve between `a` and `b` strays from its chord:
 /// it is the chord plus h₁₀(u)·(h·v₀ − Δp) + h₁₁(u)·(h·v₁ − Δp), and
 /// |h₁₀|, |h₁₁| ≤ 4/27.
 fn bow(a: &Sample, b: &Sample) -> f64 {
     let (h, chord) = (b.t - a.t, b.position - a.position);
     4.0 / 27.0 * ((h * a.velocity - chord).length() + (h * b.velocity - chord).length())
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn segment_distance(p: DVec2, a: DVec2, b: DVec2) -> f64 {
+    let ab = b - a;
+    let u = if ab.length_squared() > 0.0 {
+        ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a + ab * u - p).length()
 }
 
 /// The largest of the Hermite's terms between `a` and `b`.
@@ -637,6 +731,173 @@ mod tests {
         let p = DVec3::new(0.98, -0.02, 0.15);
         let back = pose.from_world(pose.to_world(p));
         assert!((back - p).length() < 1e-14, "{back}");
+    }
+
+    /// A circle sampled four times a turn, seen face on: `near` follows
+    /// the Hermite curve (1.5% inside the circle at 45°), ~0.3 of the
+    /// radius off its chords.
+    #[test]
+    fn near_follows_the_curve() {
+        let (r, w) = (1e4, 1e-3);
+        let path = Path {
+            pose: 0,
+            samples: (0..=4)
+                .map(|i| {
+                    let (t, a) = (f64::from(i) * 1_570.796_326_794_896_6, f64::from(i) * 0.5 * std::f64::consts::PI);
+                    let (s, c) = a.sin_cos();
+                    Sample {
+                        t,
+                        position: DVec3::new(r * c, r * s, 0.0),
+                        velocity: DVec3::new(-r * w * s, r * w * c, 0.0),
+                    }
+                })
+                .collect(),
+            future: [1.0; 3],
+            past: [1.0; 3],
+            gap: 0.0,
+        };
+        let pose = Pose {
+            origin: DVec3::new(1.5e8, 0.0, 0.0),
+            axes: DMat3::IDENTITY,
+            scale: 1.0,
+        };
+        let camera = Camera::looking_at(
+            pose.origin + DVec3::new(0.0, 0.0, 3e4),
+            pose.origin,
+            DVec3::Y,
+            50f64.to_radians(),
+        );
+        let size = (800, 800);
+        let on = |a: f64, k: f64| {
+            let p = pose.origin + DVec3::new(k * r * a.cos(), k * r * a.sin(), 0.0);
+            camera.project(p, size).unwrap()
+        };
+        let a = 0.25 * std::f64::consts::PI;
+        let mid = camera
+            .project(pose.to_world(path.at(785.398_163_397_448_3).unwrap()), size)
+            .unwrap();
+        let curve = path.near(&pose, &camera, size, mid, 4.0, |_| true).unwrap();
+        let chord = path.near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 400.0, |_| true).unwrap();
+        let px = (mid - on(a, 0.5f64.sqrt())).length();
+        println!("on the curve {curve:.3} px; at the chord {chord:.1} px ({px:.1} px in)");
+        assert!(curve < 0.25, "{curve}");
+        assert!((chord - px).abs() < 1.0, "{chord} {px}");
+        assert!(path.near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 4.0, |_| true).is_none());
+        // Behind the eye, nothing.
+        let behind = Camera::looking_at(pose.origin + DVec3::new(0.0, 0.0, 3e4), pose.origin + DVec3::new(0.0, 0.0, 6e4), DVec3::Y, 0.8);
+        assert!(path.near(&pose, &behind, size, DVec2::new(400.0, 400.0), 1e6, |_| true).is_none());
+    }
+
+    /// Against the curve sampled densely, over random one-sided segments
+    /// seen from near and far, off the view's axis and bowing toward the
+    /// eye: a click within 3.5 px of the curve is never culled, and
+    /// `near` is within 0.3 px of the truth. Hidden pieces are not
+    /// counted.
+    #[test]
+    fn near_never_misses_the_curve() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut f = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let size = (1920, 1080);
+        let pose = Pose {
+            origin: DVec3::new(1.5e8, 0.0, 0.0),
+            axes: DMat3::IDENTITY,
+            scale: 1.0,
+        };
+        let (mut tried, mut worst) = (0, 0.0f64);
+        for trial in 0..1500 {
+            let mut v = || DVec3::new(2.0 * f() - 1.0, 2.0 * f() - 1.0, 2.0 * f() - 1.0);
+            let (r, h) = (1e4, 1000.0);
+            let (p0, p1) = (v() * r, v() * r);
+            let chord = p1 - p0;
+            let off = v().normalize() * chord.length();
+            let eye = if trial % 2 == 0 { p0 + chord * 0.5 + off * 0.4 + v() * 0.3 * r } else { v() * 2.0 * r };
+            let target = v() * r;
+            let off = off * (0.5 + 2.0 * f());
+            let path = Path {
+                pose: 0,
+                samples: vec![
+                    Sample { t: 0.0, position: p0, velocity: (chord + off) / h },
+                    Sample { t: h, position: p1, velocity: chord / h },
+                ],
+                future: [1.0; 3],
+                past: [1.0; 3],
+                gap: 0.0,
+            };
+            let camera = Camera::looking_at(pose.origin + eye, pose.origin + target, DVec3::Z, 50f64.to_radians());
+            let project = |t: f64| camera.project(pose.to_world(path.at(t).unwrap()), size);
+            let Some(on) = project(h * (0.1 + 0.8 * f())) else { continue };
+            if on.x < 0.0 || on.y < 0.0 || on.x > 1920.0 || on.y > 1080.0 {
+                continue;
+            }
+            let at = on + DVec2::new(2.0 * f() - 1.0, 2.0 * f() - 1.0) * 3.0;
+            let mut truth = f64::INFINITY;
+            let mut last = project(0.0);
+            for k in 1..=20_000 {
+                let p = project(h * f64::from(k) / 20_000.0);
+                if let (Some(p0), Some(p1)) = (last, p) {
+                    truth = truth.min(segment_distance(at, p0, p1));
+                }
+                last = p;
+            }
+            if truth > 3.5 {
+                continue;
+            }
+            tried += 1;
+            let got = path.near(&pose, &camera, size, at, 4.0, |_| true);
+            let Some(got) = got else {
+                panic!("trial {trial}: culled at {truth:.3} px from the curve")
+            };
+            worst = worst.max((got - truth).abs());
+            assert!(path.near(&pose, &camera, size, at, 4.0, |_| false).is_none());
+        }
+        println!("{tried} clicks; worst {worst:.3} px from the dense curve");
+        assert!(tried > 300 && worst < 0.3, "{tried} {worst}");
+    }
+
+    /// Near the screen's edge (0.6 of the depth off the axis), a segment
+    /// bowing out and toward the eye strays 142 px from its chord where
+    /// bow / depth gives 116 px: a click on the curve there is found (with
+    /// bow / depth for its bound, it was culled; found in review).
+    #[test]
+    fn near_bounds_a_curve_off_the_axis() {
+        let (z, bow, h) = (1e4, 1e3, 1e3);
+        let (p0, p1) = (DVec3::new(0.6 * z, -1e3, -z), DVec3::new(0.6 * z, 1e3, -z));
+        let chord = p1 - p0;
+        // One-sided: the curve is the chord plus h₁₀(u)·off, |h₁₀| ≤ 4/27
+        // at u = 1/3.
+        let off = DVec3::new(1.0, 0.0, 0.6).normalize() * bow * 27.0 / 4.0;
+        let path = Path {
+            pose: 0,
+            samples: vec![
+                Sample { t: 0.0, position: p0, velocity: (chord + off) / h },
+                Sample { t: h, position: p1, velocity: chord / h },
+            ],
+            future: [1.0; 3],
+            past: [1.0; 3],
+            gap: 0.0,
+        };
+        let pose = Pose {
+            origin: DVec3::ZERO,
+            axes: DMat3::IDENTITY,
+            scale: 1.0,
+        };
+        let camera = Camera::looking_at(DVec3::ZERO, -DVec3::Z, DVec3::Y, 50f64.to_radians());
+        let size = (1920, 1080);
+        let apex = camera.project(path.at(h / 3.0).unwrap(), size).unwrap();
+        let on_chord = camera.project(p0 + chord / 3.0, size).unwrap();
+        let estimate = bow / z / camera.pixel_angle(size.1);
+        println!(
+            "the curve {:.0} px from its chord, bow / depth {estimate:.0} px",
+            (apex - on_chord).length()
+        );
+        assert!((apex - on_chord).length() > estimate + 20.0);
+        let d = path.near(&pose, &camera, size, apex, 4.0, |_| true);
+        assert!(d.is_some_and(|d| d < 0.25), "{d:?}");
     }
 
     /// A low orbit sampled every 2°, `turns` times, from t = 1.4e9 s.

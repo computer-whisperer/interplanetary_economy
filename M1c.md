@@ -1,7 +1,63 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-14: steps 1–4 and 6 done (6 moved ahead of 5, its
-shape models left out); next, step 5 (panels and labels).
+Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
+left out); next, step 7 (editing).
+
+- Step 5: labels on the map view, picking by click, and the plan's
+  panel. As built, see the step 5 plan below; where it differs:
+  - Of labels whose anchors lie within 6 px of each other, only the
+    first placed is kept: they read as naming one spot (from 2 au,
+    Phobos's label beside Mars's read as a second point). A body drawn
+    under 6 px names the spot it is drawn at, to 6 px past its radius:
+    a ship or marker there is not labeled.
+  - Only bodies drawn as disks (1 px in radius or more) hide what is
+    behind them, as in the renderer, where a body under a pixel is a
+    point of light. A label avoids every anchor's point where it can,
+    and else covers only points ranked below it.
+  - A click tries lines before bodies (amending item 3), so that a line
+    in front of a body's disk can be picked; a line counts only where
+    no body hides it.
+  - Small bodies are labeled by their proper names, else their
+    provisional designations ("Itokawa", "1996 FG3"); station loops by
+    their places' ids ("NRHO").
+  - The panel is a damascene list that builds only the rows shown. A
+    leg's row lists its burns where it has more than one, or a flyby or
+    a pass; Δv under 0.5 m/s (a stay's station-keeping) is shown as
+    none.
+  - Checks: an anchor is its body's f64 projection (0.0000 px), and its
+    label stands its radius plus 3 px off it, drawn where placed; the
+    Moon behind Earth, behind the eye or off the view has no anchor;
+    clicks pick the Moon at its center, the ship beside its marker, a
+    marker's item at its label, the leg on its line, nothing on empty
+    space. Through damascene's pointer events, a click on a label
+    reaches the map view (labels take no input) and one on a row
+    reaches the row; at 1 and 2 physical pixels to a logical one, the
+    Moon's anchor is within its phase's lean of where it is drawn (0.03
+    and 0.28 px). Line picking follows the drawn Hermite curve (0.000 px
+    on it, 79 px off its chord), halving each segment until a bound on
+    its curve's image says it is straight to a quarter pixel or too far:
+    over random segments, within 0.15 px of the curve sampled densely.
+    Removing each of 10 checked features in turn fails its test.
+  - Cost, at 1920×1080 with the published plan (18 ships), measured
+    offscreen: placing labels 0.03–0.06 ms a frame (11–60 anchors); the
+    frame's CPU work 0.6–0.8 ms, 1.05–1.26 ms with the panel shown; a
+    pick ~3 ms (every line's segments bounded, those near the click
+    halved). In a window, frames came at the display's refresh with and
+    without step 5 (4.38 and 4.40 ms with the published plan designing;
+    4.2–4.3 ms without a plan).
+  - A review (a sub-agent, with runtime probes) found: Earth's label
+    giving way to a ship's every half orbit seen from afar (the ship
+    hidden by a body drawn as a point, then at its spot); markers ranked
+    below the focus keeping its label out; a ship resting at a body
+    hidden by it, so unlabeled and not pickable; lines over a disk not
+    pickable; line picks missing curves that bow toward the eye or lie
+    off the view's axis; a ship refused mid-design showing no reason;
+    labels a frame behind the map view's size when it changes. All
+    fixed, each with a test (the last: labels stretch with the stale
+    image in that frame). HiDPI was checked at scales 1, 1.5 and 2.
+  - Found in damascene 0.8: `rect_of_key` does not find keyed nodes in
+    a virtual list's rows (its key index is rebuilt before layout
+    realizes them). Hit-testing and scrolling to a row key work.
 
 - Step 6: the HDR chain, the sky, the bodies' orbits, rotation models and
   maps, atmospheres, the Sun's limb, eclipses and Saturn's rings. As
@@ -19,7 +75,8 @@ shape models left out); next, step 5 (panels and labels).
     lies past f16 once exposed (the Sun's disk, at exposures over ~1.3:
     every focus from Earth outward) loses its excess before bloom, so
     its glare stops growing there (1.5× under its energy at Earth's
-    exposure, 120× at Saturn's).
+    exposure, 120× at Saturn's). Kept (decided 2026-10-15): the glare
+    is bright enough as it is; an f32 target was the alternative.
   - The Milky Way: SVS's composite is 0.50 × its background + 1.00 ×
     its bright-star layer (fitted, residual 0.0005), and that layer's
     stars integrate to 2.14e-4 × 10^(−0.4 V) (124 unsaturated stars, V
@@ -459,10 +516,11 @@ recorded in `data/`, as with the economy's sources.
     goes to the camera whenever the pointer is over the viewport
     (volumetric's pattern).
 - **Labels:** damascene text nodes, rebuilt each frame at projected
-  positions, decluttered by polychora's pairwise relaxation. Hundreds of
-  per-frame labels in damascene have never been measured. Step 5
-  measures first, and falls back to Hushfold's distance-field text if
-  damascene is too slow.
+  positions, decluttered greedily by priority (step 5). Measured first:
+  ~2.6 µs a label a frame, so Hushfold's distance-field text, the
+  planned fallback, was not needed. Polychora's pairwise relaxation, the
+  planned declutter, was rejected (2026-10-15): it never drops a label,
+  so in a dense cluster the labels spread far from what they name.
 - **Crates:**
   - `crates/render`, the renderer. It takes a scene described in 64-bit
     positions, and knows nothing of orbits or missions.
@@ -477,14 +535,17 @@ recorded in `data/`, as with the economy's sources.
 | volumetric | Line pipeline (~600, `volumetric_renderer/src/pipelines/line.rs`) | Clip at the near plane (it doesn't: segments passing behind the camera draw wrong); camera-relative positions; joins |
 | volumetric | Offscreen render and pixel-test harness (~1,700, `offscreen.rs`, `frame_tests.rs`) | New test scenes |
 | volumetric | Orbit camera with animated refocus (~1,460, `camera.rs`, `navigation.rs`) | 64-bit eye and target; follow a moving body; zoom from 100 km to 1e10 km; reversed depth |
-| volumetric | Points and GPU picking (~730) | Make points pickable |
 | Hushfold | HDR, bloom and tonemap chain (~330, `gfx.rs`, `post.wgsl`) | Drop the warm grade and vignette; raise the clamp at 60 so the Sun's energy survives; tonemap to the output's headroom |
-| Hushfold | Distance-field text (~770, `text.rs`) | Labels' fallback; screen-aligned at a fixed pixel size |
 | Hushfold | Growable instance buffers, mesh builders, GPU timestamps, screenshot and recording | UVs on vertices |
-| polychora | Label declutter (~300, `overlay.rs`) | The algorithm only |
 
 Skipped: volumetric's deferred renderer and SSAO (an 8-bit CAD look),
 Hushfold's procedural sky, polychora's 4D renderers and its vulkano glue.
+
+Planned and not taken (step 5, 2026-10-15): volumetric's points and GPU
+picking (points are the scene's own, step 3 plan, item 4; picking runs
+on the CPU in f64, since the bodies are spheres and the rest points and
+lines); Hushfold's distance-field text and polychora's label declutter
+(see Engine, Labels).
 
 ## Gate
 
@@ -854,6 +915,86 @@ samples in all (the crew rotation's first stay in LEO, 2.6 days, is
    form for long stays' tracks themselves (each sample is 56 bytes in
    `Track`, 48 on the GPU; at two million samples, worth revisiting when
    step 8's plan is written).
+
+### Step 5 plan (2026-10-15)
+
+Measured first, with a probe over the sandbox's UI at 1920×1080 (release
+build, labels moving every frame): damascene's text nodes cost ~2.6 µs
+a label a frame on the CPU, mostly in its paint pass. That is 0.6 ms for
+200 labels, 1.4 ms for 500 and 2.6 ms for 1,000; text that changes every
+frame costs no more. So labels are damascene text, and Hushfold's
+distance-field text is not needed. Only the labels left after declutter
+are built.
+
+1. **Labels** (`sandbox::labels`):
+   - What is labeled:
+     - bodies, by name;
+     - ships where they are, by name;
+     - markers, by what they are: a burn's Δv; a flyby's body,
+       altitude and Δv; a pass's body and altitude; a landing or an
+       ascent; a jump's gap and plane change;
+     - station loops, by their place, at the loop's first sample.
+   - Each is projected in f64 through the scene's camera onto the map
+     view. None is labeled behind the eye, off the view, or behind a
+     body (where the ray from the eye enters a sphere before it).
+   - A body's label sits beside its disk. A body whose disk is taller
+     than a quarter of the view has none: it is what the view is about,
+     and the status line names it.
+   - Declutter is greedy by priority. Each label is tried right of,
+     left of, above and below its anchor, and kept at the first place
+     that overlaps no label already placed and no anchor shown; else it
+     is dropped. Priorities, highest first: ships; the focus; the Sun and
+     planets; moons; markers ahead of the clock; small bodies; markers
+     behind it; station loops. Within one, nearer the eye first.
+   - This replaces polychora's pairwise relaxation (the reuse table).
+     It pushes overlapping labels apart and never drops one, so with
+     the inner planets seen from Saturn their labels would spread
+     across the screen, far from what they name.
+   - Drawn as damascene text over the map view, at the caption's size,
+     on a dark translucent backing; markers' labels in their marker's
+     color.
+2. **Panel** (`sandbox::panel`). With a plan loaded, a panel right of
+   the map shows it (`p` toggles):
+   - each ship: its name, whether it is designing, designed or failed,
+     its total Δv and its span;
+   - each item: its kind, label, start, duration and Δv, and a leg's
+     burns; a failure in red, with why; a junction's jump, with its
+     gap and plane change; the item's note;
+   - the item each ship is in at the clock's time, marked;
+   - clicking an item seeks the clock to its start and selects it.
+3. **Picking** (`sandbox::pick`), by a left click on the map, takes the
+   first of:
+   - a label, for what it names;
+   - the nearest ship or marker within 8 px;
+   - the nearest body whose disk is under the pointer, or whose point
+     is within 8 px;
+   - the nearest path within 4 px, for its item.
+
+   A body picked is focused (the camera flies to it). A ship, marker or
+   path selects its item in the panel, scrolled into view; for a ship,
+   the item it is in. A click on empty space clears the selection. A
+   selected item's markers' labels come first in the declutter.
+
+   Picking runs on the CPU in f64, from the projections the labels
+   already make. GPU picking (volumetric's, in the reuse table) is not
+   needed: the bodies are spheres, and the rest are points and lines.
+4. **Tests**:
+   - Declutter (unit): placed labels overlap neither each other nor
+     anchors shown; of two in conflict, the higher priority stays; the
+     same input places the same labels.
+   - Labels (unit): a body's label lands beside its projected point
+     within 1 px; none is placed behind a body, behind the eye or off
+     the view.
+   - Picking (unit): a click on a body's center, on a marker beside a
+     body, on a path, on a label and on empty space each picks what it
+     should.
+   - Panel (unit): a designed plan's rows carry each item's Δv and
+     duration, and a failure's reason.
+   - Offscreen: labels are drawn where they were placed.
+   - CPU time for labels, the panel and a pick with the published plan,
+     in a window.
+5. **Not here:** the camera following a ship; a selected leg's line
+   highlighted; hover tooltips; editing (step 7).
 
 ### Step 6 plan (2026-10-14)
 

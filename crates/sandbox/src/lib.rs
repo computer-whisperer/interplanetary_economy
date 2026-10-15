@@ -9,10 +9,13 @@ pub mod clock;
 pub mod frame;
 pub mod frames;
 pub mod host;
+pub mod labels;
 pub mod look;
 pub mod maps;
 pub mod orbits;
+pub mod panel;
 pub mod paths;
+pub mod pick;
 pub mod plan;
 pub mod sky;
 

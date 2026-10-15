@@ -55,7 +55,12 @@ impl Camera {
     /// Where `p` lands on a viewport of `size` pixels (x right, y down,
     /// from the top-left corner), or `None` behind the eye.
     pub fn project(&self, p: DVec3, size: (u32, u32)) -> Option<DVec2> {
-        let v = self.to_view(p);
+        self.project_view(self.to_view(p), size)
+    }
+
+    /// Where `v`, a point in view space, lands on a viewport of `size`
+    /// pixels, as [`Self::project`].
+    pub fn project_view(&self, v: DVec3, size: (u32, u32)) -> Option<DVec2> {
         if v.z >= 0.0 {
             return None;
         }

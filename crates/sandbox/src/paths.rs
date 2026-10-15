@@ -65,6 +65,10 @@ fn scaled(c: [f32; 3], k: f32) -> [f32; 3] {
 /// drawn.
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
+    /// Its ship, the ship's item, and the item's marker, by index.
+    pub ship: usize,
+    pub item: usize,
+    pub marker: usize,
     pub t: Epoch,
     pub position: DVec3,
     pub shape: Shape,
@@ -139,12 +143,12 @@ fn item_path(
 }
 
 /// The reference loops, in the loop frame.
-pub fn loop_paths(loops: &[(String, Vec<Sample>)]) -> Vec<Path> {
+pub fn loop_paths(loops: Vec<Vec<Sample>>) -> Vec<Path> {
     loops
-        .iter()
-        .map(|(_, samples)| Path {
+        .into_iter()
+        .map(|samples| Path {
             pose: LOOP_POSE,
-            samples: samples.clone(),
+            samples,
             future: LOOP_COLOR,
             past: LOOP_COLOR,
             gap: 0.0,
@@ -196,7 +200,7 @@ pub fn build(
     }
     for &(s, k, color) in &colored {
         let (ship, item) = (&ships[s], &ships[s].items[k]);
-        for m in &item.markers {
+        for (i, m) in item.markers.iter().enumerate() {
             // A landing on the track it leaves, an ascent on the one it
             // reaches; the rest on the item's own.
             let t = event_time(item, m);
@@ -216,6 +220,9 @@ pub fn build(
                 MarkerKind::Jump { .. } => (Shape::Cross, JUMP_COLOR, 11.0),
             };
             out.events.push(Event {
+                ship: s,
+                item: k,
+                marker: i,
                 t,
                 position: frame.pose(eph, focus, t).from_world(r),
                 shape,
