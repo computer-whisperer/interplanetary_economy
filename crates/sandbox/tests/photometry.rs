@@ -71,7 +71,7 @@ fn seen(eph: &Ephemeris, target: BodyId, observer: Option<BodyId>, t: Epoch, alp
 
 /// Each curve against Horizons' APmag − 5 log10(r Δ), at the phase angle
 /// it gives, every 30 days over 2025–2080, from Earth and, for the outer
-/// planets and Earth, from a body farther out (to 176° of phase): within
+/// planets, from a body farther out (to 176° of phase): within
 /// 0.002 mag (Uranus's pole's latitudes and Saturn's rings' opening this
 /// game's; Saturn with its rings where Horizons counts them, under 6.5°
 /// of phase, opened under 27°); Mars within 0.13, the terms for the
@@ -89,7 +89,6 @@ fn curves_match_horizons() {
         ("saturn", 399, Some("earth"), 0.002),
         ("uranus", 399, Some("earth"), 0.002),
         ("neptune", 399, Some("earth"), 0.002),
-        ("earth", 499, Some("mars"), 0.002),
         ("jupiter", 699, Some("saturn"), 0.002),
         ("saturn", 799, Some("uranus"), 0.002),
         ("uranus", 899, Some("neptune"), 0.002),
@@ -123,6 +122,24 @@ fn curves_match_horizons() {
         );
         assert!(worst < tolerance, "{target} from {center}: {worst} mag");
     }
+}
+
+/// Earth's curve is Robinson 2025's fit (not Horizons', Mallama's): its
+/// full-phase magnitude from its V-band albedo, 0.215, and its phase
+/// function, a Henyey-Greenstein's of g = −0.33 at 180° − α, at 90° and
+/// 144° (computed apart, in Python).
+#[test]
+fn earths_curve_is_robinsons() {
+    let eph = Ephemeris::standard();
+    let curve = Curve::of(eph.body(eph.lookup("earth").unwrap())).unwrap();
+    let at = |alpha| curve.magnitude(&Seen { alpha, observer_lat: 0.0, sun_lat: 0.0 });
+    let full = at(0.0);
+    let phase = |alpha| 10f64.powf(-0.4 * (at(alpha) - full));
+    println!("Earth: V(1,0) {full:.4}, phase function at 90° {:.4}, 144° {:.4}", phase(90.0), phase(144.0));
+    assert!((full - -3.216).abs() < 0.001, "{full}");
+    assert!((phase(90.0) - 0.258).abs() < 0.001);
+    assert!((phase(144.0) - 0.143).abs() < 0.001);
+    assert_eq!(curve.range(), (0.0, 144.0));
 }
 
 /// The flux the renderer shows of each planet and the Moon, from Earth's

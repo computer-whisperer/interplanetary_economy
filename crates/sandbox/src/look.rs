@@ -31,9 +31,10 @@ pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
 ///
 /// Stops the sky (the stars and the Milky Way) shows over the scene's
 /// exposure, so that it shows beside a sunlit body. Over Earth's
-/// exposure, +18 shows stars to about magnitude 11. (Chosen as +17 when
-/// Earth's exposure was 1.1 stops higher, by its Bond albedo.)
-pub const BACKGROUND_LIFT: i32 = 18;
+/// exposure, +17 shows stars to about magnitude 11. (18 while Earth's
+/// curve was Mallama's, 0.75 mag too bright, which put its exposure 1
+/// stop lower; the look kept.)
+pub const BACKGROUND_LIFT: i32 = 17;
 
 /// Stops bodies drawn as points of light show over the scene's exposure:
 /// as the sky's, so that the planets show where they are, at their
@@ -41,17 +42,17 @@ pub const BACKGROUND_LIFT: i32 = 18;
 pub const BODY_LIFT: i32 = BACKGROUND_LIFT;
 
 /// The most either is lifted: enough for the Milky Way to show clearly
-/// (+23 over Earth's exposure) with any planet in focus (Venus's exposure
-/// is 1.6 stops under Earth's). With the Sun's, 15 stops under, the
+/// (+22 over Earth's exposure) with any planet in focus (Venus's exposure
+/// is 2.6 stops under Earth's). With the Sun's, 16 stops under, the
 /// exposure keys reach further.
 pub const MAX_LIFT: i32 = 25;
 
 /// Stops Earth's night lights show over their radiance, so that they
 /// show at the day side's exposure.
-pub const NIGHT_LIGHTS: i32 = 15;
+pub const NIGHT_LIGHTS: i32 = 14;
 
 /// The most they are lifted: 6 stops past the default.
-pub const MAX_NIGHT_LIGHTS: i32 = 21;
+pub const MAX_NIGHT_LIGHTS: i32 = 20;
 
 /// Seconds for exposure to close ~63% of the way to a new focus's: most
 /// of it within a refocus's flight.
@@ -138,14 +139,14 @@ mod tests {
     /// incidence) shows at KEY: the exposure × its normal albedo (a
     /// Lambertian surface's that shows as it does at full phase: for
     /// these, Lambertian without their maps, 1.5 × the geometric albedo p
-    /// from their published V(1,0); a lunar-Lambert body's is p) × the
-    /// irradiance.
+    /// from their published V(1,0), Earth's Robinson's; a lunar-Lambert
+    /// body's is p) × the irradiance.
     #[test]
     fn the_focus_shows_at_the_key() {
         let eph = Ephemeris::standard();
         let t = Epoch::from_ymd(2045, 3, 1);
         let sun = eph.barycentric_position(eph.sun(), t);
-        for (id, v0) in [("earth", -3.99), ("jupiter", -9.395)] {
+        for (id, v0) in [("earth", -3.2165), ("jupiter", -9.395)] {
             let b = eph.lookup(id).unwrap();
             let e = exposure_for(eph, b, t);
             let p = 10f64.powf(-0.4 * (v0 - photometry::V_SUN)) * (AU_KM / eph.body(b).radius).powi(2);

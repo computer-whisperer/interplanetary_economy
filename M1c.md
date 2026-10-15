@@ -459,20 +459,20 @@ night lights, below.
 - One exposure for the whole scene (decided 2026-10-15: as accurate as
   we can first; departures where play shows the need). Exposed for a
   sunlit body, as a camera would be, the true sky shows nothing; over
-  Earth's exposure, +20 stops shows the Milky Way's band faintly, +23
+  Earth's exposure, +19 stops shows the Milky Way's band faintly, +22
   clearly. Rejected: a fixed exposure for the stars and the Milky Way
   where it exceeded the frame's, which showed them beside a sunlit body
   but which the exposure keys did not move.
 - The sky (the stars and the Milky Way) is lifted over that exposure by
-  a setting, the background lift: 18 stops by default, 0 (true) to 25
+  a setting, the background lift: 17 stops by default, 0 (true) to 25
   (decided 2026-10-15: the true sky left the map black beside any
   sunlit body). The exposure keys move it with the rest of the scene.
-  Over Earth's exposure, +18 shows stars to about magnitude 11 and not
-  yet the Milky Way. (Chosen as +17 when Earth's exposure was 1.1 stops
-  higher, by its Bond albedo; the defaults moved with it, the look
-  kept.)
+  Over Earth's exposure, +17 shows stars to about magnitude 11 and not
+  yet the Milky Way. (Earth's exposure has moved with its measured
+  brightness: 1.1 stops down when it took Mallama's curve, 1.0 up when
+  Robinson's; the defaults moved with it, 18 between, the look kept.)
 - Bodies drawn as points of light are lifted over the scene's exposure
-  by their own setting, the body lift: 18 stops by default, as the
+  by their own setting, the body lift: 17 stops by default, as the
   sky's, so that the planets show where they are, at their brightness
   among the stars (decided 2026-10-15). As a body's disk fades in, from
   1 to 3 px in radius, its point's lift falls in stops with its share.
@@ -489,7 +489,7 @@ night lights, below.
   while the eye could not resolve it (under 1′ in radius: every planet
   seen from Earth); past that its point's gain falls as its peak would,
   to 1 (none) where its image could be resolved.
-- Earth's night lights are lifted over their radiance by a setting, 15
+- Earth's night lights are lifted over their radiance by a setting, 14
   stops by default, so that they show at the day side's exposure. Their
   radiance, ~1e-5 of daylight's at a bright city, is within a factor of
   a few: Black Marble's image is stretched, not calibrated.
@@ -506,8 +506,13 @@ night lights, below.
   brightness, from distance, phase and albedo.
 - Each body's brightness is held to its published phase curve (decided
   2026-10-15): Mallama and Hilton 2018 for the planets, as JPL Horizons
-  computes them; Allen's for the Moon, as Horizons'; the H, G system for
-  Phobos, Deimos and the small bodies. A sphere's shading spreads its
+  computes them, but Earth's; Allen's for the Moon, as Horizons'; the H,
+  G system for Phobos, Deimos and the small bodies. Earth's is Robinson
+  2025's fit to Earthshine and spacecraft photometry (decided
+  2026-10-15): Mallama's full phase, EPOXI's 57.7° extrapolated by a
+  model that swapped forward and backward scattering, is 0.75 mag too
+  bright (a geometric albedo of 0.434 against 0.23, which with its own
+  phase integral made Earth reflect 0.57 of its light, against 0.29). A sphere's shading spreads its
   light over its disk, and a gain brings the total to the curve at the
   camera's phase angle (held at the curve's range's edge beyond it);
   Saturn's point carries its rings' light. A map's mean is weighed as
@@ -515,29 +520,39 @@ night lights, below.
   exposure shows the focus's sunlit side at full phase, its mean, at
   `KEY`.
   - A body's point follows its curve as far as Horizons takes it
-    (Mercury's, Venus's, Earth's and the Moon's to 180°); its disk's gain
-    is held past 170°, where a crescent's shading carries too little
-    light to scale.
+    (Mercury's, Venus's and the Moon's to 180°), Earth's to 144°, where
+    its fit's data end; its disk's gain is held past 170°, where a
+    crescent's shading carries too little light to scale.
   - Checked against Horizons over 2025–2080, from Earth and from bodies
-    farther out (to 176° of phase): the curves within 0.002 mag (Mars
-    0.12, the terms for its longitude seen and its season left out); the
-    planets' points from Earth within 0.005, to 177°.
+    farther out (to 176° of phase): the curves but Earth's within 0.002
+    mag (Mars 0.12, the terms for its longitude seen and its season left
+    out); the planets' points from Earth within 0.005, to 177°.
   - Disks, against their curves, seen from 100 radii: bodies without air
     or maps within 0.03 to 120° of phase, Jupiter 0.02 (nearer, a disk
     shows less than a hemisphere: from 12 radii, 0.2 under at 120°).
-    Earth ±0.2 by the face lit. The Moon from Earth −0.25 to +0.34 to
+    Earth with its air within −0.14 to +0.02 to 144°, and its face
+    lit moves it ±0.2. The Moon from Earth −0.25 to +0.34 to
     150°, its waxing and waning differing by up to 0.33 near 100°, where
     its curve is one for both.
   - Open: the Moon's thinner crescents show limb highlands brighter than
     its near side's mean, which its curve counts already (0.5 mag over at
     166°). Bodies with air add their air's forward scattering, which
     their curves count already, at large phase angles (seen from 500
-    radii, Mars 1.3 mag over at 120°, Venus 1.1 at 160°, Earth 1.0 at
-    150°, its ocean glint, not scaled, too). Saturn's rings as drawn show ~2.5× under its curve's
-    with them at small phase angles, so resolved Saturn shows 0.35–0.6
-    mag under its point. Earth's maps send 3.4× less light than its
-    curve (its cloud map covers 21% of its disk, its sky ~2/3; its air is
-    not in its point), so its gain lifts its clouds to an albedo of 2.7.
+    radii, Mars 1.3 mag over at 120°, Venus 1.1 at 160°). Saturn's
+    rings as drawn show ~2.5× under its curve's with them at small phase
+    angles, so resolved Saturn shows 0.35–0.6 mag under its point.
+  - Earth's model (its maps, clouds, air and glint) is close to physical
+    (2026-10-15): with no gain, 0.06–0.36 mag under its curve to 120° of
+    phase, and ~10% under its spherical albedo (0.294). Its gain is
+    1.2–1.7 to 90°: at full phase its Lambert clouds lack backscatter.
+    Past 90° it climbs (2.7 at 120°, 9.5 at 144°): its Lambert clouds
+    lack the forward scattering that brightens a crescent. Its air is
+    drawn over its surface as calibrated, so its disk shows up to 0.14
+    mag over its curve. Its cloud map's mean value, 0.24, is cover
+    weighed by brightness: 60% of the area has some (over 0.1 of full).
+    Its aerosols are the global mean's (optical depth 0.14 at 550 nm;
+    Hillaire's, 0.005, a clear day's). Before, held to Mallama's curve,
+    its gain was 3.4 at full phase.
   - Before: Lambert shading of the Bond albedo, which left the giants
     ~1 mag faint (a geometric albedo of 2/3 of it; theirs is 1.4–2.5×
     that), and Mercury, Mars and the Moon too bright at large phase
@@ -557,10 +572,12 @@ night lights, below.
   white clouds): its disk keeps its maps' colors, under its air, and
   its point, which has no air, takes its measured color.
   - Points show their colors within 0.001; disks without air within
-    0.014 (as the face shown varies). Earth's disk is 0.16 short of its
-    measured blue (in a channel, of luminance 1): its air's share is
-    diluted by its gain (above). Rejected: Earth's gain per channel as
-    the others', which tinted its clouds pale blue.
+    0.014 (as the face shown varies). Earth's disk is 0.10 over its
+    measured blue (in a channel, of luminance 1), its air drawn over its
+    calibrated surface (above). Rejected: Earth's gain per channel as
+    the others', which tinted its clouds pale blue. Earth's color is
+    Robinson 2025's, with its curve (Mallama et al.'s came from the same
+    extrapolation as its full phase).
   - Before: the maps' means and rough tints. Mars's map reflected 1.7×
     the blue its measured color does, and Uranus and Neptune were paler
     than their measured cyan.

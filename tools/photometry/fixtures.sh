@@ -3,13 +3,14 @@
 # against: each planet's and the Moon's apparent visual magnitude (APmag),
 # its distances from the Sun and the observer, and its phase angle
 # (S-T-O), every 30 days over 2025-2080; from Earth's center, and for the
-# outer planets and Earth from a body farther out, where they show large
-# phase angles. Into crates/sandbox/tests/fixtures/.
+# outer planets from a body farther out, where they show large phase
+# angles. Into crates/sandbox/tests/fixtures/. (Not Earth: its curve is
+# Robinson 2025's, not Horizons'.)
 # Usage: tools/photometry/fixtures.sh
 set -euo pipefail
 out="$(dirname "$0")/../../crates/sandbox/tests/fixtures"
 for pair in mercury:199:399 venus:299:399 moon:301:399 mars:499:399 jupiter:599:399 \
-  saturn:699:399 uranus:799:399 neptune:899:399 earth:399:499 jupiter:599:699 \
+  saturn:699:399 uranus:799:399 neptune:899:399 jupiter:599:699 \
   saturn:699:799 uranus:799:899 neptune:899:999; do
   IFS=: read -r id cmd center <<<"$pair"
   curl -sSf -G "https://ssd.jpl.nasa.gov/api/horizons.api" \

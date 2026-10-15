@@ -131,11 +131,11 @@ item jumps to its start. Exposure follows the focus (its sunlit side
 at a fixed level), one for the whole scene; `-` and `=` shift it a stop
 at a time. The settings (the gear) hold the departures from realism,
 in stops, each 0 for true to life: the sky's lift over the exposure and
-that of bodies seen as points, 18 by default (`--background-lift
+that of bodies seen as points, 17 by default (`--background-lift
 STOPS`, `--body-lift STOPS`), and Earth's night lights' over their
-radiance, 15 (`--night-lights STOPS`). At 0, as in a photograph, no
-stars or planets show beside a sunlit body; with the sky's exposure +20
-stops over Earth's, the Milky Way's band shows faintly; at +23,
+radiance, 14 (`--night-lights STOPS`). At 0, as in a photograph, no
+stars or planets show beside a sunlit body; with the sky's exposure +19
+stops over Earth's, the Milky Way's band shows faintly; at +22,
 clearly. The settings also show or hide the labels (what is drawn can
 still be clicked), and each class of line: the ships' paths and events,
 the station orbits, and the planets', moons' and small bodies' orbits. On an HDR output, highlights use the display's headroom.

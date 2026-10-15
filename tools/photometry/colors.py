@@ -6,11 +6,16 @@ Printed as the arms of crates/sandbox/src/photometry.rs's `color`.
 Each spectrum is taken as linear between the reflectances measured at
 these wavelengths (tools/color.py):
 
-- The planets: geometric albedos in Johnson-Cousins U, B, V, Rc, Ic and
-  Sloan u', g', r', i' (Mallama, Krobusek and Pavlov 2017, Icarus 282,
-  19-33, Table 7; arXiv 1609.05048), at the bands' effective wavelengths
-  (its Tables 1 and 2). The two systems' colors alone differ by up to
-  0.09 in a channel (printed).
+- The other planets: geometric albedos in Johnson-Cousins U, B, V, Rc,
+  Ic and Sloan u', g', r', i' (Mallama, Krobusek and Pavlov 2017, Icarus
+  282, 19-33, Table 7; arXiv 1609.05048), at the bands' effective
+  wavelengths (its Tables 1 and 2). The two systems' colors alone differ
+  by up to 0.09 in a channel (printed).
+- Earth: its geometric albedos in B (400-500 nm), V (500-600) and R
+  (600-700) bands (Robinson 2025, PSJ, arXiv 2507.22258, Sec. 5), at the
+  bands' centers: the same work as its phase curve. Mallama et al.'s
+  were extrapolated to full phase by a model that swapped forward and
+  backward scattering (Robinson's Sec. 6.1).
 - The Moon: Lane and Irvine 1973 (AJ 78, 267), Table VIII's narrow
   bands, past 600 nm x 0.85: their 1965 data, tabulated, run 10-20% over
   their 1964 data and other studies there (their Sec. III).
@@ -43,13 +48,15 @@ SLOAN = [355, 469, 616, 748]  # u' g' r' i'
 PLANETS = {
     "mercury": [0.087, 0.105, 0.142, 0.158, 0.180, 0.095, 0.130, 0.169, 0.200],
     "venus": [0.348, 0.658, 0.689, 0.658, 0.640, 0.326, 0.664, 0.712, 0.708],
-    "earth": [0.688, 0.512, 0.434, 0.392, 0.396, 0.722, 0.497, 0.388, 0.393],
     "mars": [0.060, 0.088, 0.170, 0.250, 0.285, 0.061, 0.111, 0.245, 0.298],
     "jupiter": [0.358, 0.443, 0.538, 0.513, 0.389, 0.377, 0.509, 0.575, 0.456],
     "saturn": [0.203, 0.339, 0.499, 0.646, 0.543, 0.209, 0.436, 0.618, 0.601],
     "uranus": [0.502, 0.561, 0.488, 0.264, 0.089, 0.541, 0.559, 0.355, 0.120],
     "neptune": [0.578, 0.562, 0.442, 0.226, 0.072, 0.564, 0.533, 0.307, 0.101],
 }
+
+# Robinson 2025: (nm, geometric albedo).
+EARTH = [(450.0, 0.277), (550.0, 0.226), (650.0, 0.221)]
 
 # Lane and Irvine 1973, Table VIII: (nm, geometric albedo).
 MOON = [(359.0, 0.072), (392.6, 0.085), (415.5, 0.088), (457.3, 0.098), (501.2, 0.106),
@@ -86,6 +93,7 @@ def main():
         both = reflected_rgb(jc + sloan)
         spread = np.abs(reflected_rgb(jc) - reflected_rgb(sloan)).max()
         lines.append(rust(f'"{id}"', both, f"systems differ by {spread:.2f}"))
+    lines.insert(2, rust('"earth"', reflected_rgb(EARTH), "Robinson"))
     moon = [(nm, p * (MOON_RED if nm > 600 else 1.0)) for nm, p in MOON]
     lines.append(rust('"moon"', reflected_rgb(moon), "Lane and Irvine"))
     lines.append(rust('"phobos" | "deimos"', class_rgb(CLASSES["D"]), "class D"))

@@ -6,10 +6,14 @@
 //!
 //! The planets' curves are Mallama and Hilton 2018 ("Computing apparent
 //! planetary magnitudes for The Astronomical Almanac", Astronomy and
-//! Computing 25, 10-24; arXiv 1808.01973), as JPL Horizons computes them;
-//! the Moon's is Allen's, as Horizons'. Phobos, Deimos and the small
-//! bodies take the IAU's H, G system (Bowell et al. 1989) with G = 0.15:
-//! Horizons applies no phase law to Phobos and Deimos.
+//! Computing 25, 10-24; arXiv 1808.01973), as JPL Horizons computes them,
+//! but Earth's: Robinson 2025 (PSJ; arXiv 2507.22258), fitted to
+//! Earthshine and spacecraft photometry, ~0.75 mag under Mallama's, whose
+//! full phase was extrapolated by a model that swapped forward and
+//! backward scattering (Robinson's Sec. 6.1). The Moon's is Allen's, as
+//! Horizons'. Phobos, Deimos and the small bodies take the IAU's H, G
+//! system (Bowell et al. 1989) with G = 0.15: Horizons applies no phase
+//! law to Phobos and Deimos.
 
 use glam::DVec3;
 use orbit::ephem::{Body, BodyKind};
@@ -21,6 +25,17 @@ pub const V_SUN: f64 = -26.74;
 
 /// Uranus's flattening, for its planetographic latitudes.
 const URANUS_FLATTENING: f64 = 0.0022927;
+
+/// Earth's visual phase curve (Robinson 2025, Eq. 14): its disk's mean
+/// intensity a Henyey-Greenstein phase function of the scattering angle
+/// 180° − α, of asymmetry `EARTH_G`, normalized at full phase, times its
+/// geometric albedo. The fit's visual (400-700 nm) albedo, 0.23, scaled
+/// to V by the physical model's V over visual (0.226 / 0.242).
+const EARTH_G: f64 = -0.33;
+const EARTH_ALBEDO_V: f64 = 0.23 * 0.226 / 0.242;
+
+/// Earth's mean radius, km, as its albedo takes it.
+const EARTH_RADIUS_KM: f64 = 6371.0;
 
 /// The slope parameter the small bodies take, the IAU's default.
 const SLOPE: f64 = 0.15;
@@ -102,12 +117,14 @@ impl Curve {
     }
 
     /// The phase angles the curve is taken over, degrees: where Horizons
-    /// takes it (Mercury's, Venus's, Earth's and the Moon's to 180°, past
-    /// their observations: Mercury's span 2.1° to 169.5°), else to its
+    /// takes it (Mercury's, Venus's and the Moon's to 180°, past their
+    /// observations: Mercury's span 2.1° to 169.5°), else to its
     /// observations' end. Past it, its body follows its shading's law.
     pub fn range(&self) -> (f64, f64) {
         match self {
-            Curve::Mercury | Curve::Venus | Curve::Earth | Curve::Moon => (0.0, 180.0),
+            Curve::Mercury | Curve::Venus | Curve::Moon => (0.0, 180.0),
+            // The data Robinson's fit is taken over.
+            Curve::Earth => (0.0, 144.0),
             Curve::Mars => (0.0, 120.0),
             Curve::Jupiter => (0.0, 130.0),
             Curve::Saturn => (0.0, 150.0),
@@ -131,8 +148,13 @@ impl Curve {
                 poly(a, &[-4.384, -1.044e-3, 3.687e-4, -2.814e-6, 8.938e-9])
             }
             Curve::Venus => poly(a, &[236.05828, -2.81914, 8.39034e-3]),
-            // Eq. 5.
-            Curve::Earth => poly(a, &[-3.99, -1.060e-3, 2.054e-4]),
+            Curve::Earth => {
+                let g = EARTH_G;
+                let phase = ((1.0 + g * g + 2.0 * g * a.to_radians().cos()) / (1.0 + g).powi(2))
+                    .powf(-1.5);
+                let size = (EARTH_RADIUS_KM / AU_KM).powi(2);
+                V_SUN - 2.5 * (EARTH_ALBEDO_V * size * phase).log10()
+            }
             // Eqs. 6 and 7, without the terms for the longitude seen and
             // the season (to 0.12 mag against Horizons; the map carries
             // its longitudes).
@@ -211,14 +233,15 @@ const SUN_COLOR: [f64; 3] = [1.0; 3];
 /// linear sRGB with the Sun's white, luminance 1, from the spectra
 /// `tools/photometry/colors.py` names (and prints these from): the
 /// planets' (their two photometric systems alone differing by up to
-/// 0.09 in a channel) and the Moon's measured whole; Phobos's and Deimos's
-/// like D-type asteroids'; a small body's its class's mean, or the Sun's
-/// where its class is unknown. None for the Sun.
+/// 0.09 in a channel; Earth's as its curve's source has it) and the
+/// Moon's measured whole; Phobos's and Deimos's like D-type asteroids';
+/// a small body's its class's mean, or the Sun's where its class is
+/// unknown. None for the Sun.
 pub fn color(body: &Body) -> Option<[f64; 3]> {
     Some(match body.id.as_str() {
         "mercury" => [1.141, 0.981, 0.768],
         "venus" => [1.015, 1.002, 0.938],
-        "earth" => [0.883, 1.014, 1.202],
+        "earth" => [0.939, 0.998, 1.198],
         "mars" => [1.414, 0.928, 0.491],
         "jupiter" => [1.030, 1.005, 0.860],
         "saturn" => [1.212, 0.967, 0.700],

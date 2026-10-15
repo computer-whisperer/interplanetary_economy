@@ -1,29 +1,47 @@
 //! The atmospheres drawn (M1c.md, step 6 plan, item 5), over each body's
-//! radius. Earth's are Hillaire's (2020) values; Mars's and Venus's are
-//! estimates from the physical quantities given beside them, close enough
-//! for their color and their glow at the limb.
+//! radius. Earth's are Hillaire's (2020) values but for its aerosols, the
+//! global mean's (below); Mars's and Venus's are estimates from the
+//! physical quantities given beside them, close enough for their color
+//! and their glow at the limb.
 
 use render::atmosphere::Atmosphere;
 
-/// Earth's Rayleigh scattering at sea level, per km (Hillaire 2020).
+/// Earth's Rayleigh scattering at sea level, per km (Hillaire 2020), at
+/// 680, 550 and 440 nm.
 const EARTH_RAYLEIGH: [f64; 3] = [5.802e-3, 13.558e-3, 33.1e-3];
+
+/// Earth's aerosols, the global mean: optical depth 0.14 at 550 nm
+/// (AeroCom's models 0.13, MODIS 0.155), by an Ångström exponent of 1 at
+/// the channels' wavelengths; single-scattering albedo 0.95 (0.93 over
+/// land, 0.97 over the ocean); over a scale height of 1.2 km. Hillaire's
+/// (optical depth 0.005, albedo 0.48), a clear day's, left Earth's
+/// crescent without the forward scattering that brightens it (Robinson
+/// 2025).
+const EARTH_AEROSOL_DEPTH: f64 = 0.14;
+const EARTH_AEROSOL_ALBEDO: f64 = 0.95;
+const EARTH_AEROSOL_HEIGHT: f64 = 1.2;
 
 /// `id`'s atmosphere, over a ground of `radius` km.
 pub fn of(id: &str, radius: f64) -> Option<Atmosphere> {
     match id {
-        "earth" => Some(Atmosphere {
-            bottom: radius,
-            top: radius + 100.0,
-            rayleigh: EARTH_RAYLEIGH,
-            rayleigh_height: 8.0,
-            mie_scattering: [3.996e-3; 3],
-            mie_absorption: [4.40e-3; 3],
-            mie_height: 1.2,
-            mie_g: 0.8,
-            absorption: [0.650e-3, 1.881e-3, 0.085e-3],
-            absorption_center: 25.0,
-            absorption_width: 15.0,
-        }),
+        "earth" => {
+            let extinction = [680.0, 550.0, 440.0]
+                .map(|nm: f64| EARTH_AEROSOL_DEPTH * 550.0 / nm / EARTH_AEROSOL_HEIGHT);
+            Some(Atmosphere {
+                bottom: radius,
+                top: radius + 100.0,
+                rayleigh: EARTH_RAYLEIGH,
+                rayleigh_height: 8.0,
+                mie_scattering: extinction.map(|e| e * EARTH_AEROSOL_ALBEDO),
+                mie_absorption: extinction.map(|e| e * (1.0 - EARTH_AEROSOL_ALBEDO)),
+                mie_height: EARTH_AEROSOL_HEIGHT,
+                // Ambient aerosols' asymmetry at 550 nm, ~0.7.
+                mie_g: 0.7,
+                absorption: [0.650e-3, 1.881e-3, 0.085e-3],
+                absorption_center: 25.0,
+                absorption_width: 15.0,
+            })
+        }
         // CO₂ at 6.1 mbar and 210 K, 1/121 of air's number density at sea
         // level, each molecule scattering 2.45 times air's: Earth's
         // Rayleigh × 0.0202, scale height 11.1 km. Dust: visible optical
