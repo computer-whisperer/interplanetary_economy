@@ -1,7 +1,7 @@
 //! The settings menu, through damascene as the window delivers input, in
-//! the window's first size: the gear opens it, its slider sets the sky's
-//! lift by whole stops, and a click outside it or Escape closes it. The
-//! lift reaches the sky and bodies' points of light alone.
+//! the window's first size: the gear opens it, its sliders set the
+//! departures from realism by whole stops, and a click outside it or
+//! Escape closes it. Each lift reaches what it names alone.
 
 use damascene_core::prelude::*;
 use damascene_wgpu::Runner;
@@ -11,11 +11,11 @@ use render::offscreen::Offscreen;
 use sandbox::app::Shell;
 use sandbox::camera::MapCamera;
 use sandbox::frame::{self, Output, View};
-use sandbox::look::{BACKGROUND_LIFT, MAX_LIFT};
-use sandbox::settings;
+use sandbox::look::{MAX_LIFT, MAX_NIGHT_LIGHTS};
+use sandbox::settings::{self, CONTROLS, Settings};
 
 #[test]
-fn the_menu_sets_the_sky_lift() {
+fn the_menu_sets_the_lifts() {
     let gpu = render::offscreen::Offscreen::new().expect("a GPU");
     let (device, queue) = (&gpu.device, &gpu.queue);
     for scale in [1.0f32, 2.0] {
@@ -65,38 +65,45 @@ fn the_menu_sets_the_sky_lift() {
         };
         let center = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
 
+        let lifts = |look: &render::Look| [look.sky_lift, look.body_lift, look.night_lift];
         let scene = draw(&mut app, &mut ui);
         let exposure = scene.look.exposure;
-        assert_eq!(scene.look.sky_lift, 2f32.powi(BACKGROUND_LIFT));
+        assert_eq!(lifts(&scene.look), Settings::default().lifts());
         let gear = ui.rect_of_key(settings::KEY).expect("the gear is laid out");
         assert!(gear.x + gear.w < w, "the gear is in the window: {gear:?}");
         click(&mut app, &mut ui, center(gear));
         assert!(app.settings_open, "scale {scale}: the gear opens the menu");
         draw(&mut app, &mut ui);
-        let lift = ui.rect_of_key(settings::LIFT_KEY).expect("the slider is laid out");
-        println!("scale {scale}: gear {gear:?}, slider {lift:?}");
-        // Its ends, then its middle; each a whole stop.
-        for (x, want) in [
-            (lift.x + 1.0, 0),
-            (lift.x + lift.w - 1.0, MAX_LIFT),
-            (lift.x + lift.w / 2.0, (MAX_LIFT as f32 / 2.0).round() as i32),
-        ] {
-            click(&mut app, &mut ui, (x, lift.y + lift.h / 2.0));
-            assert_eq!(app.settings.background_lift, want, "scale {scale}, at x {x}");
-            assert!(app.settings_open, "the slider leaves the menu open");
-            let scene = draw(&mut app, &mut ui);
-            assert_eq!(scene.look.sky_lift, 2f32.powi(want));
-            assert_eq!(scene.look.exposure, exposure, "the lift leaves the scene's exposure");
+        for (k, c) in CONTROLS.iter().enumerate() {
+            let slider = ui.rect_of_key(c.key).expect("the slider is laid out");
+            assert!(slider.y + slider.h < h, "{}'s slider is in the window", c.name);
+            println!("scale {scale}: {} {slider:?}", c.name);
+            // Its ends, then its middle; each a whole stop, and its own.
+            for (x, want) in [
+                (slider.x + 1.0, 0),
+                (slider.x + slider.w - 1.0, c.max),
+                (slider.x + slider.w / 2.0, c.max / 2),
+            ] {
+                let mut others = app.settings;
+                click(&mut app, &mut ui, (x, slider.y + slider.h / 2.0));
+                *(c.field)(&mut others) = want;
+                assert_eq!(app.settings, others, "scale {scale}, {} at x {x}", c.name);
+                assert!(app.settings_open, "the slider leaves the menu open");
+                let scene = draw(&mut app, &mut ui);
+                assert_eq!(lifts(&scene.look)[k], 2f32.powi(want));
+                assert_eq!(lifts(&scene.look), app.settings.lifts());
+                assert_eq!(scene.look.exposure, exposure, "the lifts leave the scene's exposure");
+            }
+            // The arrow keys, on the slider focused by the clicks.
+            let events = ui.key_down(
+                LogicalKey::Named(NamedKey::ArrowRight),
+                PhysicalKey::ArrowRight,
+                KeyModifiers::default(),
+                false,
+            );
+            deliver(&mut app, &ui, events);
+            assert_eq!(*(c.field)(&mut app.settings), c.max / 2 + 1, "{}", c.name);
         }
-        // The arrow keys, on the slider focused by the clicks.
-        let events = ui.key_down(
-            LogicalKey::Named(NamedKey::ArrowRight),
-            PhysicalKey::ArrowRight,
-            KeyModifiers::default(),
-            false,
-        );
-        deliver(&mut app, &ui, events);
-        assert_eq!(app.settings.background_lift, MAX_LIFT / 2 + 1);
 
         // Outside it, on the map: closed, and the map takes no click.
         let focus = app.camera.focus;
@@ -118,28 +125,39 @@ fn the_menu_sets_the_sky_lift() {
     }
 }
 
-/// With the sky left out, what the lift reaches: bodies drawn as points
-/// of light, by its stops (Jupiter from beside Earth, its point's flux
-/// 2¹⁷× at a lift of 17, within 1%), and nothing else: at lifts 0 and
-/// [`MAX_LIFT`], pixel for pixel away from bodies' points, Earth with its
-/// air (and the Moon's disk), the orbits' lines and the station orbits'
-/// markers, and Saturn with its rings.
+/// With the sky left out, what each lift reaches, and nothing else (from
+/// all at 0, true to life):
+/// - the background lift: nothing here, pixel for pixel;
+/// - the body lift: bodies' points alone, pixel for pixel away from them
+///   (Earth with its air and the Moon's disk, the orbits' lines and the
+///   station orbits' markers; Saturn with its rings), and by its stops
+///   (Jupiter's point from beside Earth carries 2¹⁷ its flux at 17,
+///   within 0.1%);
+/// - the night lights: Earth's disk alone, its night side's lights by
+///   their stops (what 10 and 20 stops add, over 2^stops − 1, the same
+///   within 1%).
 #[test]
-fn the_lift_reaches_the_sky_and_points_alone() {
+fn each_lift_reaches_what_it_names() {
     let gpu = Offscreen::new().expect("a GPU");
     let mut renderer = render::Renderer::new(&gpu.device, &gpu.queue);
     sandbox::maps::wait().expect("data/bodies reads");
     let size = (640, 400);
     let eph = orbit::ephem::Ephemeris::standard();
-    let (earth, saturn, jupiter) = (
+    let (sun, earth, saturn, jupiter) = (
+        eph.sun(),
         eph.lookup("earth").unwrap(),
         eph.lookup("saturn").unwrap(),
         eph.lookup("jupiter").unwrap(),
     );
-    let mut shown = |t: Epoch, focus, camera: Option<render::Camera>, lift: i32| {
+    let truth = Settings {
+        background_lift: 0,
+        body_lift: 0,
+        night_lights: 0,
+    };
+    let mut shown = |t: Epoch, focus, camera: Option<render::Camera>, settings: Settings| {
         let mut app = Shell::new(t);
         app.camera = MapCamera::new(eph, focus);
-        app.settings.background_lift = lift;
+        app.settings = settings;
         app.update_paths();
         let mut scene = app.scene(1.0);
         scene.sky = None;
@@ -152,35 +170,61 @@ fn the_lift_reaches_the_sky_and_points_alone() {
         gpu.queue.submit(Some(encoder.finish()));
         (scene, gpu.read_rgba16f(&target.hdr))
     };
+    let at = |i: usize| {
+        glam::DVec2::new((i % size.0 as usize) as f64 + 0.5, (i / size.0 as usize) as f64 + 0.5)
+    };
+    // The pixels that differ, but for those within `reach` px of `near`.
+    let differ = |a: &[[f32; 4]], b: &[[f32; 4]], near: &[glam::DVec2], reach: f64| {
+        a.iter()
+            .zip(b)
+            .enumerate()
+            .filter(|(i, (a, b))| a != b && near.iter().all(|p| p.distance(at(*i)) >= reach))
+            .count()
+    };
+
     let t = Epoch::from_ymd(2045, 3, 1);
     for (name, focus) in [("Earth", earth), ("Saturn", saturn)] {
-        let (scene, true_sky) = shown(t, focus, None, 0);
-        let (_, lifted) = shown(t, focus, None, MAX_LIFT);
-        // Where bodies under 4 px in radius land (points, or fading
-        // from them into their disks).
+        let (scene, true_view) = shown(t, focus, None, truth);
         let camera = scene.camera.unwrap();
         let pixel = 2.0 * (camera.fov_y / 2.0).tan() / f64::from(size.1);
+        let radius_px = |s: &render::Sphere| {
+            (s.radius / (s.center - camera.eye).length()).asin() / pixel
+        };
+        // Where bodies under 4 px in radius land (points, or fading from
+        // them into their disks), and Earth's disk.
         let points: Vec<glam::DVec2> = scene
             .spheres
             .iter()
-            .filter(|s| (s.radius / (s.center - camera.eye).length()).asin() / pixel < 4.0)
+            .filter(|s| radius_px(s) < 4.0)
             .filter_map(|s| camera.project(s.center, size))
             .collect();
-        let (mut lit, mut differ) = (0, 0);
-        for (i, (a, b)) in true_sky.iter().zip(&lifted).enumerate() {
-            let at = glam::DVec2::new(
-                (i % size.0 as usize) as f64 + 0.5,
-                (i / size.0 as usize) as f64 + 0.5,
-            );
-            if points.iter().any(|p| p.distance(at) < 8.0) {
-                continue;
-            }
-            lit += usize::from(a[..3].iter().any(|&c| c > 0.0));
-            differ += usize::from(a != b);
-        }
-        println!("{name}: {} points; elsewhere {lit} pixels lit, {differ} differ", points.len());
+        let lit = true_view.iter().filter(|p| p[..3].iter().any(|&c| c > 0.0)).count();
         assert!(lit > 1000, "{name} shows little");
-        assert_eq!(differ, 0, "{name}: the lift reaches past the sky and points");
+        let (_, sky) = shown(t, focus, None, Settings { background_lift: MAX_LIFT, ..truth });
+        let (_, bodies) = shown(t, focus, None, Settings { body_lift: MAX_LIFT, ..truth });
+        let (_, night) = shown(t, focus, None, Settings { night_lights: MAX_NIGHT_LIGHTS, ..truth });
+        let earth_disk = scene
+            .spheres
+            .iter()
+            .find(|s| (s.radius - eph.body(earth).radius).abs() < 1.0)
+            .and_then(|s| Some((camera.project(s.center, size)?, radius_px(s))));
+        let night_differ = match earth_disk {
+            Some((c, r)) => differ(&true_view, &night, &[c], r + 2.0),
+            None => differ(&true_view, &night, &[], 0.0),
+        };
+        let counts = (
+            differ(&true_view, &sky, &[], 0.0),
+            differ(&true_view, &bodies, &points, 8.0),
+            night_differ,
+        );
+        println!(
+            "{name}: {lit} pixels lit, {} points; differ: sky {}, bodies away from points {}, night lights off Earth {}",
+            points.len(),
+            counts.0,
+            counts.1,
+            counts.2
+        );
+        assert_eq!(counts, (0, 0, 0), "{name}");
     }
 
     // Jupiter near opposition, from beside Earth.
@@ -197,10 +241,31 @@ fn the_lift_reaches_the_sky_and_points_alone() {
             .map(|(x, y)| f64::from(image[(y * i64::from(size.0) + x) as usize][1]))
             .sum()
     };
-    let (_, true_sky) = shown(t, earth, Some(camera), 0);
-    let (_, lifted) = shown(t, earth, Some(camera), 17);
-    let ratio = flux(&lifted) / flux(&true_sky);
-    println!("Jupiter's point: {:.4e}, lifted {ratio:.1}×", flux(&true_sky));
-    assert!(flux(&true_sky) > 0.0, "Jupiter's point is drawn");
-    assert!((ratio / 2f64.powi(17) - 1.0).abs() < 0.01, "{ratio}");
+    let (_, true_view) = shown(t, earth, Some(camera), truth);
+    let (_, lifted) = shown(t, earth, Some(camera), Settings { body_lift: 17, ..truth });
+    let (_, sky) = shown(t, earth, Some(camera), Settings { background_lift: MAX_LIFT, ..truth });
+    let ratio = flux(&lifted) / flux(&true_view);
+    println!("Jupiter's point: {:.4e}, lifted {ratio:.1}×", flux(&true_view));
+    assert!(flux(&true_view) > 0.0, "Jupiter's point is drawn");
+    assert!((ratio / 2f64.powi(17) - 1.0).abs() < 1e-3, "{ratio}");
+    assert_eq!(flux(&sky), flux(&true_view), "the sky's lift leaves bodies' points");
+
+    // Earth's night side, from its antisolar side: what the lights add.
+    let t = Epoch::from_ymd(2045, 3, 1);
+    let pe = eph.barycentric_position(earth, t);
+    let away = (pe - eph.barycentric_position(sun, t)).normalize();
+    let side = away.cross(DVec3::Z).normalize();
+    let eye = pe + (away + side * 0.2).normalize() * 30_000.0;
+    let camera = render::Camera::looking_at(eye, pe, DVec3::Z, 50f64.to_radians());
+    let total = |image: &[[f32; 4]]| -> f64 { image.iter().map(|p| f64::from(p[1])).sum() };
+    let (_, dark) = shown(t, earth, Some(camera), truth);
+    let added = |stops: i32, shown: &mut dyn FnMut(Settings) -> Vec<[f32; 4]>| {
+        (total(&shown(Settings { night_lights: stops, ..truth })) - total(&dark))
+            / (2f64.powi(stops) - 1.0)
+    };
+    let mut at_stops = |s: Settings| shown(t, earth, Some(camera), s).1;
+    let (ten, twenty) = (added(10, &mut at_stops), added(20, &mut at_stops));
+    println!("night lights: {ten:.4e} a unit at 10 stops, {twenty:.4e} at 20");
+    assert!(ten > 0.0, "lights show on the night side");
+    assert!((twenty / ten - 1.0).abs() < 0.01, "{ten} vs {twenty}");
 }

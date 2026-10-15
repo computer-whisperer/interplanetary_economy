@@ -277,6 +277,7 @@ impl Shell {
                 })
             }));
         }
+        let [sky_lift, body_lift, night_lift] = self.settings.lifts();
         render::Scene {
             camera: Some(self.camera.camera(eph, t, view.axes)),
             sun: eph.barycentric_position(eph.sun(), t),
@@ -298,7 +299,9 @@ impl Shell {
                 bloom: look::BLOOM,
                 headroom: self.stats.headroom(),
                 pixel: (look::PIXEL / f64::from(px)) as f32,
-                sky_lift: self.settings.sky_lift(),
+                sky_lift,
+                body_lift,
+                night_lift,
             },
             ..Default::default()
         }
@@ -637,7 +640,7 @@ impl App for Shell {
             self.clock
                 .seek(clock::at_fraction(self.timeline(), f64::from(f)));
         } else if self.settings.apply(&event) {
-            // The menu's slider moved.
+            // One of the menu's sliders moved.
         } else if event.is_click_or_activate(FOCUS_KEY) {
             self.focus_open = !self.focus_open;
             self.frame_open = false;

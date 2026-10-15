@@ -25,18 +25,31 @@ pub const SUN_KEY: f64 = 2.0 * KEY;
 /// (0.0213°), which hosts' display scales approximate.
 pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
 
-/// Stops the sky (the stars and the Milky Way, and bodies drawn as
-/// points of light) shows over the scene's exposure by default, 0 being
-/// true to life: a game's departure (Realism), so that the sky and the
-/// planets show beside a sunlit body. Over Earth's exposure, +17 shows
-/// stars to about magnitude 11.
+/// The departures from realism (Realism), each a setting in stops, 0
+/// being true to life, and their defaults.
+///
+/// Stops the sky (the stars and the Milky Way) shows over the scene's
+/// exposure, so that it shows beside a sunlit body. Over Earth's
+/// exposure, +17 shows stars to about magnitude 11.
 pub const BACKGROUND_LIFT: i32 = 17;
 
-/// The most the sky is lifted: enough for the Milky Way to show clearly
+/// Stops bodies drawn as points of light show over the scene's exposure:
+/// as the sky's, so that the planets show where they are, at their
+/// brightness among the stars.
+pub const BODY_LIFT: i32 = BACKGROUND_LIFT;
+
+/// The most either is lifted: enough for the Milky Way to show clearly
 /// (+22 over Earth's exposure) with any planet in focus (Venus's exposure
 /// is 2.2 stops under Earth's). With the Sun's, 16 stops under, the
 /// exposure keys reach further.
 pub const MAX_LIFT: i32 = 24;
+
+/// Stops Earth's night lights show over their radiance, so that they
+/// show at the day side's exposure.
+pub const NIGHT_LIGHTS: i32 = 14;
+
+/// The most they are lifted: 6 stops past the default.
+pub const MAX_NIGHT_LIGHTS: i32 = 20;
 
 /// Seconds for exposure to close ~63% of the way to a new focus's: most
 /// of it within a refocus's flight.

@@ -441,6 +441,9 @@ CPU when the frame changes.
 ### Realism
 
 As realistic as we can afford, in stages, while the map stays readable.
+Each departure from realism is a setting, in stops, whose 0 is true to
+life (decided 2026-10-15): the background lift, the body lift and the
+night lights, below.
 
 **Light.**
 - The Sun is the only light. Radiometry is physical, so Mars is lit at
@@ -462,13 +465,14 @@ As realistic as we can afford, in stages, while the map stays readable.
   sunlit body). The exposure keys move it with the rest of the scene.
   Over Earth's exposure, +17 shows stars to about magnitude 11 and not
   yet the Milky Way.
-- Bodies drawn as points of light join the sky, lifted with it (decided
-  2026-10-15, so that the planets show where they are, at their
-  brightness among the stars); as a body's disk fades in, from 1 to 3
-  px in radius, its point's lift falls in stops with its share.
+- Bodies drawn as points of light are lifted over the scene's exposure
+  by their own setting, the body lift: 17 stops by default, as the
+  sky's, so that the planets show where they are, at their brightness
+  among the stars (decided 2026-10-15). As a body's disk fades in, from
+  1 to 3 px in radius, its point's lift falls in stops with its share.
   Rejected: points at the scene's exposure, which left Jupiter's from
   Earth at 0.0008 of the SDR white, invisible beside thousands of
-  lifted stars.
+  lifted stars; and points lifted with the sky, by one setting.
 - Points of light are as bright to the viewer's eye as their sources
   would be: a star's flux is spread over the sky a pixel subtends at the
   viewer, not the sky it shows of the scene. A logical pixel is taken as
@@ -479,8 +483,10 @@ As realistic as we can afford, in stages, while the map stays readable.
   while the eye could not resolve it (under 1′ in radius: every planet
   seen from Earth); past that its point's gain falls as its peak would,
   to 1 (none) where its image could be resolved.
-- Earth's night lights show at ~20,000× their radiance, so that they
-  show at the day side's exposure.
+- Earth's night lights are lifted over their radiance by a setting, 14
+  stops by default, so that they show at the day side's exposure. Their
+  radiance, ~1e-5 of daylight's at a bright city, is within a factor of
+  a few: Black Marble's image is stretched, not calibrated.
 
 **Bodies.**
 - Spheroids with the right flattening: Earth 1/298, Mars 1/170, Jupiter

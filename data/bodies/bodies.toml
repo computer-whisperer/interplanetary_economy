@@ -15,10 +15,12 @@ clouds = "clouds.jpg"
 cloud_albedo = 0.8000
 water = "water.png"
 night = "night.jpg"
-# The lights' radiance at full value, warm: far above their true one
-# (~1e-5 of daylight), so they show at the day side's exposure (M1c.md,
-# Realism).
-night_radiance = [0.20, 0.15, 0.08]
+# The lights' radiance at full value, warm: luminance ~1e-5 of
+# daylight's, a bright city's (VIIRS's day-night band reads ~150
+# nW/cm2/sr there, a white surface in sunlight ~1.7e7). The map's stretch
+# is not calibrated, so within a factor of a few. The settings lift it
+# (M1c.md, Realism).
+night_radiance = [1.22e-5, 0.92e-5, 0.49e-5]
 elevation = { file = "elevation.png", metres_per_unit = 1.0, offset_m = 0.0 }
 
 

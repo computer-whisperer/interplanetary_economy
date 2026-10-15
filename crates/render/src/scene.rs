@@ -29,10 +29,10 @@ pub const SPOT_PEAK: f32 = 0.354;
 pub const ACUITY: f64 = 2.909e-4;
 
 /// A sphere from one pixel in radius to this fades from its point (a
-/// spot carrying its flux times [`Look::point_gain`], lifted with the
-/// sky) to its disk: the spot's share falling and the disk's opacity
-/// rising, so that the flux shown runs on smoothly, and the point's lift
-/// falling in stops with its share.
+/// spot carrying its flux times [`Look::point_gain`], lifted by
+/// [`Look::body_lift`]) to its disk: the spot's share falling and the
+/// disk's opacity rising, so that the flux shown runs on smoothly, and
+/// the point's lift falling in stops with its share.
 const FADE_PX: f64 = 3.0;
 
 /// The most a spot's radiance per share reaches, exposed: under f16's
@@ -81,10 +81,14 @@ pub struct Look {
     /// radians, by which points of light are shown (`point_gain`); 0: the
     /// angle it subtends of the scene, as a camera records them.
     pub pixel: f32,
-    /// What the sky's exposure (its stars' and the Milky Way's) is over
-    /// the scene's, and that of bodies drawn as points of light, which
-    /// join it: 1 as it is.
+    /// The departures from what a camera would record, each 1 for none:
+    /// what the sky's exposure (its stars' and the Milky Way's) is over
+    /// the scene's;
     pub sky_lift: f32,
+    /// what that of bodies drawn as points of light is;
+    pub body_lift: f32,
+    /// and what bodies' night lights are shown at over their radiance.
+    pub night_lift: f32,
 }
 
 impl Look {
@@ -114,6 +118,8 @@ impl Default for Look {
             headroom: 1.0,
             pixel: 0.0,
             sky_lift: 1.0,
+            body_lift: 1.0,
+            night_lift: 1.0,
         }
     }
 }
@@ -476,7 +482,7 @@ impl Scene {
             // in front of the sphere's disk (and its air and rings), which
             // it fades into: along its center's ray, nearer than anything
             // of it (every pixel of the spot takes the center's depth).
-            let (exposure, lift) = (f64::from(self.look.exposure), f64::from(self.look.sky_lift));
+            let (exposure, lift) = (f64::from(self.look.exposure), f64::from(self.look.body_lift));
             let front = v * (1.0 - 1.01 * outer / -v.z).max(0.0);
             let mut spot = |k: f64| {
                 out.points.push(DotGpu {
@@ -489,7 +495,7 @@ impl Scene {
             let gain = self.look.point_gain(half_angle, local_pixel);
             let radius_px = half_angle / local_pixel;
             if radius_px < 1.0 {
-                // Under a pixel: a point of light, lifted with the sky.
+                // Under a pixel: a point of light, lifted.
                 if front.z < -NEAR_KM {
                     spot(gain * lift);
                 }
@@ -557,7 +563,9 @@ impl Scene {
                             column(s.axes.y_axis),
                             column(s.axes.z_axis),
                         ],
-                        night: m.map_or([0.0; 3], |m| m.night_radiance),
+                        night: m.map_or([0.0; 3], |m| {
+                            m.night_radiance.map(|c| c * self.look.night_lift)
+                        }),
                         flags: m.map_or(0, Maps::flags),
                         cloud_albedo: m.map_or(0.0, |m| m.cloud_albedo),
                         _pad: [0.0; 3],

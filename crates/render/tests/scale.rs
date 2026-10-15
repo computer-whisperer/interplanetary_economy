@@ -335,9 +335,10 @@ fn points_carry_their_spheres_flux() {
 /// pixels in radius, its point's gain over 1 (the viewer's pixel a 60th
 /// of the scene's, so that the gain falls from ~20 to ~2 across the
 /// fade, as 1 / radius²), at the screen's center and near its corner,
-/// with the sky as it is and lifted 10 stops: the flux shown is the
-/// spot's share of the point's (gain × the sphere's × the lift to the
-/// power of that share) and the disk's opacity times its own, within 3%;
+/// with bodies' points as they are and lifted 10 stops: the flux shown
+/// is the spot's share of the point's (gain × the sphere's × the lift to
+/// the power of that share) and the disk's opacity times its own, within
+/// 3%;
 /// unlifted, it runs on across a pixel (where the gain falls as the
 /// sphere's flux grows).
 /// Found in review: the spot over the disk was drawn at the sphere's
@@ -365,7 +366,7 @@ fn the_point_fades_into_the_disk() {
     ] {
         let look = Look {
             pixel: (side / 60.0) as f32,
-            sky_lift: lift as f32,
+            body_lift: lift as f32,
             ..Default::default()
         };
         let mut last: Option<f64> = None;

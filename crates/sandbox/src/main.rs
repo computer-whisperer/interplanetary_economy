@@ -44,11 +44,16 @@ struct Cli {
     /// Stops of exposure added by hand at the start, as `-` and `=` do.
     #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
     exposure: i32,
-    /// Stops the stars, the Milky Way and bodies seen as points show over
-    /// the scene's exposure (the settings' background lift); 0 is true to
-    /// life.
+    /// The settings' departures from realism, in stops, 0 being true to
+    /// life: the stars and the Milky Way over the scene's exposure,
+    /// bodies seen as points over it, and Earth's night lights over their
+    /// radiance.
     #[arg(long, default_value_t = sandbox::look::BACKGROUND_LIFT, allow_hyphen_values = true)]
     background_lift: i32,
+    #[arg(long, default_value_t = sandbox::look::BODY_LIFT, allow_hyphen_values = true)]
+    body_lift: i32,
+    #[arg(long, default_value_t = sandbox::look::NIGHT_LIGHTS, allow_hyphen_values = true)]
+    night_lights: i32,
 }
 
 fn size(s: &str) -> Result<(u32, u32), String> {
@@ -105,7 +110,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.exposure.bias = cli
         .exposure
         .clamp(-sandbox::app::MAX_BIAS, sandbox::app::MAX_BIAS);
-    app.settings.background_lift = cli.background_lift.clamp(0, sandbox::look::MAX_LIFT);
+    app.settings = sandbox::settings::Settings {
+        background_lift: cli.background_lift.clamp(0, sandbox::look::MAX_LIFT),
+        body_lift: cli.body_lift.clamp(0, sandbox::look::MAX_LIFT),
+        night_lights: cli.night_lights.clamp(0, sandbox::look::MAX_NIGHT_LIGHTS),
+    };
     // The view's direction is about this frame's axes.
     app.frame = frame;
     match cli.screenshot {
