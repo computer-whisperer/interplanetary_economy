@@ -77,7 +77,7 @@ pub fn spheres(eph: &Ephemeris, bodies: &[BodyId], t: Epoch, eye: DVec3) -> Vec<
             if let Some(curve) = Curve::of(eph.body(b)) {
                 let seen = Seen::from(&s, eye, sun);
                 s.gain = photometry::gain(&curve, &s, &seen);
-                s.rings_share = photometry::rings_share(&curve, &seen) as f32;
+                s.point_scale = photometry::point_scale(&curve, &s, &seen);
             }
             Some(s)
         })
@@ -109,7 +109,7 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
         axes: Rotations::standard().axes(id, t).unwrap_or(DMat3::IDENTITY),
         maps: maps.map(|m| m.maps.clone()),
         gain: 1.0,
-        rings_share: 0.0,
+        point_scale: 1.0,
     })
 }
 

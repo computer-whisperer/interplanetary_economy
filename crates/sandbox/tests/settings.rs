@@ -87,10 +87,11 @@ fn the_menu_sets_the_lifts() {
             assert!(slider.y + slider.h < h, "{}'s slider is in the window", c.name);
             println!("scale {scale}: {} {slider:?}", c.name);
             // Its ends, then its middle; each a whole stop, and its own.
+            let middle = (c.max as f32 / 2.0).round() as i32;
             for (x, want) in [
                 (slider.x + 1.0, 0),
                 (slider.x + slider.w - 1.0, c.max),
-                (slider.x + slider.w / 2.0, c.max / 2),
+                (slider.x + slider.w / 2.0, middle),
             ] {
                 let mut others = app.settings;
                 click(&mut app, &mut ui, (x, slider.y + slider.h / 2.0));
@@ -110,7 +111,7 @@ fn the_menu_sets_the_lifts() {
                 false,
             );
             deliver(&mut app, &ui, events);
-            assert_eq!(*(c.field)(&mut app.settings), c.max / 2 + 1, "{}", c.name);
+            assert_eq!(*(c.field)(&mut app.settings), middle + 1, "{}", c.name);
         }
         // Each switch, off and on again, alone.
         for t in &TOGGLES {

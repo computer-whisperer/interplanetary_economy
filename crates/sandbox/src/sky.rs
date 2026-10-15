@@ -130,7 +130,7 @@ mod tests {
         let [r, g, b] = [0, 8, 16].map(|s| (sirius.color >> s) & 255);
         assert!(b == 255 && r < b && g < b, "{r} {g} {b}");
         // Flux: π 10^(−0.4 (V − V☉)), the largest channel's.
-        let flux = std::f64::consts::PI * 10f64.powf(-0.4 * (-1.44 + 26.74));
+        let flux = std::f64::consts::PI * 10f64.powf(-0.4 * (-1.44 - crate::photometry::V_SUN));
         let luminance =
             (0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b)) / 255.0;
         let got = f64::from(sirius.flux) * luminance;

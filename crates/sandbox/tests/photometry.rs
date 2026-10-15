@@ -129,10 +129,11 @@ fn curves_match_horizons() {
 /// center, on dates across their phases (each pixel × the sky it
 /// subtends, as a camera records it): as a V magnitude (the stars' units)
 /// against Horizons' APmag. The planets are points in the 50° view
-/// (Saturn's carrying its rings' light): within 0.01 mag, Mars 0.15. The
-/// Moon is a disk ~200 px across in a 1.6° one: within 0.2 mag to 150° of
-/// phase, as its map lights it (Allen's curve is one for waxing and
-/// waning); a thinner crescent shows limb highlands brighter than its
+/// (Saturn's carrying its rings' light), to 177° of phase: within 0.01
+/// mag, Mars 0.15. The Moon is a disk ~390 px across in a 0.8° one:
+/// within 0.35 mag to 150° of phase, as its map lights it (waxing and
+/// waning differ by up to 0.33 mag near 100°, where Allen's curve is one
+/// for both); a thinner crescent shows limb highlands brighter than its
 /// near side's mean, which the curve counts already (at 166°, 0.5 mag
 /// over).
 #[test]
@@ -146,7 +147,7 @@ fn bodies_show_their_brightness() {
     for (target, tolerance, phases) in [
         ("mercury", 0.01, 180.0),
         ("venus", 0.01, 180.0),
-        ("moon", 0.2, 150.0),
+        ("moon", 0.35, 150.0),
         ("mars", 0.15, 180.0),
         ("jupiter", 0.01, 180.0),
         ("saturn", 0.01, 180.0),
@@ -159,7 +160,15 @@ fn bodies_show_their_brightness() {
         let tan_half = (fov / 2.0).tan();
         let side = 2.0 * tan_half / f64::from(size);
         let mut report = Vec::new();
-        for row in rows.iter().step_by(rows.len() / 6) {
+        // Every 24th row, and every one past 165° of phase (Mercury's and
+        // Venus's inferior conjunctions, where a point follows its curve
+        // past where a disk's gain is held).
+        let picked = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| i % (rows.len() / 24) == 0 || (target != "moon" && r.alpha > 165.0))
+            .map(|(_, r)| r);
+        for row in picked {
             let eye = eph.barycentric_position(earth, row.t);
             let at = eph.barycentric_position(b, row.t);
             let up = if (at - eye).normalize().z.abs() > 0.9 { DVec3::X } else { DVec3::Z };
@@ -203,5 +212,72 @@ fn bodies_show_their_brightness() {
         let shown: Vec<String> = report.iter().map(|(a, d)| format!("{a:.0}° {d:+.3}")).collect();
         println!("{target}: {}", shown.join(", "));
         assert!(worst < tolerance, "{target}: {worst} mag");
+    }
+}
+
+/// Disks without air or maps (Uranus, Neptune, Phobos, Bennu) and
+/// Jupiter's, seen from 100 radii and resolved (~100 px across), from 0°
+/// to 120° of phase: the flux rendered against their curves' at that
+/// geometry, within 0.03 mag. (Nearer, a disk shows less than a
+/// hemisphere: from 12 radii, 0.2 mag under its curve at 120°.)
+#[test]
+fn disks_show_their_curves() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    sandbox::maps::wait().expect("data/bodies reads");
+    let eph = Ephemeris::standard();
+    let t = Epoch::from_ymd(2045, 3, 1);
+    let sun = eph.barycentric_position(eph.sun(), t);
+    let size = 600u32;
+    for id in ["uranus", "neptune", "phobos", "bennu", "jupiter"] {
+        let b = eph.lookup(id).unwrap();
+        let curve = Curve::of(eph.body(b)).expect("a curve");
+        let (c, radius) = (eph.barycentric_position(b, t), eph.body(b).radius);
+        let to_sun = (sun - c).normalize();
+        let side = to_sun.cross(DVec3::Z).normalize();
+        let mut report = Vec::new();
+        for alpha in [0.5f64, 30.0, 60.0, 90.0, 120.0] {
+            let a = alpha.to_radians();
+            let d = radius * 100.0;
+            let eye = c + (to_sun * a.cos() + side * a.sin()) * d;
+            let fov = (radius / d).asin() * 6.0;
+            let spheres = bodies::spheres(eph, &[b], t, eye);
+            let seen = Seen::from(&spheres[0], eye, sun);
+            let au = render::scene::AU_KM;
+            let want = curve.magnitude(&seen) + 5.0 * ((sun - c).length() / au * d / au).log10();
+            let scene = Scene {
+                camera: Some(Camera::looking_at(eye, c, DVec3::Z, fov)),
+                sun,
+                spheres,
+                ..Default::default()
+            };
+            let target = Target::new(&gpu.device, size, size);
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target, &scene, None);
+            gpu.queue.submit(Some(encoder.finish()));
+            let tan_half = (fov / 2.0).tan();
+            let side_px = 2.0 * tan_half / f64::from(size);
+            let flux: f64 = gpu
+                .read_rgba16f(&target.hdr)
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let (x, y) = ((i as u32 % size) as f64 + 0.5, (i as u32 / size) as f64 + 0.5);
+                    let r = DVec3::new(
+                        (x / f64::from(size) * 2.0 - 1.0) * tan_half,
+                        (1.0 - y / f64::from(size) * 2.0) * tan_half,
+                        -1.0,
+                    );
+                    let lum = 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
+                    lum * side_px * side_px / r.length().powi(3)
+                })
+                .sum();
+            let v = V_SUN - 2.5 * (flux / std::f64::consts::PI).log10();
+            report.push((alpha, v - want));
+        }
+        let shown: Vec<String> = report.iter().map(|(a, d)| format!("{a:.0}° {d:+.3}")).collect();
+        println!("{id}: {}", shown.join(", "));
+        let worst = report.iter().map(|(_, d)| d.abs()).fold(0f64, f64::max);
+        assert!(worst < 0.03, "{id}: {worst} mag");
     }
 }

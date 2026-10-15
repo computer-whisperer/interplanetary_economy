@@ -591,8 +591,8 @@ mod tests {
     /// map white within 30° of the equator and black beyond takes the
     /// share of the light that band sends (each row by cos³ of its
     /// latitude for Lambert, cos² for lunar-Lambert), not of its area
-    /// (half); its near side alone, a map black on the far side, is
-    /// white.
+    /// (half); its near side alone, each column by cos² or cos of its
+    /// longitude, the far side by none.
     #[test]
     fn means_weigh_as_the_disk_shows() {
         // Six rows of 30° each: white in the middle two (|lat| < 30°).
@@ -612,14 +612,23 @@ mod tests {
         }
         let (area, _) = means(&color, None, Weight::Area);
         assert!((f64::from(area[0]) - 0.5).abs() < 1e-6, "{area:?}");
-        // White on the near half (the middle two columns), black beyond.
-        let halves: Vec<u8> = (0..2)
-            .flat_map(|_| (0..4).flat_map(|x| if x == 1 || x == 2 { [255; 4] } else { [0, 0, 0, 255] }))
+        // On the near side, eight columns across it: white where
+        // |longitude| > 45° (the outer two of the four near ones), black
+        // elsewhere; each column by cos² (Lambert) or cos (lunar-Lambert)
+        // of its longitude, the far side by none.
+        let lons: Vec<f64> = (0..8).map(|x| ((x as f64 + 0.5) / 8.0 - 0.5) * std::f64::consts::TAU).collect();
+        let white = |lon: f64| lon.abs() > std::f64::consts::FRAC_PI_4 && lon.abs() < std::f64::consts::FRAC_PI_2;
+        let row: Vec<u8> = lons
+            .iter()
+            .flat_map(|&lon| if white(lon) { [255; 4] } else { [0, 0, 0, 255] })
             .collect();
-        let color = Image::srgba(4, 2, halves);
-        for shading in [Shading::Lambert, Shading::LunarLambert] {
+        let color = Image::srgba(8, 1, row);
+        for (m, shading) in [(2, Shading::Lambert), (1, Shading::LunarLambert)] {
+            let w = |lon: f64| lon.cos().max(0.0).powi(m);
+            let want = lons.iter().filter(|&&l| white(l)).map(|&l| w(l)).sum::<f64>()
+                / lons.iter().map(|&l| w(l)).sum::<f64>();
             let (mean, _) = means(&color, None, Weight::Disk { shading, near: true });
-            assert!((mean[0] - 1.0).abs() < 1e-6, "{mean:?}");
+            assert!((f64::from(mean[0]) - want).abs() < 1e-6, "{mean:?} vs {want}");
         }
     }
 

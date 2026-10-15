@@ -31,8 +31,9 @@ pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
 ///
 /// Stops the sky (the stars and the Milky Way) shows over the scene's
 /// exposure, so that it shows beside a sunlit body. Over Earth's
-/// exposure, +17 shows stars to about magnitude 11.
-pub const BACKGROUND_LIFT: i32 = 17;
+/// exposure, +18 shows stars to about magnitude 11. (Chosen as +17 when
+/// Earth's exposure was 1.1 stops higher, by its Bond albedo.)
+pub const BACKGROUND_LIFT: i32 = 18;
 
 /// Stops bodies drawn as points of light show over the scene's exposure:
 /// as the sky's, so that the planets show where they are, at their
@@ -40,17 +41,17 @@ pub const BACKGROUND_LIFT: i32 = 17;
 pub const BODY_LIFT: i32 = BACKGROUND_LIFT;
 
 /// The most either is lifted: enough for the Milky Way to show clearly
-/// (+22 over Earth's exposure) with any planet in focus (Venus's exposure
-/// is 2.2 stops under Earth's). With the Sun's, 16 stops under, the
+/// (+23 over Earth's exposure) with any planet in focus (Venus's exposure
+/// is 1.6 stops under Earth's). With the Sun's, 15 stops under, the
 /// exposure keys reach further.
-pub const MAX_LIFT: i32 = 24;
+pub const MAX_LIFT: i32 = 25;
 
 /// Stops Earth's night lights show over their radiance, so that they
 /// show at the day side's exposure.
-pub const NIGHT_LIGHTS: i32 = 14;
+pub const NIGHT_LIGHTS: i32 = 15;
 
 /// The most they are lifted: 6 stops past the default.
-pub const MAX_NIGHT_LIGHTS: i32 = 20;
+pub const MAX_NIGHT_LIGHTS: i32 = 21;
 
 /// Seconds for exposure to close ~63% of the way to a new focus's: most
 /// of it within a refocus's flight.
@@ -135,8 +136,10 @@ mod tests {
 
     /// The focus's sunlit side at full phase (its mean, at normal
     /// incidence) shows at KEY: the exposure × its normal albedo (a
-    /// Lambertian surface's that shows as it does at full phase: 1.5 × its
-    /// geometric albedo p, from its published V(1,0)) × the irradiance.
+    /// Lambertian surface's that shows as it does at full phase: for
+    /// these, Lambertian without their maps, 1.5 × the geometric albedo p
+    /// from their published V(1,0); a lunar-Lambert body's is p) × the
+    /// irradiance.
     #[test]
     fn the_focus_shows_at_the_key() {
         let eph = Ephemeris::standard();

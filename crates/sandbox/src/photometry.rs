@@ -24,6 +24,11 @@ const URANUS_FLATTENING: f64 = 0.0022927;
 /// The slope parameter the small bodies take, the IAU's default.
 const SLOPE: f64 = 0.15;
 
+/// A disk's gain is held past this phase angle, degrees: a thinner
+/// crescent's shading carries too little light to scale (Venus's gain is
+/// 83 at 170°). Its point follows its curve on.
+const DISK_MAX_PHASE: f64 = 170.0;
+
 /// Where a body is seen from, as its curve needs it.
 #[derive(Clone, Copy, Debug)]
 pub struct Seen {
@@ -95,14 +100,13 @@ impl Curve {
         })
     }
 
-    /// The phase angles the curve holds for, degrees: the observations'
-    /// (Mallama and Hilton's), and none past 170°, where a thin crescent's
-    /// shading carries too little light to scale. Earth's model's is taken
-    /// as to 170°; the Moon's to 170°.
+    /// The phase angles the curve is taken over, degrees: where Horizons
+    /// takes it (Mercury's, Venus's, Earth's and the Moon's to 180°, past
+    /// their observations: Mercury's span 2.1° to 169.5°), else to its
+    /// observations' end. Past it, its body follows its shading's law.
     pub fn range(&self) -> (f64, f64) {
         match self {
-            Curve::Mercury => (2.1, 169.5),
-            Curve::Venus | Curve::Earth | Curve::Moon => (0.0, 170.0),
+            Curve::Mercury | Curve::Venus | Curve::Earth | Curve::Moon => (0.0, 180.0),
             Curve::Mars => (0.0, 120.0),
             Curve::Jupiter => (0.0, 130.0),
             Curve::Saturn => (0.0, 150.0),
@@ -129,7 +133,8 @@ impl Curve {
             // Eq. 5.
             Curve::Earth => poly(a, &[-3.99, -1.060e-3, 2.054e-4]),
             // Eqs. 6 and 7, without the terms for the longitude seen and
-            // the season (under 0.06 mag; the map carries its longitudes).
+            // the season (to 0.12 mag against Horizons; the map carries
+            // its longitudes).
             Curve::Mars if a <= 50.0 => poly(a, &[-1.601, 0.02267, -0.0001302]),
             Curve::Mars => poly(a, &[-0.367, -0.02573, 0.0003445]),
             // Eqs. 8 and 9 (Cassini's, past 12°).
@@ -182,9 +187,11 @@ pub fn saturn_with_rings(seen: &Seen) -> Option<f64> {
     Some(-8.914 - 1.825 * sin + 0.026 * seen.alpha - 0.378 * sin * (-2.25 * seen.alpha).exp())
 }
 
-/// What Saturn's rings add to its globe's light, as a share of it, where
-/// Eq. 10 holds; else none known (0). 0 for other bodies.
-pub fn rings_share(curve: &Curve, seen: &Seen) -> f64 {
+/// What Saturn's rings add to its globe's light, over it, where Eq. 10
+/// holds (from Earth's vantage, its share may be negative: Eq. 10's
+/// globe is dimmer than Eq. 11's); else none known, 0 (a step at 6.5° of
+/// phase, to 0.6 mag with the rings open). 0 for other bodies.
+fn rings_share(curve: &Curve, seen: &Seen) -> f64 {
     match (curve, saturn_with_rings(seen)) {
         (Curve::Saturn, Some(both)) => 10f64.powf(-0.4 * (both - curve.magnitude(seen))) - 1.0,
         _ => 0.0,
@@ -209,19 +216,34 @@ fn shaded_flux(sphere: &Sphere, alpha: f64) -> Option<f64> {
     Some(luminance(albedo) * disk_mean(shading, alpha.to_radians()) * size)
 }
 
-/// The gain that brings `sphere`'s shading, seen as `seen`, to `curve`'s
-/// brightness: past the curve's range, held at its edge (the shading's
-/// phase law beyond). 1 for a glowing sphere.
-pub fn gain(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f32 {
-    let (lo, hi) = curve.range();
+/// The factor that brings `sphere`'s shading, seen as `seen`, to
+/// `curve`'s brightness, with the phase angle held to `[lo, hi]` (the
+/// shading's phase law beyond). 1 for a glowing sphere.
+fn factor(curve: &Curve, sphere: &Sphere, seen: &Seen, (lo, hi): (f64, f64)) -> f64 {
     let seen = Seen {
         alpha: seen.alpha.clamp(lo, hi),
         ..*seen
     };
     match shaded_flux(sphere, seen.alpha) {
-        Some(shaded) if shaded > 0.0 => (true_flux(curve, &seen) / shaded) as f32,
+        Some(shaded) if shaded > 0.0 => true_flux(curve, &seen) / shaded,
         _ => 1.0,
     }
+}
+
+/// The gain (`render::Sphere::gain`) that brings `sphere`'s disk, seen as
+/// `seen`, to `curve`'s brightness: held past the curve's range, and past
+/// [`DISK_MAX_PHASE`].
+pub fn gain(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f32 {
+    let (lo, hi) = curve.range();
+    factor(curve, sphere, seen, (lo, hi.min(DISK_MAX_PHASE))) as f32
+}
+
+/// What `sphere`'s point carries over its disk's light
+/// (`render::Sphere::point_scale`): Saturn's rings', which are drawn only
+/// on its disk, and its curve's past [`DISK_MAX_PHASE`].
+pub fn point_scale(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f32 {
+    let point = factor(curve, sphere, seen, curve.range());
+    (point / f64::from(gain(curve, sphere, seen)) * (1.0 + rings_share(curve, seen))) as f32
 }
 
 /// The albedo of a white, Lambertian surface that would show as `sphere`'s

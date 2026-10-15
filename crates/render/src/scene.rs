@@ -139,9 +139,10 @@ pub struct Sphere {
     /// multiplied by: what brings its shading to its measured brightness.
     /// Not its air, rings, night lights or glint.
     pub gain: f32,
-    /// What its rings add to its point, over its globe's light: they are
-    /// drawn only on its disk.
-    pub rings_share: f32,
+    /// What its point carries over its disk's light: what its disk does
+    /// not show the way its point stands in for it (Saturn's rings, drawn
+    /// only on its disk), or no longer scales.
+    pub point_scale: f32,
 }
 
 impl Sphere {
@@ -154,7 +155,7 @@ impl Sphere {
             axes: DMat3::IDENTITY,
             maps: None,
             gain: 1.0,
-            rings_share: 0.0,
+            point_scale: 1.0,
         }
     }
 
@@ -492,7 +493,7 @@ impl Scene {
                         let mean = irradiance
                             * disk_mean(shading, alpha)
                             * f64::from(s.gain)
-                            * (1.0 + f64::from(s.rings_share));
+                            * f64::from(s.point_scale);
                         albedo.map(|a| f64::from(a) * mean * disk / spread)
                     }
                 }

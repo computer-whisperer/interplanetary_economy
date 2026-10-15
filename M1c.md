@@ -455,18 +455,20 @@ night lights, below.
 - One exposure for the whole scene (decided 2026-10-15: as accurate as
   we can first; departures where play shows the need). Exposed for a
   sunlit body, as a camera would be, the true sky shows nothing; over
-  Earth's exposure, +19 stops shows the Milky Way's band faintly, +22
+  Earth's exposure, +20 stops shows the Milky Way's band faintly, +23
   clearly. Rejected: a fixed exposure for the stars and the Milky Way
   where it exceeded the frame's, which showed them beside a sunlit body
   but which the exposure keys did not move.
 - The sky (the stars and the Milky Way) is lifted over that exposure by
-  a setting, the background lift: 17 stops by default, 0 (true) to 24
+  a setting, the background lift: 18 stops by default, 0 (true) to 25
   (decided 2026-10-15: the true sky left the map black beside any
   sunlit body). The exposure keys move it with the rest of the scene.
-  Over Earth's exposure, +17 shows stars to about magnitude 11 and not
-  yet the Milky Way.
+  Over Earth's exposure, +18 shows stars to about magnitude 11 and not
+  yet the Milky Way. (Chosen as +17 when Earth's exposure was 1.1 stops
+  higher, by its Bond albedo; the defaults moved with it, the look
+  kept.)
 - Bodies drawn as points of light are lifted over the scene's exposure
-  by their own setting, the body lift: 17 stops by default, as the
+  by their own setting, the body lift: 18 stops by default, as the
   sky's, so that the planets show where they are, at their brightness
   among the stars (decided 2026-10-15). As a body's disk fades in, from
   1 to 3 px in radius, its point's lift falls in stops with its share.
@@ -483,7 +485,7 @@ night lights, below.
   while the eye could not resolve it (under 1′ in radius: every planet
   seen from Earth); past that its point's gain falls as its peak would,
   to 1 (none) where its image could be resolved.
-- Earth's night lights are lifted over their radiance by a setting, 14
+- Earth's night lights are lifted over their radiance by a setting, 15
   stops by default, so that they show at the day side's exposure. Their
   radiance, ~1e-5 of daylight's at a bright city, is within a factor of
   a few: Black Marble's image is stretched, not calibrated.
@@ -508,18 +510,30 @@ night lights, below.
   its disk shows it from its equator (the Moon's, its near side's). The
   exposure shows the focus's sunlit side at full phase, its mean, at
   `KEY`.
+  - A body's point follows its curve as far as Horizons takes it
+    (Mercury's, Venus's, Earth's and the Moon's to 180°); its disk's gain
+    is held past 170°, where a crescent's shading carries too little
+    light to scale.
   - Checked against Horizons over 2025–2080, from Earth and from bodies
     farther out (to 176° of phase): the curves within 0.002 mag (Mars
-    0.12, the terms for its longitude seen and its season left out);
-    the planets' points from Earth within 0.005.
-  - Disks, against their curves: bodies without air or maps within 0.03
-    to 120° of phase, Jupiter 0.02; Earth ±0.2 by the face lit; the Moon
-    from Earth within 0.16 to 150°. Open: its thinner crescents show
-    limb highlands brighter than its near side's mean, which the curve
-    counts already (0.5 mag over at 166°); and bodies with air show
-    their air's forward scattering, which their curves count already,
-    over them at large phase angles (Venus 0.47 at 160°, Mars 0.34 at
-    90°).
+    0.12, the terms for its longitude seen and its season left out); the
+    planets' points from Earth within 0.005, to 177°.
+  - Disks, against their curves, seen from 100 radii: bodies without air
+    or maps within 0.03 to 120° of phase, Jupiter 0.02 (nearer, a disk
+    shows less than a hemisphere: from 12 radii, 0.2 under at 120°).
+    Earth ±0.2 by the face lit. The Moon from Earth −0.25 to +0.34 to
+    150°, its waxing and waning differing by up to 0.33 near 100°, where
+    its curve is one for both.
+  - Open: the Moon's thinner crescents show limb highlands brighter than
+    its near side's mean, which its curve counts already (0.5 mag over at
+    166°). Bodies with air add their air's forward scattering, which
+    their curves count already, at large phase angles (seen from 500
+    radii, Mars 1.3 mag over at 120°, Venus 1.1 at 160°, Earth 1.0 at
+    150°, its ocean glint, not scaled, too). Saturn's rings as drawn show ~2.5× under its curve's
+    with them at small phase angles, so resolved Saturn shows 0.35–0.6
+    mag under its point. Earth's maps send 3.4× less light than its
+    curve (its cloud map covers 21% of its disk, its sky ~2/3; its air is
+    not in its point), so its gain lifts its clouds to an albedo of 2.7.
   - Before: Lambert shading of the Bond albedo, which left the giants
     ~1 mag faint (a geometric albedo of 2/3 of it; theirs is 1.4–2.5×
     that), and Mercury, Mars and the Moon too bright at large phase

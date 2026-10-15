@@ -304,7 +304,7 @@ fn sky_gpu_time() {
                 50f64.to_radians(),
             )),
             sky,
-            // Earth's exposure + 19 stops: the Milky Way shown, and every
+            // Earth's exposure + 20 stops: the Milky Way shown, and every
             // star.
             look: Look {
                 exposure: 1e6,
