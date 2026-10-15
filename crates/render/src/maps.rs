@@ -249,7 +249,8 @@ pub struct Maps {
     /// Its rings, in its equator's plane.
     pub rings: Option<Rings>,
     /// Its shape, where it is not a sphere: drawn by `shape_fs`, its maps
-    /// on it by its points' directions from its center.
+    /// on it by its points' directions from its center. A lit body without
+    /// air or rings (`shape_fs` draws neither).
     pub shape: Option<crate::shape::Shape>,
 }
 

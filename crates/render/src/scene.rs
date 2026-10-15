@@ -370,11 +370,17 @@ pub fn disk_mean(shading: Shading, alpha: f64) -> f64 {
     match shading {
         Shading::Lambert => lambert,
         Shading::LunarLambert => {
-            let a = alpha.to_degrees();
-            let l = (1.0 + a * (-0.019 + a * (2.42e-4 - a * 1.46e-6))).clamp(0.0, 1.0);
+            let l = lunar_lambert_share(alpha);
             l * lommel_seeliger_phase(alpha) + (1.0 - l) * lambert
         }
     }
+}
+
+/// McEwen's share L(α) of Lommel–Seeliger in the lunar-Lambert law, at
+/// phase angle `alpha` (radians), as scene.wgsl's `lit` takes it.
+pub fn lunar_lambert_share(alpha: f64) -> f64 {
+    let a = alpha.to_degrees();
+    (1.0 + a * (-0.019 + a * (2.42e-4 - a * 1.46e-6))).clamp(0.0, 1.0)
 }
 
 impl Scene {
@@ -388,6 +394,13 @@ impl Scene {
         }
         let to_sun = self.sun - s.center;
         let sun_angle = (self.sun_radius / to_sun.length()).min(1.0).asin();
+        // As far as it reaches: a shape's greatest radius.
+        let reach_of = |o: &Sphere| {
+            o.maps
+                .as_ref()
+                .and_then(|m| m.shape.as_ref())
+                .map_or(o.radius, |sh| sh.greatest)
+        };
         let mut found: Vec<(f64, &Sphere)> = self
             .spheres
             .iter()
@@ -398,7 +411,7 @@ impl Scene {
                 if d >= to_sun.length() || to.dot(to_sun) <= 0.0 {
                     return None;
                 }
-                let reach = sun_angle + ((o.radius + s.radius) / d).min(1.0).asin();
+                let reach = sun_angle + ((o.radius + reach_of(s)) / d).min(1.0).asin();
                 (to.angle_between(to_sun) < reach).then_some((o.radius / d, o))
             })
             .collect();
@@ -471,6 +484,11 @@ impl Scene {
             let air = s.maps.as_ref().and_then(|m| m.air.as_ref());
             let rings = s.maps.as_ref().and_then(|m| m.rings.as_ref());
             let shape = s.maps.as_ref().and_then(|m| m.shape.as_ref());
+            debug_assert!(
+                shape.is_none()
+                    || (air.is_none() && rings.is_none() && matches!(s.surface, Surface::Lit(_))),
+                "shape_fs draws a lit body without air or rings"
+            );
             // A shaped body's sphere, for the GPU: the one bounding it.
             let bound = shape.map_or(s.radius, |sh| sh.greatest);
             let outer = air
@@ -485,7 +503,9 @@ impl Scene {
             if inside || !frustum.sees(v, outer) {
                 continue;
             }
-            let half_angle = (s.radius / d).asin();
+            // Clamped: the eye may be inside a shape's volume-equivalent
+            // sphere, if not the shape.
+            let half_angle = (s.radius / d).min(1.0).asin();
             // A pixel off the axis subtends less: pixel² cos³θ of sky.
             let cos = -v.z / d;
             let local_pixel = pixel * cos.max(0.0).powf(1.5);

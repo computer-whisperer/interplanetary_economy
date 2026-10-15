@@ -315,7 +315,8 @@ fn an_ellipsoid_shows_as_traced() {
             got_sum += f64::from(p[0]);
             want_sum += px.mean;
             if let (true, Some((w, _))) = (interior(&want, size, i), px.center) {
-                let e = ((f64::from(p[0]) - w).abs() - 0.006) / w.max(1e-3);
+                // The share of its tolerance used.
+                let e = (f64::from(p[0]) - w).abs() / (0.006 + 0.01 * w);
                 if e > worst {
                     worst = e;
                     where_worst = (i, f64::from(p[0]), w);
@@ -327,11 +328,11 @@ fn an_ellipsoid_shows_as_traced() {
         println!("  worst at ({x}, {y}): {g:.4} vs {w:.4}");
         let phase = from.angle_between(l).to_degrees();
         println!(
-            "view {k} (phase {phase:.0}°): worst covered pixel {worst:.4}, sum {:.5} of exact ({got_sum:.3} vs {want_sum:.3})",
+            "view {k} (phase {phase:.0}°): a pixel within the edges uses {worst:.2} of its tolerance; sum {:.5} of exact ({got_sum:.3} vs {want_sum:.3})",
             got_sum / want_sum
         );
         let area = want.iter().filter(|w| w.center.is_some()).count() as f64;
-        assert!(worst < 0.01, "view {k}: {worst}");
+        assert!(worst < 1.0, "view {k}: {worst}");
         assert!(
             (got_sum - want_sum).abs() < 0.005 * want_sum + 1e-5 * area,
             "view {k}: {got_sum} vs {want_sum}"
@@ -432,17 +433,17 @@ fn lobes_at(gpu: &Offscreen, renderer: &mut Renderer, maps: &Arc<Maps>, size: (u
             }
             'l' => {
                 lit += 1;
-                worst_lit = worst_lit.max(((got - w).abs() - 0.002) / w.max(1e-3));
+                worst_lit = worst_lit.max((got - w).abs() / (0.002 + 0.02 * w));
             }
             _ => {}
         }
     }
     println!(
-        "{size:?}: {cast} pixels in cast shadow, brightest {worst_cast:.4}; {lit} lit, worst {worst_lit:.4}"
+        "{size:?}: {cast} pixels in cast shadow, brightest {worst_cast:.4}; {lit} lit, using {worst_lit:.2} of their tolerance"
     );
     assert!(cast > 100 && lit > 2000, "{cast} {lit}");
     assert!(
-        worst_cast < 0.01 && worst_lit < 0.02,
+        worst_cast < 0.01 && worst_lit < 1.0,
         "{worst_cast} {worst_lit}"
     );
 }
@@ -471,11 +472,11 @@ fn an_eye_within_the_bounds_sees_the_body() {
     for (i, (p, px)) in image.iter().zip(&want).enumerate() {
         if let (true, Some((w, _))) = (interior(&want, size, i), px.center) {
             covered += 1;
-            worst = worst.max(((f64::from(p[0]) - w).abs() - 0.002) / w.max(1e-3));
+            worst = worst.max((f64::from(p[0]) - w).abs() / (0.002 + 0.01 * w));
         }
     }
-    println!("{covered} covered pixels, worst {worst:.4}");
-    assert!(covered > 10_000 && worst < 0.01, "{covered} {worst}");
+    println!("{covered} pixels within the edges, using {worst:.2} of their tolerance");
+    assert!(covered > 10_000 && worst < 1.0, "{covered} {worst}");
     let inside = Scene {
         camera: Some(Camera::looking_at(
             CENTER + axes * DVec3::new(0.0, 0.0, 0.5),
@@ -574,4 +575,395 @@ fn shape_gpu_time() {
             None => println!("no timestamps"),
         }
     }
+}
+
+/// Of the pixels whose 7×7 neighbors' center rays all hit (3 pixels or
+/// more from the image's edge), how many, and how many the GPU shows off
+/// the exact cosine at their center by more than 0.05 + 10%: holes, or
+/// worse.
+fn wrong_interior(
+    gpu: &Offscreen,
+    renderer: &mut Renderer,
+    sc: &Scene,
+    solid: &dyn Solid,
+    axes: DMat3,
+    l: DVec3,
+    size: (u32, u32),
+) -> (usize, usize) {
+    let cam = sc.camera.unwrap();
+    let (image, _) = draw(gpu, renderer, sc, size);
+    let center: Vec<Option<f64>> = (0..size.0 * size.1)
+        .map(|i| {
+            let (x, y) = (f64::from(i % size.0) + 0.5, f64::from(i / size.0) + 0.5);
+            traced(solid, axes, cam.eye, ray(&cam, size, x, y), l, &|_, _| {
+                false
+            })
+            .map(|c| c.0)
+        })
+        .collect();
+    let (mut hits, mut wrong) = (0, 0);
+    for y in 3..size.1 - 3 {
+        for x in 3..size.0 - 3 {
+            let all = (0..49)
+                .all(|k| center[((y + k / 7 - 3) * size.0 + x + k % 7 - 3) as usize].is_some());
+            let i = (y * size.0 + x) as usize;
+            if let (true, Some(w)) = (all, center[i]) {
+                hits += 1;
+                if (f64::from(image[i][0]) - w).abs() > 0.05 + 0.1 * w {
+                    wrong += 1;
+                }
+            }
+        }
+    }
+    (hits, wrong)
+}
+
+/// No holes: the ellipsoid 300 to 3,000 pixels across (at a 1080-row
+/// screen's pixel, 50° high) from three directions, and the eye 10 m to
+/// 1 km over it looking down and along it, every pixel within its edges
+/// as traced. (Rays spending their steps short of the surface were
+/// dropped: at 1,500 px, 8,617 of 89,745 wrong; 6,447 of 62,229 from 10 m
+/// looking along it; the GPU timing's own view had 13,233 holes. Found in
+/// review.)
+#[test]
+fn no_holes_large_or_near() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let maps = shaped(&ELLIPSOID, 128);
+    let axes = turned();
+    let size = (480u32, 270u32);
+    let pixel = 2.0 * 25f64.to_radians().tan() / 1080.0;
+    let fov = 2.0 * (pixel * f64::from(size.1) / 2.0).atan();
+    let (mut worst, mut checked) = (0, 0);
+    for from in [
+        DVec3::new(-1.0, 0.2, 0.1),
+        DVec3::new(1.0, 1.0, 1.0),
+        DVec3::new(-0.2, -0.5, 1.0),
+    ] {
+        let from = from.normalize();
+        let side = from.cross(DVec3::Z).normalize();
+        let l = (from * 0.5 + side * 0.866).normalize();
+        for across in [300.0f64, 1000.0, 3000.0] {
+            let eye = CENTER + from * (6.0 / (across * pixel));
+            // Toward the limb, a quarter of the way out.
+            let cam = Camera::looking_at(eye, CENTER + side * 1.2, DVec3::Z, fov);
+            let sc = Scene {
+                sun: CENTER + l * AU_KM,
+                ..scene(cam, vec![body(&maps, axes)])
+            };
+            let (hits, wrong) = wrong_interior(&gpu, &mut renderer, &sc, &ELLIPSOID, axes, l, size);
+            println!("from {from:.2}, {across} px across: {wrong} of {hits} wrong");
+            (worst, checked) = (worst.max(wrong), checked + hits);
+        }
+    }
+    for over in [DVec3::new(0.3, 0.0, 1.0), DVec3::new(1.0, 0.2, 0.1)] {
+        let over = over.normalize();
+        let r = ELLIPSOID.radius(over);
+        let l = (axes * (over + DVec3::new(0.3, -0.2, 0.1))).normalize();
+        let along = over.cross(DVec3::Z).normalize();
+        for altitude in [1.0f64, 0.1, 0.01] {
+            let eye = CENTER + axes * (over * (r + altitude));
+            for target in [CENTER, CENTER + axes * (over * r + along * 1.5)] {
+                let up = axes * along.cross(over);
+                let cam = Camera::looking_at(eye, target, up, 60f64.to_radians());
+                let sc = Scene {
+                    sun: CENTER + l * AU_KM,
+                    ..scene(cam, vec![body(&maps, axes)])
+                };
+                let (hits, wrong) =
+                    wrong_interior(&gpu, &mut renderer, &sc, &ELLIPSOID, axes, l, size);
+                println!("{altitude} km over {over:.2}: {wrong} of {hits} wrong");
+                (worst, checked) = (worst.max(wrong), checked + hits);
+            }
+        }
+    }
+    assert!(worst == 0 && checked > 500_000, "{worst} of {checked}");
+}
+
+/// One lobe's edge over the other, lit from the eye: of the pixels both
+/// lobes show in (8×8 exact rays, all hitting), fewer than one in ten
+/// under 70% of their exact mean (the farther lobe shaded for its share).
+/// Shaded as the nearer lobe's limb alone, 28 of 127 were; without the
+/// look past the edge at all, 35.
+#[test]
+fn a_near_edge_over_a_far_part() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let maps = shaped(&Lobes, 256);
+    let size = (320u32, 240u32);
+    let off = DVec3::new(-5.0, -0.7, 1.0);
+    let cam = Camera::looking_at(CENTER + off, CENTER, DVec3::Z, 30f64.to_radians());
+    let l = off.normalize();
+    let sc = Scene {
+        sun: CENTER + l * AU_KM,
+        ..scene(cam, vec![body(&maps, DMat3::IDENTITY)])
+    };
+    let (image, _) = draw(&gpu, &mut renderer, &sc, size);
+    let (mut seam, mut dark) = (0, 0);
+    for (i, p) in image.iter().enumerate() {
+        let (x, y) = (f64::from(i as u32 % size.0), f64::from(i as u32 / size.0));
+        let (mut sum, mut all, mut lobes) = (0.0, true, [0, 0]);
+        for k in 0..64 {
+            let d = ray(
+                &cam,
+                size,
+                x + (f64::from(k % 8) + 0.5) / 8.0,
+                y + (f64::from(k / 8) + 0.5) / 8.0,
+            );
+            match Lobes.hit(cam.eye - CENTER, d) {
+                Some((t, n)) => {
+                    sum += n.dot(l).max(0.0);
+                    lobes[usize::from((cam.eye - CENTER + d * t).x > 0.0)] += 1;
+                }
+                None => all = false,
+            }
+        }
+        if all && lobes[0] > 0 && lobes[1] > 0 {
+            seam += 1;
+            if f64::from(p[0]) < 0.7 * sum / 64.0 {
+                dark += 1;
+            }
+        }
+    }
+    println!("{seam} pixels both lobes show in, {dark} under 70% of exact");
+    assert!(seam > 100 && dark * 10 < seam, "{dark} of {seam}");
+}
+
+/// A round shape and the exact sphere, 3 to 20 pixels in radius, at phase
+/// angles 0° to 140°: the flux drawn within 5% of 8×8 exact rays a pixel.
+/// (One sample a pixel showed a crescent at 140° 37% short at 3 pixels,
+/// 4% at 20: found in review.)
+#[test]
+fn small_bodies_carry_their_light() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let radius = 1.5;
+    let round = Ellipsoid {
+        axes: [radius; 3],
+        center: DVec3::ZERO,
+    };
+    let maps = shaped(&round, 128);
+    let size = (64u32, 64u32);
+    let fov = 20f64.to_radians();
+    let pixel = 2.0 * (fov / 2.0).tan() / f64::from(size.1);
+    let from = DVec3::new(-1.0, 0.2, 0.1).normalize();
+    let side = from.cross(DVec3::Z).normalize();
+    let mut worst = 0.0f64;
+    for phase in [0.0f64, 60.0, 100.0, 140.0] {
+        let l = (from * phase.to_radians().cos() + side * phase.to_radians().sin()).normalize();
+        for radius_px in [3.0f64, 4.0, 6.0, 10.0, 20.0] {
+            let eye = CENTER + from * (radius / (radius_px * pixel).sin());
+            let cam = Camera::looking_at(eye, CENTER + side * 0.3, DVec3::Z, fov);
+            let mut s = body(&maps, DMat3::IDENTITY);
+            s.radius = radius;
+            let sc = Scene {
+                sun: CENTER + l * AU_KM,
+                ..scene(cam, vec![s])
+            };
+            let (image, _) = draw(&gpu, &mut renderer, &sc, size);
+            let got: f64 = image.iter().map(|p| f64::from(p[0])).sum();
+            let want: f64 = reference(&round, DMat3::IDENTITY, &cam, size, l, 8, &|_, _| false)
+                .iter()
+                .map(|p| p.mean)
+                .sum();
+            let off = got / want - 1.0;
+            println!("{phase}°, {radius_px} px: {:+.2}%", off * 100.0);
+            worst = worst.max(off.abs());
+        }
+    }
+    assert!(worst < 0.05, "{worst}");
+}
+
+/// The first point of `shape` (its frame the scene's, at `CENTER`) along
+/// o + d t, by a fine march and bisection on the CPU.
+fn map_hit(shape: &Shape, o: DVec3, d: DVec3, step: f64) -> Option<DVec3> {
+    let b = o.dot(d);
+    let disc = b * b - (o.dot(o) - shape.greatest * shape.greatest);
+    if disc < 0.0 {
+        return None;
+    }
+    let above = |t: f64| {
+        let p = o + d * t;
+        p.length() - shape.radius(p)
+    };
+    let (mut t, end) = ((-b - disc.sqrt()).max(0.0), -b + disc.sqrt());
+    let mut last = t;
+    while t < end {
+        if above(t) < 0.0 {
+            let (mut lo, mut hi) = (last, t);
+            for _ in 0..40 {
+                let mid = 0.5 * (lo + hi);
+                if above(mid) > 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return Some(o + d * hi);
+        }
+        last = t;
+        t += step.max(above(t) * 0.5);
+    }
+    None
+}
+
+/// Whether `shape`'s surface point `p` is in its own shadow, the Sun
+/// toward `l`: a fine march on the CPU.
+fn map_shadowed(shape: &Shape, p: DVec3, l: DVec3, step: f64) -> bool {
+    let o = p + p.normalize() * 1e-5;
+    let b = o.dot(l);
+    let end = -b
+        + (b * b - (o.dot(o) - shape.greatest * shape.greatest))
+            .max(0.0)
+            .sqrt();
+    let mut t = 1e-4;
+    while t < end {
+        let q = o + l * t;
+        if q.length() < shape.radius(q) {
+            return true;
+        }
+        t += step;
+    }
+    false
+}
+
+/// A ridge round the equator, 8% of the radius high and 0.03 rad wide
+/// (five texels at 256² a face), under a point Sun 30° up over it: of the
+/// pixels two or more from any edge in its exact shadow (a fine march on
+/// the same map), fewer than one in ten shown lit (over 0.1), at ~150
+/// and ~500 pixels' radius; none lit ones under half their cosine. (Stepping by a 24th of the
+/// radius, 26% and 22% were lit; at half a texel, 4% and 2% are: rays
+/// that clip the ridge's crest over less than a step. Found in review.)
+#[test]
+fn ridges_cast_their_shadows() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let shape = Shape::from_fn(256, |d| 1.0 + 0.08 * (-(d.z / 0.03).powi(2)).exp());
+    let maps = Arc::new(Maps {
+        shape: Some(shape.clone()),
+        ..(*shaped(&ELLIPSOID, 16)).clone()
+    });
+    let l = DMat3::from_rotation_z(0.2)
+        * DVec3::new(60f64.to_radians().cos(), 0.0, -60f64.to_radians().sin());
+    let size = (480u32, 320u32);
+    for fov in [40.0f64, 12.0] {
+        let eye =
+            CENTER + DVec3::new(25f64.to_radians().cos(), 0.0, 25f64.to_radians().sin()) * 4.0;
+        let look = CENTER + DVec3::new(12f64.to_radians().cos(), 0.0, 12f64.to_radians().sin());
+        let cam = Camera::looking_at(eye, look, DVec3::Z, fov.to_radians());
+        let mut s = body(&maps, DMat3::IDENTITY);
+        s.radius = shape.equivalent_radius();
+        let sc = Scene {
+            sun: CENTER + l * AU_KM,
+            ..scene(cam, vec![s])
+        };
+        let (image, _) = draw(&gpu, &mut renderer, &sc, size);
+        let state: Vec<(char, f64)> = (0..size.0 * size.1)
+            .map(|i| {
+                let (x, y) = (f64::from(i % size.0) + 0.5, f64::from(i / size.0) + 0.5);
+                match map_hit(&shape, cam.eye - CENTER, ray(&cam, size, x, y), 2e-4) {
+                    None => ('n', 0.0),
+                    Some(p) => {
+                        let up = p.normalize();
+                        let (e1, h) = (up.any_orthonormal_vector(), 1e-4);
+                        let e2 = up.cross(e1);
+                        let at = |v: DVec3| v.normalize() * shape.radius(v);
+                        let n = (at(up + e1 * h) - at(up - e1 * h))
+                            .cross(at(up + e2 * h) - at(up - e2 * h));
+                        let c = n.normalize().dot(l) * n.dot(up).signum();
+                        if c <= 0.0 {
+                            ('n', 0.0)
+                        } else if map_shadowed(&shape, p, l, 2e-4) {
+                            ('c', c)
+                        } else {
+                            ('l', c)
+                        }
+                    }
+                }
+            })
+            .collect();
+        let deep = |i: usize| {
+            let (x, y) = ((i as u32 % size.0) as i64, (i as u32 / size.0) as i64);
+            (-2..=2).all(|dy| {
+                (-2..=2).all(|dx| {
+                    let (xx, yy) = (x + dx, y + dy);
+                    (0..i64::from(size.0)).contains(&xx)
+                        && (0..i64::from(size.1)).contains(&yy)
+                        && state[(yy * i64::from(size.0) + xx) as usize].0 == state[i].0
+                })
+            })
+        };
+        let (mut cast, mut cast_lit, mut lit, mut lit_dark) = (0, 0, 0, 0);
+        for (i, p) in image.iter().enumerate() {
+            if !deep(i) {
+                continue;
+            }
+            match state[i] {
+                ('c', _) => {
+                    cast += 1;
+                    cast_lit += usize::from(p[0] > 0.1);
+                }
+                ('l', c) => {
+                    lit += 1;
+                    lit_dark += usize::from(f64::from(p[0]) < 0.5 * c);
+                }
+                _ => {}
+            }
+        }
+        println!(
+            "{fov}°: {cast_lit} of {cast} in shadow shown lit; {lit_dark} of {lit} lit shown dark"
+        );
+        assert!(
+            cast > 2000 && cast_lit * 10 < cast && lit_dark == 0,
+            "{cast_lit} {cast} {lit_dark}"
+        );
+    }
+}
+
+/// The Sun its true size (eclipses on): the two lobes' cast shadow as
+/// dark and their lit pixels as lit as with a point Sun (its penumbra,
+/// 0.27° wide at 1 au, is under a pixel here); and a sphere between them
+/// and the Sun, its umbra over them, leaves them dark.
+#[test]
+fn the_suns_size_and_an_eclipse() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let maps = shaped(&Lobes, 256);
+    let size = (240, 160);
+    let l = DVec3::new(1.0, 0.15, 0.18).normalize();
+    let cam = Camera::looking_at(
+        CENTER + DVec3::new(-1.0, -2.0, 6.0),
+        CENTER,
+        DVec3::Y,
+        40f64.to_radians(),
+    );
+    let sun = CENTER + l * AU_KM;
+    let point = Scene {
+        sun,
+        ..scene(cam, vec![body(&maps, DMat3::IDENTITY)])
+    };
+    let sized = Scene {
+        sun_radius: 696_000.0,
+        ..point.clone()
+    };
+    let (a, _) = draw(&gpu, &mut renderer, &point, size);
+    let (b, _) = draw(&gpu, &mut renderer, &sized, size);
+    let differ = a
+        .iter()
+        .zip(&b)
+        .filter(|(p, q)| (p[0] - q[0]).abs() > 0.01 + 0.02 * p[0])
+        .count();
+    let lit = a.iter().filter(|p| p[0] > 0.05).count();
+    println!("{differ} of {lit} lit pixels differ with the Sun's size");
+    assert!(lit > 2000 && differ * 100 < lit, "{differ} of {lit}");
+    // A body of 50 km, 1,000 km sunward: its umbra 41 km across here.
+    let shade = Sphere::plain(CENTER + l * 1000.0, 50.0, Surface::Lit([1.0; 3]));
+    let eclipsed = Scene {
+        spheres: vec![body(&maps, DMat3::IDENTITY), shade],
+        ..sized
+    };
+    let (c, _) = draw(&gpu, &mut renderer, &eclipsed, size);
+    let brightest = c.iter().map(|p| p[0]).fold(0.0f32, f32::max);
+    println!("eclipsed: brightest {brightest}");
+    assert!(brightest < 1e-3, "{brightest}");
 }

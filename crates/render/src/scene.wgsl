@@ -433,8 +433,8 @@ const SHAPE_LOW: f32 = 1024.0;
 
 // Steps of a ray's march to a shape, and of the march from its surface
 // toward the Sun.
-const SHAPE_STEPS: u32 = 160u;
-const SHADOW_STEPS: u32 = 96u;
+const SHAPE_STEPS: u32 = 192u;
+const SHADOW_STEPS: u32 = 128u;
 
 // The radius of shaped body `s` toward `l` (any length, the body's
 // frame), km, at its faces' `level`.
@@ -494,16 +494,30 @@ fn shape_bend(s: Sphere, up: vec3<f32>, t: vec3<f32>, step: f32, level: f32, h: 
         / length(shape_point(s, ahead, level) - shape_point(s, behind, level));
 }
 
-// A shaped body over its bounding sphere's quad: its ray sphere-traced
-// through the field |p| − r(p̂) (each step that over the field's slope
-// bound, or at least a share of the pixel's footprint), past the first
-// crossing, then bisected to it. At its edge, a pixel is covered as far
-// as the surface lies in from the edge across it (a ray that misses, by
-// its least height over the surface; one that hits, by c² / 2κ, from the
-// view's tilt to its normal and the surface's curvature), and shaded at
-// its covered strip's middle. Its surface shadows itself: a march toward
-// the Sun, its penumbra the Sun's size (Quílez's). Its maps lie on it by
-// direction from the center.
+// What a ray shows of a shaped body: its light (times its coverage),
+// its coverage, and the surface's distance along -z.
+struct ShapeSample {
+    light: vec3<f32>,
+    coverage: f32,
+    distance: f32,
+}
+
+// A small shaped body's pixels are each this many pixels' worth of
+// samples across its radius (up to 8 × 8): one sample a pixel showed a
+// crescent at 140° of phase 37% short 3 pixels across, 4% 20 across.
+const SHAPE_SAMPLED_PX: f32 = 24.0;
+
+// A shaped body over its bounding sphere's quad: each pixel's ray (or a
+// small body's few each) sphere-traced through the field |p| − r(p̂)
+// (each step that over the field's slope bound, or at least a share of
+// the pixel's footprint), past the first crossing, then bisected to it.
+// At its edge, a pixel is covered as far as the surface lies in from the
+// edge across it (a ray that misses, by its least height over the
+// surface; one that hits, by c² / 2κ, from the view's tilt to its normal
+// and the surface's curvature), and shaded at its covered strip's
+// middle. Its surface shadows itself: a march toward the Sun, its
+// penumbra the Sun's size (Quílez's). Its maps lie on it by direction
+// from the center.
 @fragment
 fn shape_fs(in: SphereOut) -> SphereFragment {
     let s = spheres[in.index];
@@ -525,8 +539,41 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
     var ddy = dpdy(uv_mean);
     ddx.x -= round(ddx.x);
     ddy.x -= round(ddy.x);
-    // A pixel's angle along this ray: smaller off the axis, as cos².
-    let pixel = 2.0 * frame.tan_half / frame.viewport.y * d.z * d.z;
+    // A pixel's side on the plane a unit ahead, and the samples across it.
+    let side = 2.0 * frame.tan_half / frame.viewport.y;
+    let radius_px = mean / length(s.center) / side;
+    let m = u32(clamp(ceil(SHAPE_SAMPLED_PX / radius_px), 1.0, 8.0));
+    let ahead = in.ray / -in.ray.z;
+    var light = vec3<f32>(0.0);
+    var coverage = 0.0;
+    var nearest = 1e30;
+    for (var k = 0u; k < m * m; k++) {
+        let o = ((vec2<f32>(f32(k % m), f32(k / m)) + 0.5) / f32(m) - 0.5) * side;
+        let dk = normalize(ahead + vec3<f32>(o, 0.0));
+        // A sample's angle along its ray: smaller off the axis, as cos².
+        let one = shape_sample(s, dk, side / f32(m) * dk.z * dk.z, ddx, ddy);
+        light += one.light;
+        coverage += one.coverage;
+        if (one.coverage > 0.0) {
+            nearest = min(nearest, one.distance);
+        }
+    }
+    if (coverage <= 0.0) {
+        discard;
+    }
+    var out: SphereFragment;
+    out.depth = frame.near / max(nearest, frame.near);
+    out.color = written(s, vec4<f32>(light, coverage) / f32(m * m));
+    return out;
+}
+
+// What the ray `d` (unit, view space) shows of shaped body `s`, its
+// samples `pixel` radians across along it (`shape_fs`).
+fn shape_sample(s: Sphere, d: vec3<f32>, pixel: f32, ddx: vec2<f32>, ddy: vec2<f32>) -> ShapeSample {
+    let none = ShapeSample(vec3<f32>(0.0), 0.0, 0.0);
+    let b = dot(d, s.center);
+    let to_body = transpose(s.axes);
+    let mean = s.shape.w;
     // The ray through the bounding sphere grown by a pixel (for the edge's
     // coverage), from the near plane: `at` km along it from its closest
     // approach to the center, `across` that from the center.
@@ -534,17 +581,18 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
     let q = s.altitude * (2.0 * s.radius + s.altitude) - grow * (2.0 * s.radius + grow);
     let disc = b * b - q;
     if (disc <= 0.0) {
-        discard;
+        return none;
     }
     let half = sqrt(disc);
     let first = max(-half, frame.near - b);
     if (first >= half) {
-        discard;
+        return none;
     }
     let across = d * b - s.center;
     let slope = s.shape.z;
     let size = f32(textureDimensions(shape_faces).x) / (1.0 + 2.0 * SHAPE_BORDER);
-    // A texel at a face's center, km, on the body's mean sphere.
+    // A texel's mean width, km, on the body's mean sphere (at a face's
+    // center, 1.27 times this).
     let texel = mean * (0.5 * PI) / size;
     let top = f32(textureNumLevels(shape_faces) - 1u);
     var at = first;
@@ -568,9 +616,18 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
             break;
         }
         last = at;
-        at += max(f / slope, 0.3 * foot);
+        // Past half the steps, the least step grows: a ray skimming a
+        // large body's surface reaches the far side within the rest.
+        let crawl = max(f32(i) / f32(SHAPE_STEPS / 2u), 1.0);
+        at += max(f / slope, 0.3 * foot * crawl * crawl);
         if (at > half) {
             break;
+        }
+        if (i + 1u == SHAPE_STEPS) {
+            // Still above the surface with the steps spent: taken as a
+            // hit there (dropped as a miss, such rays left holes).
+            hit = true;
+            f = 0.0;
         }
     }
     if (hit) {
@@ -592,7 +649,7 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
     }
     if (!hit) {
         if (miss >= 0.5) {
-            discard;
+            return none;
         }
         at = nearest;
     }
@@ -620,26 +677,51 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
     // depth in from the edge, c² / 2κ (c the cosine of the view to the
     // normal), wholly covered where the surface does not curve away.
     var coverage = clamp(0.5 - miss * dot(normal, up), 0.0, 1.0);
+    // What a farther part shows past a nearer one's edge in the pixel,
+    // and the nearer part's own share of it.
+    var behind = vec3<f32>(0.0);
+    var own = coverage;
     if (hit) {
         coverage = 1.0;
         if (bend > 0.0) {
             coverage = clamp(0.5 + facing * facing / (2.0 * bend * foot), 0.0, 1.0);
         }
+        own = coverage;
         if (coverage < 1.0) {
-            // Near an edge: wholly covered if the ray, once out of the
-            // body, meets it again (a nearer part's edge over a farther).
-            // (Looking from the hit on, without leaving first, every edge
-            // pixel a hit's center lies in was taken as covered.)
+            // Near an edge: if the ray, once out of the body, meets it
+            // again (a nearer part's edge over a farther), the pixel is
+            // wholly covered, the rest of it by the farther part, shaded
+            // there. (Looking from the hit on, without leaving first, every
+            // edge pixel a hit's center lies in was taken as covered; shaded
+            // as the nearer part's limb alone, such pixels showed half their
+            // light.)
             var beyond = at + foot;
+            var before = beyond;
             var left = false;
             for (var k = 0u; k < SHADOW_STEPS; k++) {
                 let g = shape_above(s, d * beyond + across, level);
                 if (!left) {
                     left = g > 0.0;
                 } else if (g < 0.0) {
+                    var lo = before;
+                    var hi = beyond;
+                    for (var j = 0u; j < 10u; j++) {
+                        let mid = 0.5 * (lo + hi);
+                        if (shape_above(s, d * mid + across, level) > 0.0) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    let far_up = normalize(to_body * (d * hi + across));
+                    let far_point = s.axes * shape_point(s, far_up, level);
+                    let far_n = s.axes * shape_normal(s, far_up, level, h);
+                    behind = (1.0 - coverage)
+                        * shape_light(s, d, far_point, far_n, far_up, foot, level, texel, ddx, ddy);
                     coverage = 1.0;
                     break;
                 }
+                before = beyond;
                 beyond += max(abs(g) / slope, 0.3 * foot);
                 if (beyond > half) {
                     break;
@@ -647,18 +729,28 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
             }
         }
     }
-    if (coverage < 1.0 && bend > 0.0) {
-        // The pixel's covered strip runs `coverage` pixels in from the
-        // edge, the normal turning toward the eye as √(2κx), x in: shaded
-        // at the strip's middle. (At the limb, or the pixel's center, a
-        // backlit crescent thinner than a pixel showed 16 times its light,
-        // one at 125° 1.2% over.)
-        let c = min(sqrt(coverage * foot * bend), 1.0);
+    if (own < 1.0 && bend > 0.0) {
+        // The pixel's covered strip runs `own` pixels in from the edge,
+        // the normal turning toward the eye as √(2κx), x in: shaded at the
+        // strip's middle. (At the limb, or the pixel's center, a backlit
+        // crescent thinner than a pixel showed 16 times its light, one at
+        // 125° 1.2% over.)
+        let c = min(sqrt(own * foot * bend), 1.0);
         let outward = normalize(n - (-d) * facing);
         n = (-d) * c + outward * sqrt(1.0 - c * c);
     }
-    // Its own shadow: what share of the Sun's disk the surface sees past
-    // the body, from just off it, to the bounding sphere's edge.
+    let color = shape_light(s, d, surface_point, n, up, foot, level, texel, ddx, ddy);
+    return ShapeSample(color * own + behind, coverage, -p.z);
+}
+
+// The light the surface point `point` (from the center, view space) of
+// shaped body `s` sends along `d`, its normal `n` (view space), toward
+// `up` (unit, the body's frame); `foot` the pixel's footprint there, its
+// faces read at `level`, `texel` their mean width (km). Its own shadow:
+// what share of the Sun's disk it sees past the body, from just off it,
+// to the bounding sphere's edge; then other bodies' (eclipses).
+fn shape_light(s: Sphere, d: vec3<f32>, point: vec3<f32>, n: vec3<f32>, up: vec3<f32>, foot: f32, level: f32, texel: f32, ddx: vec2<f32>, ddy: vec2<f32>) -> vec3<f32> {
+    let p = s.center + point;
     var sunlit = 0.0;
     if (dot(n, s.light) > 0.0) {
         // The Sun's angular radius from here; where the scene gives it no
@@ -667,11 +759,19 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
         if (s.shadows.sun.w > 0.0) {
             sun_angle = asin(min(s.shadows.sun.w / length(s.shadows.sun.xyz - p), 1.0));
         }
-        let start = surface_point + n * foot;
+        let start = point + n * foot;
         let along = dot(start, s.light);
         let exit = -along + sqrt(max(along * along - dot(start, start) + s.radius * s.radius, 0.0));
         var t = foot;
         var least = 1e30;
+        // At least a pixel's footprint and a texel of the level marched
+        // (the map holds nothing narrower), halved, growing past half the
+        // steps: a ray skimming a large body's surface under a low Sun
+        // reaches the far side within the rest. (By the footprint alone,
+        // such a ray went ~100 pixels, and across a body 500 pixels wide,
+        // shadows from farther were lost; by a 24th of the bounding
+        // radius, ridges a few texels wide cast none: found in review.)
+        let least_step = 0.5 * max(foot, texel * exp2(level));
         for (var k = 0u; k < SHADOW_STEPS; k++) {
             if (t > exit) {
                 break;
@@ -681,22 +781,13 @@ fn shape_fs(in: SphereOut) -> SphereFragment {
             if (least < -1.0) {
                 break;
             }
-            // At least a pixel's footprint and a 24th of the bounding
-            // radius: a ray that dips into the body by 0.0003 of that is
-            // still caught, and the march crosses it in 48 steps. (By the
-            // footprint alone, a ray skimming the surface under a low Sun
-            // went ~100 pixels: across a body 500 pixels wide, shadows
-            // from farther were lost.)
-            t += max(abs(g) / slope, max(foot, s.radius / 24.0));
+            let crawl = max(f32(k) / f32(SHADOW_STEPS / 2u), 1.0);
+            t += max(abs(g) / s.shape.z, least_step * crawl * crawl);
         }
         sunlit = clamp(0.5 + 0.5 * least, 0.0, 1.0);
     }
     let seen = sun_seen(s.shadows, p) * sunlit;
-    let color = lit(s, n, -d, map_uv(up), ddx, ddy, vec3<f32>(seen), vec3<f32>(0.0));
-    var out: SphereFragment;
-    out.depth = frame.near / max(-p.z, frame.near);
-    out.color = written(s, vec4<f32>(color * coverage, coverage));
-    return out;
+    return lit(s, n, -d, map_uv(up), ddx, ddy, vec3<f32>(seen), vec3<f32>(0.0));
 }
 
 // The rings' profile at `r` km from the center, at `level` (clamped at

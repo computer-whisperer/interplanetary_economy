@@ -10,7 +10,7 @@
 //! crease along every edge. Bordered, each face is bilinear to second
 //! order up to its edges, and its levels' borders are its own's means.
 
-use crate::maps::f32_to_f16;
+use crate::maps::{Shading, f32_to_f16};
 use glam::DVec3;
 
 /// A star-shaped body: its radius, km, by direction in its frame
@@ -35,7 +35,18 @@ pub struct Shape {
     /// A bound on the gradient of |p| − r(p̂) at and above the surface:
     /// a step of |p| − r(p̂) over it never crosses the surface.
     pub slope: f64,
+    /// The share of its light its self-shadowing and the parts of it
+    /// hiding others leave, averaged over orientations, by phase angle from
+    /// 0° every 10° to 180° (`tools/shapes/build.py`); none, all of it.
+    pub shadowed: Option<Vec<f64>>,
+    /// Its facets for its light as a whole: each one's outward normal
+    /// times its area, km², the faces at [`FACET_CELLS`] squares a side.
+    facets: Vec<DVec3>,
 }
+
+/// Squares along a face's side for [`Shape::lit_area`]'s facets, two
+/// triangles each (as `tools/shapes/build.py`'s).
+pub const FACET_CELLS: usize = 16;
 
 impl std::fmt::Debug for Shape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,6 +57,7 @@ impl std::fmt::Debug for Shape {
             .field("area", &self.area)
             .field("volume", &self.volume)
             .field("slope", &self.slope)
+            .field("shadowed", &self.shadowed)
             .finish()
     }
 }
@@ -113,10 +125,78 @@ impl Shape {
             area: 0.0,
             volume: 0.0,
             slope: 1.0,
+            shadowed: None,
+            facets: Vec::new(),
         };
         (shape.area, shape.volume) = shape.measure();
         shape.slope = shape.slope_bound();
+        shape.facets = shape.facets_of(FACET_CELLS);
         shape
+    }
+
+    /// The facets over `cells` squares a face, two triangles each: their
+    /// outward normals × areas.
+    fn facets_of(&self, cells: usize) -> Vec<DVec3> {
+        let at = |k: usize| 2.0 * k as f64 / cells as f64 - 1.0;
+        let mut out = Vec::with_capacity(12 * cells * cells);
+        for face in 0..6 {
+            let point = |i: usize, j: usize| {
+                let d = face_direction(face, at(i), at(j)).normalize();
+                d * self.radius(d)
+            };
+            for j in 0..cells {
+                for i in 0..cells {
+                    let (a, b, c, d) = (
+                        point(i, j),
+                        point(i + 1, j),
+                        point(i + 1, j + 1),
+                        point(i, j + 1),
+                    );
+                    for (p, q, r) in [(a, b, c), (a, c, d)] {
+                        let n = (q - p).cross(r - p) / 2.0;
+                        // Outward: the faces' orientations wind both ways.
+                        out.push(if n.dot(p + q + r) < 0.0 { -n } else { n });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Its facets' light, lit from `light` and seen from `view` (unit, its
+    /// frame), `alpha` apart (radians), each under `shading`'s law as
+    /// scene.wgsl's `lit` reflects: Σ area × cos e × the law's reflectance,
+    /// km². A sphere's is its disk's mean (`disk_mean`) times πr²; any
+    /// shape's, averaged over orientations, `area` / 4 times that mean.
+    /// Its self-shadowing is left to [`Shape::shadow_share`].
+    pub fn lit_area(&self, light: DVec3, view: DVec3, shading: Shading, alpha: f64) -> f64 {
+        let l = match shading {
+            Shading::Lambert => 0.0,
+            Shading::LunarLambert => crate::scene::lunar_lambert_share(alpha),
+        };
+        self.facets
+            .iter()
+            .map(|n| {
+                let area = n.length();
+                let (cos_i, cos_e) = (n.dot(light) / area, n.dot(view) / area);
+                if cos_i <= 0.0 || cos_e <= 0.0 {
+                    return 0.0;
+                }
+                area * cos_e * (2.0 * l * cos_i / (cos_i + cos_e) + (1.0 - l) * cos_i)
+            })
+            .sum()
+    }
+
+    /// The share of its light its self-shadowing leaves at phase angle
+    /// `alpha` (radians), averaged over orientations: [`Shape::shadowed`]
+    /// between its every 10°.
+    pub fn shadow_share(&self, alpha: f64) -> f64 {
+        let Some(table) = &self.shadowed else {
+            return 1.0;
+        };
+        let x = (alpha.to_degrees() / 10.0).clamp(0.0, (table.len() - 1) as f64);
+        let k = (x.floor() as usize).min(table.len() - 2);
+        table[k] + (table[k + 1] - table[k]) * (x - k as f64)
     }
 
     /// The shape whose radius toward each texel center's direction (unit)
@@ -208,23 +288,26 @@ impl Shape {
 
     /// The gradient of |p| − r(p̂) is p̂ − ∇r / |p|, ∇r the radius's
     /// change across directions (per radian): at most √(1 + (|∇r| / r)²)
-    /// at and above the surface. Taken over each texel from the
-    /// differences along its sides, with a margin for the GPU's half
-    /// floats.
+    /// at and above the surface. Taken over each texel square from the
+    /// larger difference along each pair of its sides over the angle
+    /// between those texels' centers, and its least radius; with a margin
+    /// for the GPU's half floats. (Over a face corner's texel angle for
+    /// all, it was 2.7–3.8 times too loose, and marches ran out of steps
+    /// short of the surface: found in review.)
     fn slope_bound(&self) -> f64 {
         let side = Self::side_of(self.size);
-        // A texel's angular size is least at a face's corners: 2/n of a
-        // face's tangent-plane units, times cos² of 54.7° there; less
-        // still in the border, out to 1.125.
-        let step = 2.0 / f64::from(self.size) / 3.6;
         let mut most = 0.0f64;
         for face in 0..6 {
             for j in 0..side - 1 {
                 for i in 0..side - 1 {
-                    let r = self.texel(face, i, j);
-                    let du = (self.texel(face, i + 1, j) - r).abs();
-                    let dv = (self.texel(face, i, j + 1) - r).abs();
-                    most = most.max(du.hypot(dv) / step / r);
+                    let d = Self::texel_direction(self.size, face, i, j);
+                    let across = d.angle_between(Self::texel_direction(self.size, face, i + 1, j));
+                    let down = d.angle_between(Self::texel_direction(self.size, face, i, j + 1));
+                    let (a, b) = (self.texel(face, i, j), self.texel(face, i + 1, j));
+                    let (c, e) = (self.texel(face, i, j + 1), self.texel(face, i + 1, j + 1));
+                    let du = (b - a).abs().max((e - c).abs()) / across;
+                    let dv = (c - a).abs().max((e - b).abs()) / down;
+                    most = most.max(du.hypot(dv) / a.min(b).min(c).min(e));
                 }
             }
         }
@@ -365,6 +448,43 @@ mod tests {
         let (coarse, fine) = (worst(128), worst(256));
         println!("worst {coarse:.2e} at 128², {fine:.2e} at 256²");
         assert!(coarse < 3e-4 && fine < coarse / 3.5, "{coarse} {fine}");
+    }
+
+    /// A sphere's facets' light is its disk's (`disk_mean` × πr²) within
+    /// 0.5% at phase angles 0° to 120°, Lambert and lunar-Lambert, and
+    /// 1.5% at 150° (the crescent five facets across); an
+    /// ellipsoid's at full phase under lunar-Lambert (as bright as the
+    /// disk's area seen) is its cross-section across each axis, πbc, πac
+    /// and πab, within 1.5% (the facets an inscribed polyhedron's, 0.9%
+    /// short across y): its lightcurve.
+    #[test]
+    fn facets_carry_the_disks_light() {
+        use crate::scene::disk_mean;
+        let pi = std::f64::consts::PI;
+        let sphere = Shape::from_fn(64, |_| 2.0);
+        for degrees in [0.0f64, 30.0, 60.0, 90.0, 120.0, 150.0] {
+            let alpha = degrees.to_radians();
+            let (light, view) = (DVec3::new(alpha.sin(), 0.0, alpha.cos()), DVec3::Z);
+            for shading in [Shading::Lambert, Shading::LunarLambert] {
+                let got = sphere.lit_area(light, view, shading, alpha);
+                let want = disk_mean(shading, alpha) * pi * 4.0;
+                let tolerance = if degrees > 120.0 { 0.015 } else { 5e-3 };
+                assert!(
+                    (got / want - 1.0).abs() < tolerance,
+                    "{shading:?} at {degrees}°: {got} vs {want}"
+                );
+            }
+        }
+        let (a, b, c) = (3.0, 2.0, 1.0);
+        let shape = Shape::from_fn(128, ellipsoid(a, b, c));
+        for (axis, want) in [
+            (DVec3::X, pi * b * c),
+            (DVec3::Y, pi * a * c),
+            (DVec3::Z, pi * a * b),
+        ] {
+            let got = shape.lit_area(axis, axis, Shading::LunarLambert, 0.0);
+            assert!((got / want - 1.0).abs() < 0.015, "{axis}: {got} vs {want}");
+        }
     }
 
     /// The levels halve while their border is a texel or more, each the

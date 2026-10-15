@@ -1432,10 +1432,12 @@ Order of work, each part committed with its tests:
        where the ray, out of the body, meets it again. An edge pixel is
        shaded at its covered strip's middle: at the limb, a backlit
        crescent thinner than a pixel showed 16 times its light.
-     - The shadow march's least step is a 24th of the bounding radius,
-       as well as a pixel's footprint: by the footprint alone, a ray
-       skimming the surface went ~100 pixels, and across a body 500
-       pixels wide, shadows from farther were lost.
+     - The shadow march's least step is half a texel of the level
+       marched, as well as half a pixel's footprint, growing past half
+       its steps: by the footprint alone, a ray skimming the surface went
+       ~100 pixels, and across a body 500 pixels wide, shadows from
+       farther were lost; by a 24th of the bounding radius (as first
+       built), ridges a few texels wide cast none.
      - Every sphere's quad (not only a shape's) grew by two pixels: its
        old 2% margin is 0.06 pixels on a 3-pixel disk, cutting off the
        edge's coverage (a disk off the axis at 2.5 pixels showed 1.7%
@@ -1455,8 +1457,38 @@ Order of work, each part committed with its tests:
        strip's middle, the shadow's step), removing self-shadowing,
        mirroring a face, or skipping the eye inside the bounds fails a
        test. On lavapipe as on the GPU.
-     - Cost: the ellipsoid filling 1920×1080, 1.1 ms (2.5 ms with the GPU
-       clocked down); its self-shadowing 0.15 ms of that.
+     - A review (a sub-agent, with runtime probes against exact traces)
+       found, all fixed with a test each: holes where a march spent its
+       160 steps short of the surface (the slope bound, taken over a face
+       corner's texel angle for every texel, was 2.7–3.8 times too loose;
+       now each texel's own neighbors' angles; the least step grows past
+       half the 192 steps, and a ray still short is taken as a hit) — the
+       timing's own view had 13,233 holes in 722,454 pixels, a 3 km
+       semi-axis 750 px across 1,496 of 67,729, and the eye 10 m up
+       looking along the surface 6,447 of 62,229; ridges a few texels
+       wide casting no shadow (above); a small body's crescent drawn short
+       (at 140°, 37% at 3 px, 4% at 20 px): a body under 24 px in radius
+       now takes ⌈24 / its radius⌉² samples a pixel (to 8 × 8), 4.3% short
+       at 3 px and within 2.4% from 4 px; a pixel past a nearer part's
+       edge over a farther one shaded as the nearer part's limb alone (28
+       of 127 such pixels under 70% of exact; now the farther part is
+       shaded for its share: 8). Also: an eclipse's reach takes a shaped
+       receiver's greatest radius, a NaN where the eye is inside the
+       volume-equivalent sphere is clamped, and a shaped body is asserted
+       lit, without air or rings (`shape_fs` draws neither).
+     - Not fixed, found there: the plain sphere path's disks, 3 px in
+       radius at 140° of phase, show 23% over their flux (16% at 6 px, 2.5%
+       at 20 px), where they take over from their points.
+     - Checks added: no pixel within the edges wrong from 300 to 3,000 px
+       across or 10 m to 1 km up; the near edge over the far part; small
+       bodies' flux within 5% from 3 to 20 px at 0° to 140°; a ridge's
+       shadow (one pixel in ten at most shown lit, against a fine CPU march:
+       4% and 2% now, rays clipping its crest over less than a step); the
+       Sun's true size and an eclipse. Each fault above put back fails a
+       test, but a spent ray taken as a miss: with the tighter bound, no
+       tested ray spends its steps.
+     - Cost: the ellipsoid filling 1920×1080, 2.2 ms (1.1 ms as first
+       measured, on an image with holes).
 2. **Shapes' photometry** (`sandbox::photometry`, `render`).
    - The disk: averaged over orientations, a convex body's brightness is
      a sphere's of the same area (each facet counts alone, whatever its
