@@ -7,8 +7,8 @@ use sandbox::app::Shell;
 use sandbox::camera::MapCamera;
 
 /// GPU time at 1920×1080 of the whole scene with Earth filling the view,
-/// with its maps (color, relief, clouds, night lights, water) and
-/// without.
+/// with its maps (color, relief, clouds, night lights, water) and its
+/// atmosphere, and without either.
 #[test]
 #[ignore = "a measurement: run with --ignored --nocapture"]
 fn textured_bodies_gpu_time() {

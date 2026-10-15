@@ -4,6 +4,7 @@
 //! Radiance is linear, in units of a white Lambertian surface under the
 //! Sun at 1 au; [`Look::exposure`] maps it to the shown image.
 
+use crate::atmosphere::AtmosphereGpu;
 use crate::camera::{Camera, NEAR_KM};
 use crate::maps::{Maps, SurfaceGpu};
 use crate::paths::{MAX_POSES, Paths, Pose, split};
@@ -205,6 +206,7 @@ pub struct SphereGpu {
     pub _pad1: f32,
     pub corners: [[f32; 4]; 4],
     pub surface: SurfaceGpu,
+    pub atmosphere: AtmosphereGpu,
 }
 
 /// `Dot` in scene.wgsl.
@@ -314,12 +316,20 @@ impl Scene {
             ..Default::default()
         };
         let frustum = Frustum::new(&cam, size);
-        for s in &self.spheres {
+        // Far to near: a nearer body's atmosphere blends over a farther
+        // body.
+        let mut order: Vec<usize> = (0..self.spheres.len()).collect();
+        let distance = |k: &usize| cam.to_view(self.spheres[*k].center).length();
+        order.sort_by(|a, b| distance(b).total_cmp(&distance(a)));
+        for s in order.iter().map(|&k| &self.spheres[k]) {
             let v = cam.to_view(s.center);
             let d = v.length();
             let altitude = d - s.radius;
+            // What the sphere reaches: its atmosphere's top, if any.
+            let air = s.maps.as_ref().and_then(|m| m.air.as_ref());
+            let outer = air.map_or(s.radius, |a| a.atmosphere.top);
             // Inside it, or wholly behind the eye or off the screen.
-            if altitude <= 0.0 || !frustum.sees(v, s.radius) {
+            if altitude <= 0.0 || !frustum.sees(v, outer) {
                 continue;
             }
             let half_angle = (s.radius / d).asin();
@@ -375,17 +385,20 @@ impl Scene {
                 // carries what the gain adds, fading out.
                 spot((gain - 1.0) * (FADE_PX - radius_px) / (FADE_PX - 1.0));
             }
-            // The quad: across the cone of rays that hit the sphere, in the
-            // plane through its center facing the eye; the whole screen
-            // when that is too wide or reaches behind the eye.
-            let reach = d * half_angle.tan() * 1.02;
+            // The quad: across the cone of rays that hit the sphere (or its
+            // atmosphere), in the plane through its center facing the eye;
+            // the whole screen when that is too wide, reaches behind the
+            // eye, or the eye is in the atmosphere.
+            let outer_angle = (outer / d).min(1.0).asin();
+            let reach = d * outer_angle.tan() * 1.02;
             let e1 = (v / d).any_orthonormal_vector();
             let e2 = (v / d).cross(e1);
             let corners: Vec<DVec3> = [-1.0, 1.0]
                 .into_iter()
                 .flat_map(|y| [-1.0, 1.0].map(|x| v + (e1 * x + e2 * y) * reach))
                 .collect();
-            let billboard = (half_angle <= BILLBOARD_MAX_HALF_ANGLE
+            let billboard = (outer < d
+                && outer_angle <= BILLBOARD_MAX_HALF_ANGLE
                 && corners.iter().all(|c| c.z < -NEAR_KM))
             .then(|| {
                 std::array::from_fn(|k| {
@@ -430,6 +443,7 @@ impl Scene {
                         _pad: [0.0; 3],
                     }
                 },
+                atmosphere: air.map_or_else(AtmosphereGpu::default, |a| a.atmosphere.gpu()),
             });
             out.maps.push(s.maps.clone());
         }

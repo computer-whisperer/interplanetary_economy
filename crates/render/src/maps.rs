@@ -19,11 +19,12 @@ pub struct Image {
 
 impl Image {
     /// The formats images come in: color (8-bit sRGB RGBA), one channel
-    /// (8-bit linear), and two half floats.
-    pub const FORMATS: [wgpu::TextureFormat; 3] = [
+    /// (8-bit linear), and two or four half floats.
+    pub const FORMATS: [wgpu::TextureFormat; 4] = [
         wgpu::TextureFormat::Rgba8UnormSrgb,
         wgpu::TextureFormat::R8Unorm,
         wgpu::TextureFormat::Rg16Float,
+        wgpu::TextureFormat::Rgba16Float,
     ];
 
     /// An 8-bit sRGB RGBA image.
@@ -182,6 +183,8 @@ pub struct Maps {
     /// Water, 1, where the Sun glints; one channel.
     pub water: Option<Image>,
     pub shading: Shading,
+    /// Its atmosphere, over the sphere's radius.
+    pub air: Option<crate::atmosphere::Air>,
 }
 
 /// Bits of `SphereGpu::flags` (scene.wgsl's `FLAG_*`).
@@ -216,12 +219,15 @@ impl Maps {
 pub(crate) struct MapsPass {
     pub(crate) layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    table_sampler: wgpu::Sampler,
     plain: wgpu::BindGroup,
     uploaded: HashMap<usize, (Arc<Maps>, wgpu::BindGroup)>,
 }
 
-/// The textures a sphere's bind group holds, in binding order.
+/// The textures a sphere's bind group holds, in binding order: the maps,
+/// then (after their sampler) the atmosphere's two tables, and theirs.
 const TEXTURES: usize = 5;
+const TABLES: usize = 2;
 
 impl MapsPass {
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> MapsPass {
@@ -235,14 +241,17 @@ impl MapsPass {
             },
             count: None,
         };
-        let mut entries: Vec<wgpu::BindGroupLayoutEntry> =
-            (0..TEXTURES as u32).map(texture).collect();
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: TEXTURES as u32,
+        let sampler_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
-        });
+        };
+        let mut entries: Vec<wgpu::BindGroupLayoutEntry> =
+            (0..TEXTURES as u32).map(texture).collect();
+        entries.push(sampler_entry(TEXTURES as u32));
+        entries.extend((0..TABLES as u32).map(|k| texture(TEXTURES as u32 + 1 + k)));
+        entries.push(sampler_entry((TEXTURES + 1 + TABLES) as u32));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("maps"),
             entries: &entries,
@@ -256,6 +265,12 @@ impl MapsPass {
             anisotropy_clamp: 16,
             ..Default::default()
         });
+        let table_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("atmosphere tables"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         // One texel each: white, a flat normal, nothing.
         let one = |format, data: &[u8]| {
             let image = Image::new(1, 1, format, data.to_vec());
@@ -264,15 +279,18 @@ impl MapsPass {
         let white = one(wgpu::TextureFormat::Rgba8UnormSrgb, &[255; 4]);
         let flat = one(wgpu::TextureFormat::Rg16Float, &[0; 4]);
         let none = one(wgpu::TextureFormat::R8Unorm, &[0]);
+        let no_table = one(wgpu::TextureFormat::Rgba16Float, &[0; 8]);
         let plain = group(
             device,
             &layout,
-            &sampler,
+            [&sampler, &table_sampler],
             [&white, &flat, &none, &none, &none],
+            [&no_table, &no_table],
         );
         MapsPass {
             layout,
             sampler,
+            table_sampler,
             plain,
             uploaded: HashMap::new(),
         }
@@ -314,11 +332,19 @@ impl MapsPass {
                     None => plain(wgpu::TextureFormat::R8Unorm, &[0]),
                 });
             }
+            let tables = match &m.air {
+                Some(air) => [
+                    single(device, queue, &air.transmittance),
+                    single(device, queue, &air.multiple),
+                ],
+                None => [0, 1].map(|_| plain(wgpu::TextureFormat::Rgba16Float, &[0; 8])),
+            };
             let g = group(
                 device,
                 &self.layout,
-                &self.sampler,
+                [&self.sampler, &self.table_sampler],
                 std::array::from_fn(|k| &views[k]),
+                [&tables[0], &tables[1]],
             );
             self.uploaded.insert(key, (m.clone(), g));
         }
@@ -361,23 +387,34 @@ fn single(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::Te
     texture.create_view(&Default::default())
 }
 
-fn group(
+fn group<'a>(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    views: [&wgpu::TextureView; TEXTURES],
+    [sampler, table_sampler]: [&'a wgpu::Sampler; 2],
+    views: [&'a wgpu::TextureView; TEXTURES],
+    tables: [&'a wgpu::TextureView; TABLES],
 ) -> wgpu::BindGroup {
-    let mut entries: Vec<wgpu::BindGroupEntry> = views
-        .iter()
-        .enumerate()
-        .map(|(k, v)| wgpu::BindGroupEntry {
-            binding: k as u32,
+    fn view(binding: usize, v: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry {
+            binding: binding as u32,
             resource: wgpu::BindingResource::TextureView(v),
-        })
-        .collect();
+        }
+    }
+    let mut entries: Vec<wgpu::BindGroupEntry> =
+        views.iter().enumerate().map(|(k, v)| view(k, v)).collect();
     entries.push(wgpu::BindGroupEntry {
         binding: TEXTURES as u32,
         resource: wgpu::BindingResource::Sampler(sampler),
+    });
+    entries.extend(
+        tables
+            .iter()
+            .enumerate()
+            .map(|(k, v)| view(TEXTURES + 1 + k, v)),
+    );
+    entries.push(wgpu::BindGroupEntry {
+        binding: (TEXTURES + 1 + TABLES) as u32,
+        resource: wgpu::BindingResource::Sampler(table_sampler),
     });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("maps"),

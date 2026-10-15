@@ -9,6 +9,7 @@
 //! output's headroom. Depth is reversed (1 near, 0 at infinity) in a
 //! 32-bit float buffer, with no far plane.
 
+pub mod atmosphere;
 pub mod camera;
 mod lines;
 pub mod maps;

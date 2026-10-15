@@ -1,6 +1,8 @@
-//! Bodies' maps (M1c.md, step 6 plan, item 4): `data/bodies/` (built by
-//! `tools/textures/`), read once per process on a thread of its own, the
-//! bodies' images decoded in parallel. Spheres show them once they arrive.
+//! Bodies' maps (M1c.md, step 6 plan, items 4 and 5): `data/bodies/`
+//! (built by `tools/textures/`) and the atmospheres (`atmospheres`), read
+//! and tabulated once per process on a thread of its own, the bodies in
+//! parallel. Spheres show them once they arrive. A body with an
+//! atmosphere and no maps (Venus) gets a plain one.
 
 use crate::data_dir;
 use orbit::ephem::Ephemeris;
@@ -41,7 +43,7 @@ struct Elevation {
 #[derive(Clone, Debug)]
 pub struct BodyMaps {
     pub maps: Arc<Maps>,
-    pub albedo: f32,
+    pub albedo: [f32; 3],
 }
 
 fn decode(path: &Path) -> Result<image::DynamicImage, String> {
@@ -92,9 +94,30 @@ fn body(dir: &Path, entry: &Entry, radius: f64) -> Result<BodyMaps, String> {
             night_radiance: entry.night_radiance.unwrap_or([0.0; 3]),
             water: optional(&entry.water)?,
             shading,
+            air: None,
         }),
-        albedo: entry.albedo,
+        albedo: [entry.albedo; 3],
     })
+}
+
+/// A plain white map, for a body with an atmosphere and no maps; its
+/// albedo carries its color.
+fn plain(id: &str) -> BodyMaps {
+    BodyMaps {
+        maps: Arc::new(Maps {
+            color: Image::srgba(1, 1, vec![255; 4]),
+            mean: [1.0; 3],
+            relief: None,
+            clouds: None,
+            cloud_albedo: 0.0,
+            night: None,
+            night_radiance: [0.0; 3],
+            water: None,
+            shading: Shading::Lambert,
+            air: None,
+        }),
+        albedo: crate::bodies::albedo(id),
+    }
 }
 
 /// Reads `dir`'s maps (`bodies.toml` and each body's directory), for the
@@ -103,15 +126,30 @@ pub fn read(dir: &Path, eph: &Ephemeris) -> Result<HashMap<String, BodyMaps>, St
     let path = dir.join("bodies.toml");
     let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let file: File = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
-    file.body
-        .par_iter()
-        .map(|(id, entry)| {
+    let mut ids: Vec<&str> = file.body.keys().map(String::as_str).collect();
+    for b in eph.ids() {
+        let id = eph.body(b).id.as_str();
+        if !ids.contains(&id) && crate::atmospheres::of(id, 1.0).is_some() {
+            ids.push(id);
+        }
+    }
+    ids.par_iter()
+        .map(|&id| {
             let b = eph
                 .lookup(id)
                 .ok_or_else(|| format!("bodies.toml: no body {id:?}"))?;
-            let maps =
-                body(&dir.join(id), entry, eph.body(b).radius).map_err(|e| format!("{id}: {e}"))?;
-            Ok((id.clone(), maps))
+            let radius = eph.body(b).radius;
+            let mut maps = match file.body.get(id) {
+                Some(entry) => {
+                    body(&dir.join(id), entry, radius).map_err(|e| format!("{id}: {e}"))?
+                }
+                None => plain(id),
+            };
+            if let Some(a) = crate::atmospheres::of(id, radius) {
+                Arc::get_mut(&mut maps.maps).expect("just made").air =
+                    Some(render::atmosphere::Air::new(a));
+            }
+            Ok((id.to_string(), maps))
         })
         .collect()
 }

@@ -2,6 +2,7 @@
 //! plans played back in it.
 
 pub mod app;
+pub mod atmospheres;
 pub mod bodies;
 pub mod camera;
 pub mod clock;

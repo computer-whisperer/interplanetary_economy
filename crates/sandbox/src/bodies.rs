@@ -37,7 +37,7 @@ pub fn bond_albedo(id: &str) -> f64 {
 }
 
 /// The albedo per channel: the Bond albedo, tinted.
-fn albedo(id: &str) -> [f32; 3] {
+pub fn albedo(id: &str) -> [f32; 3] {
     let (bond, tint) = look(id);
     let luminance = 0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2];
     tint.map(|c| (bond * c / luminance) as f32)
@@ -68,7 +68,7 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
         Surface::Emissive([sun_radiance(eph) as f32; 3])
     } else {
         match maps {
-            Some(m) => Surface::Lit([m.albedo; 3]),
+            Some(m) => Surface::Lit(m.albedo),
             None => Surface::Lit(albedo(id)),
         }
     };

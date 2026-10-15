@@ -213,6 +213,54 @@ mod tests {
         }
     }
 
+    /// A scene whose every pixel marches through air: the eye in it.
+    fn heavy() -> Scene {
+        use crate::atmosphere::{Air, Atmosphere};
+        use crate::maps::{Image, Maps, Shading};
+        use glam::DVec3;
+        let air = Air::new(Atmosphere {
+            bottom: 1_000.0,
+            top: 1_100.0,
+            rayleigh: [0.01; 3],
+            rayleigh_height: 10.0,
+            mie_scattering: [0.01; 3],
+            mie_absorption: [0.001; 3],
+            mie_height: 2.0,
+            mie_g: 0.7,
+            absorption: [0.0; 3],
+            absorption_center: 0.0,
+            absorption_width: 1.0,
+            ground_albedo: 0.3,
+        });
+        let maps = std::sync::Arc::new(Maps {
+            color: Image::srgba(1, 1, vec![255; 4]),
+            mean: [1.0; 3],
+            relief: None,
+            clouds: None,
+            cloud_albedo: 0.0,
+            night: None,
+            night_radiance: [0.0; 3],
+            water: None,
+            shading: Shading::Lambert,
+            air: Some(air),
+        });
+        let eye = DVec3::new(0.0, 0.0, 1_050.0);
+        Scene {
+            camera: Some(crate::Camera::looking_at(
+                eye,
+                DVec3::new(1.0, 0.0, 1_050.0),
+                DVec3::Z,
+                1.0,
+            )),
+            sun: DVec3::new(1e8, 0.0, 0.0),
+            spheres: vec![crate::Sphere {
+                maps: Some(maps),
+                ..crate::Sphere::plain(DVec3::ZERO, 1_000.0, crate::Surface::Lit([0.3; 3]))
+            }],
+            ..Default::default()
+        }
+    }
+
     /// Frames that finish between two collections come back oldest
     /// first, and the latest is the newest, even after the ring wraps
     /// (found in review: slots were read in index order).
@@ -234,7 +282,14 @@ mod tests {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             let m = timer.begin(&mut encoder);
             assert!(m.is_some(), "a free slot");
-            let scene = Scene::default();
+            // The large frame filled with a planet's air, marched at every
+            // pixel: far longer than a small one even with other tests on
+            // the GPU (an empty 4096² frame, ~1 ms, was not always).
+            let scene = if target.size.0 > 1 {
+                heavy()
+            } else {
+                Scene::default()
+            };
             let writes = timer.scene_pass(m);
             renderer.render(
                 &gpu.device,

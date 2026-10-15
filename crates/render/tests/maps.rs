@@ -36,6 +36,7 @@ fn maps(color: Image, relief: Option<Image>) -> Arc<Maps> {
         night_radiance: [0.0; 3],
         water: None,
         shading: Shading::Lambert,
+        air: None,
     })
 }
 
