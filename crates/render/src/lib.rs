@@ -1,7 +1,7 @@
 //! The map view's renderer (M1c.md, The view): a scene drawn in linear
-//! HDR, then exposed, bloomed and tonemapped into a texture that the app
-//! composites under its UI, with lines and markers over it. It knows
-//! nothing of orbits or missions.
+//! HDR, then exposed, given the viewer's eye's glare and tonemapped into
+//! a texture that the app composites under its UI, with lines and markers
+//! over it. It knows nothing of orbits or missions.
 //!
 //! Textures are `Rgba16Float`, linear. The scene's is radiance (scene.rs
 //! has its units); the shown one has 1.0 the SDR reference white
@@ -11,6 +11,7 @@
 
 pub mod atmosphere;
 pub mod camera;
+pub mod glare;
 mod lines;
 pub mod maps;
 pub mod offscreen;
@@ -38,19 +39,19 @@ pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Where the scene is drawn: its radiance, the image the app composites
-/// (and tests read back), depth, and bloom's levels.
+/// (and tests read back), depth, and the glare's levels.
 pub struct Target {
     /// Tells targets apart, for what the renderer keeps per target.
     id: u64,
     /// The shown image. Shared, since the app's UI holds it too.
     pub color: Arc<wgpu::Texture>,
     pub color_view: wgpu::TextureView,
-    /// The scene's radiance, exposed (before bloom and the tonemap).
+    /// The scene's radiance, exposed (before the glare and the tonemap).
     pub hdr: wgpu::Texture,
     pub hdr_view: wgpu::TextureView,
     pub depth_view: wgpu::TextureView,
-    /// Half size, and halving.
-    bloom: Vec<wgpu::TextureView>,
+    /// The glare's levels: half size, and halving.
+    glare: Vec<wgpu::TextureView>,
     /// Pixels.
     pub size: (u32, u32),
 }
@@ -81,7 +82,7 @@ impl Target {
         let hdr = texture("scene radiance", size, COLOR_FORMAT, shown);
         let depth = texture("scene depth", size, DEPTH_FORMAT, U::RENDER_ATTACHMENT);
         let (w, h) = (size.width, size.height);
-        let bloom = (1..=post::levels((w, h)))
+        let glare = (1..=post::levels((w, h)))
             .map(|k| {
                 let level = wgpu::Extent3d {
                     width: (w >> k).max(1),
@@ -89,7 +90,7 @@ impl Target {
                     depth_or_array_layers: 1,
                 };
                 texture(
-                    "bloom",
+                    "glare",
                     level,
                     COLOR_FORMAT,
                     U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
@@ -104,7 +105,7 @@ impl Target {
             hdr_view: hdr.create_view(&Default::default()),
             hdr,
             depth_view: depth.create_view(&Default::default()),
-            bloom,
+            glare,
             size: (w, h),
         }
     }
@@ -155,10 +156,10 @@ impl Storage {
 
 /// Draws scenes (scene.wgsl): the scene's pass (the sky, then ray-cast
 /// spheres, each with its maps, shaped ones marched, then points,
-/// additive) into its radiance; bloom and the tonemap into the shown image
-/// (post.wgsl); and over that, depth-tested against the scene, the overlay
-/// (each set of paths' lines, then markers), which exposure does not
-/// touch.
+/// additive) into its radiance; the glare and the tonemap into the shown
+/// image (post.wgsl); and over that, depth-tested against the scene, the
+/// overlay (each set of paths' lines, then markers), which exposure does
+/// not touch.
 pub struct Renderer {
     frame: wgpu::Buffer,
     spheres: Storage,

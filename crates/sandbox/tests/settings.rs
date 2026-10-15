@@ -76,7 +76,14 @@ fn the_menu_sets_the_lifts() {
         };
         let center = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
 
-        let lifts = |look: &render::Look| [look.sky_lift, look.body_lift, look.night_lift];
+        let lifts = |look: &render::Look| {
+            [
+                look.sky_lift,
+                look.body_lift,
+                look.night_lift,
+                look.sun_lift,
+            ]
+        };
         let scene = draw(&mut app, &mut ui);
         let exposure = scene.look.exposure;
         assert_eq!(lifts(&scene.look), Settings::default().lifts());
@@ -94,9 +101,9 @@ fn the_menu_sets_the_lifts() {
             );
             println!("scale {scale}: {} {slider:?}", c.name);
             // Its ends, then its middle; each a whole stop, and its own.
-            let middle = (c.max as f32 / 2.0).round() as i32;
+            let middle = ((c.min + c.max) as f32 / 2.0).round() as i32;
             for (x, want) in [
-                (slider.x + 1.0, 0),
+                (slider.x + 1.0, c.min),
                 (slider.x + slider.w - 1.0, c.max),
                 (slider.x + slider.w / 2.0, middle),
             ] {
@@ -189,6 +196,7 @@ fn each_lift_reaches_what_it_names() {
         background_lift: 0,
         body_lift: 0,
         night_lights: 0,
+        sun: 0,
         ..Settings::default()
     };
     let mut shown = |t: Epoch, focus, camera: Option<render::Camera>, settings: Settings| {

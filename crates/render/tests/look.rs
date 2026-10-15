@@ -1,9 +1,11 @@
 //! How the scene's radiance is shown (M1c.md, step 6 plan, items 1 and
-//! 7), offscreen: the tonemap, bloom, the dither, and the overlay drawn
+//! 7, and part 10), offscreen: the tonemap, the eye's glare, the dither,
+//! and the overlay drawn
 //! after them.
 
 use glam::DVec3;
 use render::camera::Camera;
+use render::glare::Eye;
 use render::offscreen::Offscreen;
 use render::scene::AU_KM;
 use render::{Look, Marker, Renderer, Scene, Shape, Sphere, Surface, Target};
@@ -51,7 +53,6 @@ fn tonemap_is_linear_to_its_knee_and_under_the_headroom() {
                 background: [x; 3],
                 look: Look {
                     exposure,
-                    bloom: 0.0,
                     headroom,
                     ..Default::default()
                 },
@@ -91,7 +92,6 @@ fn tonemap_keeps_hue() {
             background,
             look: Look {
                 exposure: 1.0,
-                bloom: 0.0,
                 headroom: 4.0,
                 ..Default::default()
             },
@@ -196,7 +196,6 @@ fn sdr_dither_follows_a_slow_gradient() {
             spheres: vec![Sphere::plain(moon, radius, Surface::Lit([0.5; 3]))],
             look: Look {
                 exposure: 1.0,
-                bloom: 0.0,
                 headroom,
                 ..Default::default()
             },
@@ -236,60 +235,215 @@ fn sdr_dither_follows_a_slow_gradient() {
     assert!(correlation > 0.5, "{correlation}");
 }
 
-/// Bloom moves energy, it does not make it: a bright disk's energy
-/// summed over the shown image is the scene's, within the share that
-/// leaves the image's edges, and some of it lands far from the disk; at
-/// the Sun's radiance (46,000) as at 100, its glare in proportion. Found
-/// in review: the levels' sum, stored in f16, saturated near the Sun.
+/// The tonemap's curve (post.wgsl), on one channel.
+fn tonemap(x: f64, headroom: f64) -> f64 {
+    let knee = 0.5 * headroom;
+    if x <= knee {
+        return x;
+    }
+    let room = headroom - knee;
+    knee + room * (1.0 - (-(x - knee) / room).exp())
+}
+
+/// A disk `across` px wide of `radiance` at the center of a 1920×1080
+/// view, seen with the eye's glare at the sandbox's pixel (`pixel`
+/// radians) or without: the scene's radiance and the shown image.
+fn disk(
+    gpu: &Offscreen,
+    renderer: &mut Renderer,
+    radiance: f32,
+    across: f64,
+    headroom: f32,
+    pixel: f32,
+    eye: Option<Eye>,
+) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+    let size = (1920, 1080);
+    let center = DVec3::new(AU_KM, 0.0, 0.0);
+    let fov = 30f64.to_radians();
+    let camera = Camera::looking_at(DVec3::ZERO, center, DVec3::Z, fov);
+    let px = 2.0 * (fov / 2.0).tan() / 1080.0;
+    let scene = Scene {
+        camera: Some(camera),
+        spheres: vec![Sphere::plain(
+            center,
+            AU_KM * px * across / 2.0,
+            Surface::Emissive {
+                radiance: [radiance; 3],
+                darkening: [0.0; 3],
+            },
+        )],
+        look: Look {
+            exposure: 1.0,
+            headroom,
+            pixel,
+            eye,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    draw(gpu, renderer, &scene, size)
+}
+
+/// The sandbox's pixel, radians (`sandbox::look::PIXEL`).
+const PIXEL: f32 = 1.0 / (96.0 * 28.0);
+
+/// The eye's glare is of the light past what the output shows: a disk
+/// under the tonemap's knee shows none, and as much without its eye as
+/// with; one past the headroom glares, in proportion to its excess, at
+/// the Sun's radiance (46,000) as at 100 (at a headroom of 10, the glare
+/// linear 40 px off). (Found in review of the bloom
+/// before it: the levels' sum, stored in f16, saturated near the Sun.)
 #[test]
-fn bloom_spreads_energy_and_keeps_it() {
+fn glare_is_of_what_the_output_cannot_show() {
     let gpu = Offscreen::new().expect("a GPU");
     let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
-    let size = (512, 512);
-    let center = DVec3::new(AU_KM, 0.0, 0.0);
-    let camera = Camera::looking_at(DVec3::ZERO, center, DVec3::Z, 30f64.to_radians());
+    let (_, with) = disk(
+        &gpu,
+        &mut renderer,
+        0.45,
+        40.0,
+        1.0,
+        PIXEL,
+        Some(Eye::STANDARD),
+    );
+    let (_, without) = disk(&gpu, &mut renderer, 0.45, 40.0, 1.0, PIXEL, None);
+    assert_eq!(with, without, "under the knee");
+    // 40 px off a 6 px disk, against the light past the shown.
+    let off = 1080 / 2 * 1920 + 1920 / 2 + 43;
     let mut glare = Vec::new();
-    for (radiance, across) in [(100.0, 10.0), (46_000.0, 10.0), (46_000.0, 170.0)] {
-        for bloom in [0.0, 0.3] {
+    for radiance in [100.0f32, 46_000.0] {
+        let (hdr, shown) = disk(
+            &gpu,
+            &mut renderer,
+            radiance,
+            6.0,
+            10.0,
+            PIXEL,
+            Some(Eye::STANDARD),
+        );
+        let excess: f64 = hdr
+            .iter()
+            .map(|p| f64::from(p[0]) - tonemap(f64::from(p[0]), 10.0))
+            .sum();
+        let far = f64::from(shown[off][0]);
+        println!("{radiance}: excess {excess:.4e}, 40 px off {far:.4e}");
+        assert!(far > 1e-4, "{far}");
+        glare.push(far / excess);
+    }
+    assert!((glare[1] / glare[0] - 1.0).abs() < 0.01, "{glare:?}");
+}
+
+/// The glare lands as the eye's does: of a small disk's light past the
+/// headroom, the share landing in each octave of distance from it, 4 px
+/// to 1,024 (where the image's edges cut it off), within 15% of the CIE's
+/// glare spread function's (glare.rs); 1–4 px, where the first level's
+/// one shape holds it, within 45%. At the sandbox's pixel and at half
+/// its angle (a display scale of 2).
+#[test]
+fn glare_lands_as_the_eyes() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    // A headroom of 1,000 keeps the glare linear a few pixels out; the
+    // tonemap is undone where it is not.
+    let headroom = 1000.0f32;
+    let undo = |y: f32| {
+        let (y, knee) = (f64::from(y), 0.5 * f64::from(headroom));
+        if y <= knee {
+            y
+        } else {
+            knee - knee * (1.0 - (y - knee) / knee).ln()
+        }
+    };
+    for pixel in [PIXEL, PIXEL / 2.0] {
+        let (hdr, without) = disk(&gpu, &mut renderer, 2000.0, 2.0, headroom, pixel, None);
+        let (_, with) = disk(
+            &gpu,
+            &mut renderer,
+            2000.0,
+            2.0,
+            headroom,
+            pixel,
+            Some(Eye::STANDARD),
+        );
+        let excess: f64 = hdr
+            .iter()
+            .map(|p| f64::from(p[0]) - tonemap(f64::from(p[0]), f64::from(headroom)))
+            .sum();
+        // Octave b ≥ 1: 2^(b-1)–2^b px; 0: under 1.
+        let mut octaves = [0.0f64; 14];
+        for (i, (w, wo)) in with.iter().zip(&without).enumerate() {
+            let (x, y) = (
+                (i % 1920) as f64 + 0.5 - 960.0,
+                (i / 1920) as f64 + 0.5 - 540.0,
+            );
+            let r = x.hypot(y);
+            let b = if r < 1.0 {
+                0
+            } else {
+                (r.log2().floor() as usize + 1).min(13)
+            };
+            octaves[b] += undo(w[0]) - undo(wo[0]);
+        }
+        let degrees = f64::from(pixel).to_degrees();
+        for (b, light) in octaves.iter().enumerate().take(11).skip(1) {
+            let from = 2f64.powi(b as i32 - 1);
+            let want = Eye::STANDARD.share(from * degrees, 2.0 * from * degrees);
+            let got = light / excess;
+            println!("pixel {pixel:.3e}, {from} px out: {got:.5}, the eye's {want:.5}");
+            let tolerance = if b < 3 { 0.45 } else { 0.15 };
+            assert!(
+                (got / want - 1.0).abs() < tolerance,
+                "{from} px: {got} vs {want}"
+            );
+        }
+    }
+}
+
+/// The Sun's dimming (`Look::sun_lift`) takes its light, once, at every
+/// size: as a point, fading into its disk, and as a disk; and the body
+/// lift leaves it (it took the Sun's point to 2¹⁷ its flux: found in
+/// review).
+#[test]
+fn the_suns_lift_dims_it_once_at_every_size() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let size = (400, 400);
+    let center = DVec3::new(AU_KM, 0.0, 0.0);
+    let fov = 30f64.to_radians();
+    let camera = Camera::looking_at(DVec3::ZERO, center, DVec3::Z, fov);
+    let px = 2.0 * (fov / 2.0).tan() / 400.0;
+    for radius_px in [0.5, 2.0, 10.0] {
+        let mut flux = |sun_lift: f32, body_lift: f32| {
             let scene = Scene {
                 camera: Some(camera),
                 spheres: vec![Sphere::plain(
                     center,
-                    AU_KM * across / 512.0 * (15f64.to_radians().tan()),
+                    AU_KM * px * radius_px,
                     Surface::Emissive {
-                        radiance: [radiance; 3],
+                        radiance: [100.0; 3],
                         darkening: [0.0; 3],
                     },
                 )],
                 look: Look {
-                    exposure: 1.0,
-                    bloom,
-                    // Linear far past the disk's radiance.
                     headroom: 1e5,
+                    sun_lift,
+                    body_lift,
                     ..Default::default()
                 },
                 ..Default::default()
             };
-            let (radiance_image, shown) = draw(&gpu, &mut renderer, &scene, size);
-            let sum = |v: &[[f32; 4]]| v.iter().map(|p| f64::from(p[0])).sum::<f64>();
-            let (before, after) = (sum(&radiance_image), sum(&shown));
-            // 40 px past the disk's edge.
-            let far = shown[256 * 512 + 256 + across as usize / 2 + 40][0];
-            println!(
-                "{radiance}, {across} px, bloom {bloom}: energy {before:.4e} → {after:.4e}; 40 px off {far:.4}"
-            );
-            assert!((after / before - 1.0).abs() < 0.02, "{after} vs {before}");
-            if bloom > 0.0 {
-                assert!(far > 1e-3, "{far}");
-                if across < 20.0 {
-                    glare.push(f64::from(far / radiance));
-                }
-            } else {
-                assert!(far < 1e-6, "{far}");
-            }
-        }
+            let (radiance, _) = draw(&gpu, &mut renderer, &scene, size);
+            radiance.iter().map(|p| f64::from(p[0])).sum::<f64>()
+        };
+        let (shown, dimmed, lifted) = (
+            flux(1.0, 1.0),
+            flux(1.0 / 64.0, 1.0),
+            flux(1.0, 2f32.powi(15)),
+        );
+        println!("{radius_px} px: {shown:.4e}, dimmed {dimmed:.4e}, lifted {lifted:.4e}");
+        assert!((dimmed * 64.0 / shown - 1.0).abs() < 2e-3, "{radius_px} px");
+        assert!((lifted / shown - 1.0).abs() < 2e-3, "{radius_px} px");
     }
-    assert!((glare[1] / glare[0] - 1.0).abs() < 0.01, "{glare:?}");
 }
 
 /// Lines and markers are drawn after the tonemap: exposure does not
@@ -317,7 +471,6 @@ fn exposure_leaves_the_overlay_alone() {
             }],
             look: Look {
                 exposure,
-                bloom: 0.0,
                 headroom: 2.0,
                 ..Default::default()
             },
@@ -337,7 +490,7 @@ fn exposure_leaves_the_overlay_alone() {
 }
 
 /// GPU time of the chain from scene to shown image at 1920×1080, with
-/// nothing in the scene: bloom's eight levels and the tonemap.
+/// nothing in the scene: the glare's levels and the tonemap.
 #[test]
 #[ignore = "a measurement: run with --ignored --nocapture"]
 fn post_chain_gpu_time() {
@@ -352,8 +505,9 @@ fn post_chain_gpu_time() {
         )),
         look: Look {
             exposure: 1.0,
-            bloom: 0.01,
             headroom: 1.0,
+            pixel: PIXEL,
+            eye: Some(Eye::STANDARD),
             ..Default::default()
         },
         ..Default::default()

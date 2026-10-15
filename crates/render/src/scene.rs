@@ -7,6 +7,7 @@
 
 use crate::atmosphere::AtmosphereGpu;
 use crate::camera::{Camera, NEAR_KM};
+use crate::glare::Eye;
 use crate::maps::{Maps, Shading, SurfaceGpu};
 use crate::paths::{MAX_POSES, Paths, Pose, split};
 use crate::sky::Sky;
@@ -30,7 +31,8 @@ pub const ACUITY: f64 = 2.909e-4;
 
 /// A sphere from one pixel in radius to this fades from its point (a
 /// spot carrying its flux times [`Look::point_gain`], lifted by
-/// [`Look::body_lift`]) to its disk: the spot's share falling and the
+/// [`Look::body_lift`], a glowing one's not: its radiance takes
+/// [`Look::sun_lift`]) to its disk: the spot's share falling and the
 /// disk's opacity rising, so that the flux shown runs on smoothly, and
 /// the point's lift falling in stops with its share.
 const FADE_PX: f64 = 3.0;
@@ -74,22 +76,27 @@ pub struct Scene {
 pub struct Look {
     /// Radiance to the shown image's units, where 1.0 is the SDR white.
     pub exposure: f32,
-    /// The fraction of the image's energy that bloom spreads.
-    pub bloom: f32,
     /// The output's peak over the SDR white; 1 on SDR, which is dithered.
     pub headroom: f32,
     /// The angle a pixel of the image subtends at the viewer's eye,
-    /// radians, by which points of light are shown (`point_gain`); 0: the
-    /// angle it subtends of the scene, as a camera records them.
+    /// radians, by which points of light are shown (`point_gain`) and the
+    /// eye's glare spreads; 0: the angle it subtends of the scene, as a
+    /// camera records them.
     pub pixel: f32,
+    /// The viewer's eye, whose glare of the light past the output's peak
+    /// is shown (`glare`), given a [`Look::pixel`]; none: no glare.
+    pub eye: Option<Eye>,
     /// The departures from what a camera would record, each 1 for none:
     /// what the sky's exposure (its stars' and the Milky Way's) is over
     /// the scene's;
     pub sky_lift: f32,
     /// what that of bodies drawn as points of light is;
     pub body_lift: f32,
-    /// and what bodies' night lights are shown at over their radiance.
+    /// what bodies' night lights are shown at over their radiance;
     pub night_lift: f32,
+    /// and what glowing spheres' (the Sun's) radiance is shown at, its
+    /// disk's and its point's (which [`Look::body_lift`] leaves).
+    pub sun_lift: f32,
 }
 
 impl Look {
@@ -111,16 +118,17 @@ impl Look {
 }
 
 impl Default for Look {
-    /// Radiance shown as it is, unbloomed, on SDR.
+    /// Radiance shown as it is, without glare, on SDR.
     fn default() -> Look {
         Look {
             exposure: 1.0,
-            bloom: 0.0,
             headroom: 1.0,
             pixel: 0.0,
+            eye: None,
             sky_lift: 1.0,
             body_lift: 1.0,
             night_lift: 1.0,
+            sun_lift: 1.0,
         }
     }
 }
@@ -522,7 +530,8 @@ impl Scene {
                 let spread = local_pixel * local_pixel;
                 match s.surface {
                     Surface::Emissive { radiance, .. } => {
-                        radiance.map(|c| f64::from(c) * disk / spread)
+                        let shown = f64::from(self.look.sun_lift);
+                        radiance.map(|c| f64::from(c) * shown * disk / spread)
                     }
                     Surface::Lit(_) => {
                         let (albedo, shading) = s.reflectance().expect("lit");
@@ -554,11 +563,13 @@ impl Scene {
             // That spot's flux times `k`, shown at the frame's exposure;
             // in front of the sphere's disk (and its air and rings), which
             // it fades into: along its center's ray, nearer than anything
-            // of it (every pixel of the spot takes the center's depth).
-            let (exposure, lift) = (
-                f64::from(self.look.exposure),
-                f64::from(self.look.body_lift),
-            );
+            // of it (every pixel of the spot takes the center's depth). A
+            // glowing sphere's is not lifted: its radiance has its own.
+            let exposure = f64::from(self.look.exposure);
+            let lift = match s.surface {
+                Surface::Lit(_) => f64::from(self.look.body_lift),
+                Surface::Emissive { .. } => 1.0,
+            };
             let front = v * (1.0 - 1.01 * outer / -v.z).max(0.0);
             let mut spot = |k: f64| {
                 let color = radiance.map(|x| x * k * exposure);
@@ -621,7 +632,12 @@ impl Scene {
                 Surface::Emissive {
                     radiance,
                     darkening,
-                } => (1.0, radiance, 0.0, darkening),
+                } => (
+                    1.0,
+                    radiance.map(|c| c * self.look.sun_lift),
+                    0.0,
+                    darkening,
+                ),
             };
             out.spheres.push(SphereGpu {
                 center: f32x3(v),

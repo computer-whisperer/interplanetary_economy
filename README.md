@@ -23,8 +23,9 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
 - `crates/render` — the map view's renderer ([M1c.md](M1c.md)): a scene
   drawn in linear HDR (the sky's stars and Milky Way; bodies with their
   maps, atmospheres, rings and eclipses; points; markers; paths' lines
-  placed by reference frames' poses), then bloomed and tonemapped to the
-  output's headroom; GPU timers, and a windowless device for tests.
+  placed by reference frames' poses), then given the viewer's eye's glare
+  and tonemapped to the output's headroom; GPU timers, and a windowless
+  device for tests.
 - `crates/sandbox` — the creative sandbox: the map view in a window, its
   UI on [damascene](https://github.com/computer-whisperer/damascene)
   0.8, HDR output where the compositor offers it; the bodies turned by

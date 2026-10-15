@@ -2,7 +2,7 @@
 //! and Realism): one exposure for the whole scene, set by the focus,
 //! eased when it changes and shifted by whole stops by hand, with the sky
 //! lifted over it; points of light as bright as at the viewer's eye; and
-//! bloom.
+//! the viewer's eye's glare (`render::glare`).
 
 use crate::bodies;
 use crate::photometry::{self, Curve, Seen};
@@ -31,11 +31,11 @@ pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
 ///
 /// Stops the sky (the stars and the Milky Way) shows over the scene's
 /// exposure, so that it shows beside a sunlit body. Over Earth's
-/// exposure, +17 shows stars to about magnitude 11. (18 while Earth's
-/// curve was Mallama's, 0.77 mag too bright at full phase, which put its
-/// exposure 1 stop lower: Earth's look kept, other foci's skies show 1
-/// stop dimmer than then.)
-pub const BACKGROUND_LIFT: i32 = 17;
+/// exposure, +15 shows stars to about magnitude 9.5. (17 until the eye's
+/// glare came, which spread the brightest stars' light past the output's
+/// peak around them; 18 while Earth's curve was Mallama's, 0.77 mag too
+/// bright at full phase, which put its exposure 1 stop lower.)
+pub const BACKGROUND_LIFT: i32 = 15;
 
 /// Stops bodies drawn as points of light show over the scene's exposure:
 /// as the sky's, so that the planets show where they are, at their
@@ -44,8 +44,8 @@ pub const BODY_LIFT: i32 = BACKGROUND_LIFT;
 
 /// The most either is lifted: enough for the Milky Way to show clearly
 /// (+22 over Earth's exposure) with any planet in focus (Venus's exposure
-/// is 2.6 stops under Earth's). With the Sun's, 16 stops under, the
-/// exposure keys reach further.
+/// is 2.6 stops under Earth's). With the Sun's, 10 stops under at the
+/// Sun's default dimming (16 undimmed), the exposure keys reach further.
 pub const MAX_LIFT: i32 = 25;
 
 /// Stops Earth's night lights show over their radiance, so that they
@@ -55,22 +55,28 @@ pub const NIGHT_LIGHTS: i32 = 14;
 /// The most they are lifted: 6 stops past the default.
 pub const MAX_NIGHT_LIGHTS: i32 = 20;
 
+/// Stops the Sun shows at over its radiance, its disk and its point (as a
+/// point, not lifted with the bodies): under it, so that its glare
+/// (`render::glare`) leaves the view beside it readable.
+pub const SUN: i32 = -6;
+
+/// The most the Sun is dimmed: from Earth's exposure, 16 stops leave its
+/// disk at about twice the SDR white.
+pub const MIN_SUN: i32 = -20;
+
 /// Seconds for exposure to close ~63% of the way to a new focus's: most
 /// of it within a refocus's flight.
 const EASE_S: f64 = 0.2;
 
-/// The share of the image's energy bloom spreads: a lens's glare. At 3%
-/// a body at the key level showed a haze around it; at 1% only the Sun
-/// and bright limbs glare.
-pub const BLOOM: f32 = 0.01;
-
 /// The exposure that shows `focus`'s sunlit side at [`KEY`] at `t`, as
 /// it shows at full phase (its mean, at normal incidence): KEY / (its
 /// normal albedo, by its measured brightness (`photometry`), × irradiance
-/// in units of 1 au's). The Sun's shows its disk at [`SUN_KEY`].
-pub fn exposure_for(eph: &Ephemeris, focus: BodyId, t: Epoch) -> f64 {
+/// in units of 1 au's). The Sun's shows its disk at [`SUN_KEY`] as it is
+/// shown, at `sun` times its radiance ([`SUN`]): so that, dimmed, it is
+/// the rest of the view that brightens.
+pub fn exposure_for(eph: &Ephemeris, focus: BodyId, t: Epoch, sun: f64) -> f64 {
     if focus == eph.sun() {
-        return SUN_KEY / bodies::sun_radiance(eph);
+        return SUN_KEY / (bodies::sun_radiance(eph) * sun);
     }
     let sun = eph.barycentric_position(eph.sun(), t);
     let to_sun = sun - eph.barycentric_position(focus, t);
@@ -149,7 +155,7 @@ mod tests {
         let sun = eph.barycentric_position(eph.sun(), t);
         for (id, v0) in [("earth", -3.2165), ("jupiter", -9.395)] {
             let b = eph.lookup(id).unwrap();
-            let e = exposure_for(eph, b, t);
+            let e = exposure_for(eph, b, t, 0.01);
             let p =
                 10f64.powf(-0.4 * (v0 - photometry::V_SUN)) * (AU_KM / eph.body(b).radius).powi(2);
             let irradiance = (AU_KM / (sun - eph.barycentric_position(b, t)).length()).powi(2);
@@ -157,9 +163,9 @@ mod tests {
             println!("{id}: p {p:.3}, shown at {shown:.4}");
             assert!((shown / KEY - 1.0).abs() < 1e-3, "{id}: {shown}");
         }
-        assert_eq!(
-            exposure_for(eph, eph.sun(), t) * bodies::sun_radiance(eph),
-            SUN_KEY
-        );
+        for sun in [1.0, 2f64.powi(SUN)] {
+            let shown = exposure_for(eph, eph.sun(), t, sun) * bodies::sun_radiance(eph) * sun;
+            assert!((shown / SUN_KEY - 1.0).abs() < 1e-12, "{sun}: {shown}");
+        }
     }
 }

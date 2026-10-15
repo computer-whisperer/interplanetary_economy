@@ -23,6 +23,8 @@ pub struct Settings {
     pub body_lift: i32,
     /// Earth's night lights', over their radiance.
     pub night_lights: i32,
+    /// The Sun's, over its radiance: 0 or under.
+    pub sun: i32,
     /// Labels on the map view (bodies', ships', markers', station
     /// orbits').
     pub labels: bool,
@@ -35,6 +37,7 @@ impl Default for Settings {
             background_lift: look::BACKGROUND_LIFT,
             body_lift: look::BODY_LIFT,
             night_lights: look::NIGHT_LIGHTS,
+            sun: look::SUN,
             labels: true,
             lines: Lines::default(),
         }
@@ -108,22 +111,31 @@ pub const TOGGLES: [Toggle; 6] = [
     },
 ];
 
-/// A setting's slider: its key, its name, what it lifts, its most, and
-/// its field.
+/// A setting's slider: its key, its name, what it lifts, its least and
+/// most, and its field.
 pub struct Control {
     pub key: &'static str,
     pub name: &'static str,
     pub about: &'static str,
+    pub min: i32,
     pub max: i32,
     pub field: fn(&mut Settings) -> &mut i32,
 }
 
+impl Control {
+    /// Its stops' place along the slider, 0 to 1.
+    fn place(&self, stops: i32) -> f32 {
+        (stops - self.min) as f32 / (self.max - self.min) as f32
+    }
+}
+
 /// The menu's settings, in its order.
-pub const CONTROLS: [Control; 3] = [
+pub const CONTROLS: [Control; 4] = [
     Control {
         key: "settings:background",
         name: "Background lift",
         about: "The stars and the Milky Way, over the scene's exposure.",
+        min: 0,
         max: look::MAX_LIFT,
         field: |s| &mut s.background_lift,
     },
@@ -131,6 +143,7 @@ pub const CONTROLS: [Control; 3] = [
         key: "settings:bodies",
         name: "Body lift",
         about: "Planets, moons and asteroids seen as points, over the scene's exposure.",
+        min: 0,
         max: look::MAX_LIFT,
         field: |s| &mut s.body_lift,
     },
@@ -138,8 +151,17 @@ pub const CONTROLS: [Control; 3] = [
         key: "settings:night",
         name: "Night lights",
         about: "Earth's city lights, over their radiance.",
+        min: 0,
         max: look::MAX_NIGHT_LIGHTS,
         field: |s| &mut s.night_lights,
+    },
+    Control {
+        key: "settings:sun",
+        name: "Sun",
+        about: "The Sun's disk, under its radiance, and with it its glare.",
+        min: look::MIN_SUN,
+        max: 0,
+        field: |s| &mut s.sun,
     },
 ];
 
@@ -149,13 +171,14 @@ fn factor(stops: i32) -> f32 {
 }
 
 impl Settings {
-    /// The look's departures (`render::Look`'s `sky_lift`, `body_lift`
-    /// and `night_lift`), as factors.
-    pub fn lifts(&self) -> [f32; 3] {
+    /// The look's departures (`render::Look`'s `sky_lift`, `body_lift`,
+    /// `night_lift` and `sun_lift`), as factors.
+    pub fn lifts(&self) -> [f32; 4] {
         [
             factor(self.background_lift),
             factor(self.body_lift),
             factor(self.night_lights),
+            factor(self.sun),
         ]
     }
 
@@ -164,11 +187,10 @@ impl Settings {
     /// whether it was.
     pub fn apply(&mut self, event: &UiEvent) -> bool {
         for c in &CONTROLS {
-            let max = c.max as f32;
-            let field = (c.field)(self);
-            let mut value = *field as f32 / max;
-            if slider::apply_event(&mut value, event, c.key, 1.0 / max, 4.0 / max) {
-                *field = (value * max).round() as i32;
+            let span = (c.max - c.min) as f32;
+            let mut value = c.place(*(c.field)(self));
+            if slider::apply_event(&mut value, event, c.key, 1.0 / span, 4.0 / span) {
+                *(c.field)(self) = c.min + (value * span).round() as i32;
                 return true;
             }
         }
@@ -197,7 +219,7 @@ pub fn menu(settings: &Settings) -> El {
                     text(format!("{stops:+} stops")).tabular_numerals(),
                 ])
                 .align(Align::Center),
-                slider(c.key, stops as f32 / c.max as f32).width(Size::Fixed(SLIDER_PX)),
+                slider(c.key, c.place(stops)).width(Size::Fixed(SLIDER_PX)),
                 text(c.about)
                     .muted()
                     .caption()
@@ -236,11 +258,17 @@ mod tests {
         let mut s = Settings::default();
         assert_eq!(
             s.lifts(),
-            [look::BACKGROUND_LIFT, look::BODY_LIFT, look::NIGHT_LIGHTS].map(|n| 2f32.powi(n))
+            [
+                look::BACKGROUND_LIFT,
+                look::BODY_LIFT,
+                look::NIGHT_LIGHTS,
+                look::SUN
+            ]
+            .map(|n| 2f32.powi(n))
         );
         for c in &CONTROLS {
             *(c.field)(&mut s) = 0;
         }
-        assert_eq!(s.lifts(), [1.0; 3]);
+        assert_eq!(s.lifts(), [1.0; 4]);
     }
 }

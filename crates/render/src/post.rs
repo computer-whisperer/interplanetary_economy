@@ -1,7 +1,7 @@
 //! From the scene's radiance, exposed, to what the app shows (M1c.md, step
-//! 6 plan, item 1; post.wgsl): bloom down and up a chain of half-size
-//! levels, then the tonemap and the dither. And, on the same machinery,
-//! images' mipmaps.
+//! 6 plan, item 1, and part 10; post.wgsl): the viewer's eye's glare
+//! (`glare`) down and up a chain of half-size levels, then the tonemap
+//! and the dither. And, on the same machinery, images' mipmaps.
 
 use crate::{COLOR_FORMAT, Target};
 use bytemuck::{Pod, Zeroable};
@@ -10,20 +10,20 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct PostGpu {
-    bloom: f32,
+    glare: f32,
     headroom: f32,
 }
 
-/// Bloom's levels at most, each half the last: the widest blurs a
-/// 1080p image over ~a third of its height.
-pub const MAX_LEVELS: usize = 8;
+/// The glare's levels at most, each half the last.
+pub const MAX_LEVELS: usize = 12;
 
 /// Levels for a target `size` pixels: halving while the smaller side is
-/// at least 8.
+/// at least 2, so that the last spreads light across the image (the
+/// eye's glare reaches past it).
 pub fn levels(size: (u32, u32)) -> usize {
     let mut n = 0;
     let mut side = size.0.min(size.1) / 2;
-    while n < MAX_LEVELS && side >= 8 {
+    while n < MAX_LEVELS && side >= 2 {
         n += 1;
         side /= 2;
     }
@@ -32,9 +32,11 @@ pub fn levels(size: (u32, u32)) -> usize {
 
 pub(crate) struct Post {
     chain_layout: wgpu::BindGroupLayout,
+    excess_layout: wgpu::BindGroupLayout,
     tonemap_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
+    excess: wgpu::RenderPipeline,
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
     tonemap: wgpu::RenderPipeline,
@@ -43,10 +45,15 @@ pub(crate) struct Post {
     blit: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     /// The target the groups below were made for, by its id.
     groups: Option<(u64, Groups)>,
+    /// The glare's levels' weights, for the eye, `Look::pixel`'s bits and
+    /// the levels they were found for.
+    weights: Option<((crate::glare::Eye, u32, usize), Vec<f64>)>,
 }
 
 struct Groups {
-    /// Each downsample's source: the scene, then each level but the last.
+    /// The first downsample's source: the scene.
+    excess: wgpu::BindGroup,
+    /// Each later downsample's source: each level but the last.
     down: Vec<wgpu::BindGroup>,
     /// Each upsample's source: each level but the first, by level.
     up: Vec<wgpu::BindGroup>,
@@ -75,27 +82,27 @@ impl Post {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         };
+        let uniform = wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let chain_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bloom chain"),
+            label: Some("glare chain"),
             entries: &[texture(0), sampler],
+        });
+        let excess_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("glare excess"),
+            entries: &[texture(0), sampler, uniform],
         });
         let tonemap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tonemap"),
-            entries: &[
-                texture(0),
-                sampler,
-                texture(2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
+            entries: &[texture(0), sampler, texture(2), uniform],
         });
         let pipeline = |label, layout: &wgpu::BindGroupLayout, fs, format, blend| {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -139,9 +146,16 @@ impl Post {
             alpha: wgpu::BlendComponent::REPLACE,
         };
         Post {
-            down: pipeline("bloom down", &chain_layout, "down_fs", COLOR_FORMAT, None),
+            excess: pipeline(
+                "glare excess",
+                &excess_layout,
+                "excess_fs",
+                COLOR_FORMAT,
+                None,
+            ),
+            down: pipeline("glare down", &chain_layout, "down_fs", COLOR_FORMAT, None),
             up: pipeline(
-                "bloom up",
+                "glare up",
                 &chain_layout,
                 "up_fs",
                 COLOR_FORMAT,
@@ -165,8 +179,10 @@ impl Post {
                 mapped_at_creation: false,
             }),
             chain_layout,
+            excess_layout,
             tonemap_layout,
             groups: None,
+            weights: None,
         }
     }
 
@@ -176,7 +192,7 @@ impl Post {
         if self.groups.as_ref().is_none_or(|(id, _)| *id != target.id) {
             let chain = |view: &wgpu::TextureView| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("bloom chain"),
+                    label: Some("glare chain"),
                     layout: &self.chain_layout,
                     entries: &[
                         wgpu::BindGroupEntry {
@@ -190,13 +206,28 @@ impl Post {
                     ],
                 })
             };
-            let bloom = &target.bloom;
+            let glare = &target.glare;
             let groups = Groups {
-                down: std::iter::once(&target.hdr_view)
-                    .chain(&bloom[..bloom.len() - 1])
-                    .map(chain)
-                    .collect(),
-                up: bloom.iter().skip(1).map(chain).collect(),
+                excess: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("glare excess"),
+                    layout: &self.excess_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&target.hdr_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: self.uniform.as_entire_binding(),
+                        },
+                    ],
+                }),
+                down: glare[..glare.len() - 1].iter().map(chain).collect(),
+                up: glare.iter().skip(1).map(chain).collect(),
                 tonemap: device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("tonemap"),
                     layout: &self.tonemap_layout,
@@ -211,7 +242,7 @@ impl Post {
                         },
                         wgpu::BindGroupEntry {
                             binding: 2,
-                            resource: wgpu::BindingResource::TextureView(&bloom[0]),
+                            resource: wgpu::BindingResource::TextureView(&glare[0]),
                         },
                         wgpu::BindGroupEntry {
                             binding: 3,
@@ -224,8 +255,8 @@ impl Post {
         }
     }
 
-    /// Records bloom and the tonemap: from `target`'s scene radiance into
-    /// its color.
+    /// Records the glare and the tonemap: from `target`'s scene radiance
+    /// into its color.
     pub(crate) fn record(
         &mut self,
         device: &wgpu::Device,
@@ -234,12 +265,25 @@ impl Post {
         target: &Target,
         look: &crate::scene::Look,
     ) {
-        let levels = target.bloom.len();
+        let levels = target.glare.len();
+        let weights = match look.eye {
+            Some(eye) if look.pixel > 0.0 => {
+                let key = (eye, look.pixel.to_bits(), levels);
+                if self.weights.as_ref().is_none_or(|(k, _)| *k != key) {
+                    let w = crate::glare::weights(&eye, f64::from(look.pixel), levels);
+                    self.weights = Some((key, w));
+                }
+                self.weights.as_ref().expect("found above").1.clone()
+            }
+            _ => vec![0.0; levels],
+        };
+        // What each level and those past it carry.
+        let below: Vec<f64> = (0..=levels).map(|k| weights[k..].iter().sum()).collect();
         queue.write_buffer(
             &self.uniform,
             0,
             bytemuck::bytes_of(&PostGpu {
-                bloom: look.bloom,
+                glare: below[0] as f32,
                 headroom: look.headroom.max(1.0),
             }),
         );
@@ -279,21 +323,35 @@ impl Post {
             pass.draw(0..3, 0..1);
         };
         let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
-        for (level, group) in groups.down.iter().enumerate() {
-            pass(encoder, &target.bloom[level], down, group, clear, 0.0);
-        }
-        // Level k, the first of n to the last, becomes their mean: the
-        // level past it holds the other n - 1's, weighing (n - 1) / n.
-        for level in (1..levels).rev() {
-            let n = (levels - level + 1) as f64;
+        if below[0] > 0.0 {
             pass(
                 encoder,
-                &target.bloom[level - 1],
-                up,
-                &groups.up[level - 1],
-                wgpu::LoadOp::Load,
-                (n - 1.0) / n,
+                &target.glare[0],
+                &self.excess,
+                &groups.excess,
+                clear,
+                0.0,
             );
+            for (level, group) in groups.down.iter().enumerate() {
+                pass(encoder, &target.glare[level + 1], down, group, clear, 0.0);
+            }
+            // Each level becomes the weighted mean of itself and those past
+            // it: the level past it holds theirs, weighing their share.
+            for level in (1..levels).rev() {
+                let share = if below[level - 1] > 0.0 {
+                    below[level] / below[level - 1]
+                } else {
+                    0.0
+                };
+                pass(
+                    encoder,
+                    &target.glare[level - 1],
+                    up,
+                    &groups.up[level - 1],
+                    wgpu::LoadOp::Load,
+                    share,
+                );
+            }
         }
         pass(
             encoder,

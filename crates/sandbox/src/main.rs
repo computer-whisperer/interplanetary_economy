@@ -47,14 +47,16 @@ struct Cli {
     exposure: i32,
     /// The settings' departures from realism, in stops, 0 being true to
     /// life: the stars and the Milky Way over the scene's exposure,
-    /// bodies seen as points over it, and Earth's night lights over their
-    /// radiance.
+    /// bodies seen as points over it, Earth's night lights over their
+    /// radiance, and the Sun under its.
     #[arg(long, default_value_t = sandbox::look::BACKGROUND_LIFT, allow_hyphen_values = true)]
     background_lift: i32,
     #[arg(long, default_value_t = sandbox::look::BODY_LIFT, allow_hyphen_values = true)]
     body_lift: i32,
     #[arg(long, default_value_t = sandbox::look::NIGHT_LIGHTS, allow_hyphen_values = true)]
     night_lights: i32,
+    #[arg(long, default_value_t = sandbox::look::SUN, allow_hyphen_values = true)]
+    sun: i32,
 }
 
 fn size(s: &str) -> Result<(u32, u32), String> {
@@ -119,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         background_lift: cli.background_lift.clamp(0, sandbox::look::MAX_LIFT),
         body_lift: cli.body_lift.clamp(0, sandbox::look::MAX_LIFT),
         night_lights: cli.night_lights.clamp(0, sandbox::look::MAX_NIGHT_LIGHTS),
+        sun: cli.sun.clamp(sandbox::look::MIN_SUN, 0),
         ..app.settings
     };
     // The view's direction is about this frame's axes.

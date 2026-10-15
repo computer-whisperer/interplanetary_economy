@@ -254,7 +254,8 @@ impl Shell {
 
     /// The exposure the focus calls for now.
     fn target_exposure(&self) -> f64 {
-        look::exposure_for(self.eph, self.camera.focus, self.clock.t)
+        let sun = self.settings.lifts()[3];
+        look::exposure_for(self.eph, self.camera.focus, self.clock.t, f64::from(sun))
     }
 
     /// What the map view shows now, with `px` physical pixels to a
@@ -288,7 +289,7 @@ impl Shell {
                 })
             }));
         }
-        let [sky_lift, body_lift, night_lift] = self.settings.lifts();
+        let [sky_lift, body_lift, night_lift, sun_lift] = self.settings.lifts();
         let camera = self.camera.camera(eph, t, view.axes);
         render::Scene {
             camera: Some(camera),
@@ -304,12 +305,13 @@ impl Shell {
             line_px: LINE_PX * px,
             look: render::Look {
                 exposure: self.exposure.value(self.target_exposure()),
-                bloom: look::BLOOM,
                 headroom: self.stats.headroom(),
                 pixel: (look::PIXEL / f64::from(px)) as f32,
+                eye: Some(render::glare::Eye::STANDARD),
                 sky_lift,
                 body_lift,
                 night_lift,
+                sun_lift,
             },
             ..Default::default()
         }

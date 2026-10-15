@@ -318,7 +318,7 @@ fn sky_gpu_time() {
             look: Look {
                 exposure: 1e6,
                 pixel: sandbox::look::PIXEL as f32,
-                bloom: sandbox::look::BLOOM,
+                eye: Some(render::glare::Eye::STANDARD),
                 ..Default::default()
             },
             ..Default::default()

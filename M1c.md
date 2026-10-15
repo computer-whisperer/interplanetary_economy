@@ -1,8 +1,8 @@
 # M1c — Creative sandbox and the map view
 
 Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
-left out); now step 6, part 9 (shapes, small bodies' maps and spins);
-next, step 7 (editing).
+left out); now step 6, part 9 (shapes, small bodies' maps and spins),
+and part 10 (the eye's glare) done; next, step 7 (editing).
 
 - Step 5: labels on the map view, picking by click, and the plan's
   panel. As built, see the step 5 plan below; where it differs:
@@ -74,13 +74,15 @@ next, step 7 (editing).
     they otherwise hid.
   - The scene's pass writes radiance already exposed, so that f16 holds
     the range shown (unexposed, the Milky Way's median, 4e-10, lies
-    under f16's smallest step, 6e-8); bloom's levels hold means, not
-    sums, for the same reason. What
-    lies past f16 once exposed (the Sun's disk, at exposures over ~1.3:
-    every focus from Earth outward) loses its excess before bloom, so
-    its glare stops growing there (1.5× under its energy at Earth's
-    exposure, 120× at Saturn's). Kept (decided 2026-10-15): the glare
-    is bright enough as it is; an f32 target was the alternative.
+    under f16's smallest step, 6e-8); the glare's levels hold means,
+    not sums, for the same reason. What lies past f16 once exposed (the
+    Sun's disk, at exposures over ~1.3: every focus from Earth outward)
+    loses its excess before the glare, so its glare stops growing there
+    (1.5× under its energy at Earth's exposure, 120× at Saturn's). Kept
+    (decided 2026-10-15): the glare is bright enough as it is; an f32
+    target was the alternative. Since part 10 the Sun is dimmed 6 stops
+    by default, which leaves it clipped from about Saturn's exposure out
+    (~2× there).
   - The Milky Way: SVS's composite is 0.50 × its background + 1.00 ×
     its bright-star layer (fitted, residual 0.0005), and that layer's
     stars integrate to 2.14e-4 × 10^(−0.4 V) (124 unsaturated stars, V
@@ -443,15 +445,15 @@ CPU when the frame changes.
 
 As realistic as we can afford, in stages, while the map stays readable.
 Each departure from realism is a setting, in stops, whose 0 is true to
-life (decided 2026-10-15): the background lift, the body lift and the
-night lights, below.
+life (decided 2026-10-15): the background lift, the body lift, the
+night lights and the Sun's dimming, below.
 
 **Light.**
 - The Sun is the only light. Radiometry is physical, so Mars is lit at
   43% of Earth's sunlight and Jupiter at 4%.
 - Exposure adapts to what is in focus.
-- The scene is rendered in linear HDR. Exposure, bloom and a tonemap fit
-  it to the output's headroom: up to the panel's peak on an HDR output (a
+- The scene is rendered in linear HDR. Exposure, the viewer's eye's
+  glare (step 6, part 10) and a tonemap fit it to the output's headroom: up to the panel's peak on an HDR output (a
   16-bit float scRGB swapchain), and a filmic curve to 1.0 on SDR. The
   curve takes a color's largest channel, the others scaled with it, so
   that a color keeps its hue however bright (decided 2026-10-15: on each
@@ -465,15 +467,15 @@ night lights, below.
   where it exceeded the frame's, which showed them beside a sunlit body
   but which the exposure keys did not move.
 - The sky (the stars and the Milky Way) is lifted over that exposure by
-  a setting, the background lift: 17 stops by default, 0 (true) to 25
+  a setting, the background lift: 15 stops by default, 0 (true) to 25
   (decided 2026-10-15: the true sky left the map black beside any
-  sunlit body). The exposure keys move it with the rest of the scene.
-  Over Earth's exposure, +17 shows stars to about magnitude 11 and not
-  yet the Milky Way. (Earth's exposure has moved with its measured
+  sunlit body; 17 until the eye's glare, the user's call). The exposure
+  keys move it with the rest of the scene. Over Earth's exposure, +15
+  shows stars to about magnitude 9.5 and not yet the Milky Way. (Earth's exposure has moved with its measured
   brightness: 1.1 stops down when it took Mallama's curve, 1.0 up when
   Robinson's; the defaults moved with it, 18 between, the look kept.)
 - Bodies drawn as points of light are lifted over the scene's exposure
-  by their own setting, the body lift: 17 stops by default, as the
+  by their own setting, the body lift: 15 stops by default, as the
   sky's, so that the planets show where they are, at their brightness
   among the stars (decided 2026-10-15). As a body's disk fades in, from
   1 to 3 px in radius, its point's lift falls in stops with its share.
@@ -605,7 +607,8 @@ night lights, below.
   up for the rest (step 6, part 9 plan).
 
 **The Sun and the sky.**
-- The Sun is a limb-darkened disc with bloom.
+- The Sun is a limb-darkened disc with the eye's glare, dimmed by a
+  setting (step 6, part 10).
 - Stars come from a catalog (Hipparcos, or a bright subset of Gaia), with
   positions, magnitudes and colors from B−V, and a Milky Way map behind
   them.
@@ -1600,3 +1603,55 @@ Order of work, each part committed with its tests:
    bands from OPAL's composites, averaged along longitude; their color
    the measured one), Venus left plain (no visible-light map exists; its
    cloud deck is near featureless there).
+
+## Step 6, part 10 (2026-10-15): the eye's glare
+
+Bloom was Hushfold's chain spreading 1% of the image's light, a weight
+chosen by eye; its shape, equal light in each octave of distance from 2
+to 256 px (~1/r²), nobody chose, and its reach was in the target's
+pixels, not the viewer's sight. Replaced by the viewer's eye's glare
+(the user, 2026-10-15: "try the principled change"). As built:
+
+- The CIE's glare spread function (Vos and van den Berg 1999, CIE
+  135/1), as McCann and Vonikakis 2018 give it (eq. 2) but its core's
+  half-width read 0.0046°, not their 0.046° (at 0.046° its integral is
+  37, not ~1, and its tail 900/θ³ against the CIE general equation's
+  10/θ³). A 25-year-old brown-eyed viewer's; normalized over the sphere
+  (integral 1.047). In angle at the viewer's eye (`Look::pixel`), so it
+  follows the display's scale: at CSS's reference pixel, 23% of a
+  point's light stays within half a pixel, about half lands 0.5–8 px
+  off, 10% past 32 px (2.8% past 2,048 px, 44°, off any screen).
+- Of the light past what the output shows only: what the tonemap takes
+  off, per texel. The viewer's own eye scatters what the output does
+  show; spreading that too would count it twice. A body within the
+  output's range has no glare (the bloom hazed it at 1%).
+- On the same chain of half-size levels, now down to 2 px, each level
+  weighed by a Richardson–Lucy fit (10 rounds) of the levels' spread,
+  as measured (each alone at 1920×1080), to the eye's share in each
+  octave of distance. Tested: 4–1,024 px within 15% an octave (measured
+  within 12%); 1–4 px within 45%, the first level's one shape (up to
+  42% over at 2–4 px at a display scale of 2).
+- Found building it: taken of the taps' 2×2 means, the excess lost half
+  a small source's light past the knee (a lit texel among dark ones
+  fell under it). Found in review: its texels found by rounding the
+  pixel's uv jumped 3 texels at an odd-sized image's center, losing up
+  to half a point's glare in a band through it (where the focus sits);
+  now the 2×2 under the pixel, at the cost of up to a texel's shift at
+  the far edges of odd sizes.
+- Cost at 1920×1080 (RX 6900 XT): the post chain 0.65–0.9 ms, from 0.21
+  ms: the excess pass loads 36 texels a half-size pixel. A full-size
+  excess pass would cut it; not done.
+- Lifted light glares as shown (the user, 2026-10-15: kept): bright
+  stars carry halos, larger at the outer planets, whose exposures show
+  the sky up to 6–7 stops brighter than Earth's.
+- Tuned for play (the user, 2026-10-15): the background and body lifts
+  17 → 15 stops; the Sun dimmed by a setting, its disk and its point,
+  −6 stops by default (0 true, to −20; the default chosen on
+  screenshots of the Sun past Earth's limb: at 0 its glare veils the
+  whole view, Earth's night side with it; at −6 it glares around the
+  Sun and the night side's lights show beside it). Focused on the Sun,
+  the exposure keys to its disk as shown, so that dimmed, the rest of
+  the view brightens.
+- Found: the Sun drawn as a point (past ~4 au at the default field of
+  view) took the body lift with the planets, 17 stops; it takes its
+  own setting instead.
