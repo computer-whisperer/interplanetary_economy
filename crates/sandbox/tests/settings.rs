@@ -8,14 +8,14 @@
 use damascene_core::prelude::*;
 use damascene_wgpu::Runner;
 use glam::DVec3;
+use orbit::ephem::Ephemeris;
+use orbit::mission::Plan;
+use orbit::places::Places;
 use orbit::time::Epoch;
 use render::offscreen::Offscreen;
 use sandbox::app::Shell;
 use sandbox::camera::MapCamera;
 use sandbox::frame::{self, Output, View};
-use orbit::ephem::Ephemeris;
-use orbit::mission::Plan;
-use orbit::places::Places;
 use sandbox::frames::Frame;
 use sandbox::labels::Target;
 use sandbox::look::{MAX_LIFT, MAX_NIGHT_LIGHTS};
@@ -58,7 +58,9 @@ fn the_menu_sets_the_lifts() {
                 view: &target,
                 msaa: None,
             };
-            frame::draw(device, queue, ui, app, &mut view, &scene, out, viewport, scale, None);
+            frame::draw(
+                device, queue, ui, app, &mut view, &scene, out, viewport, scale, None,
+            );
             scene
         };
         let deliver = |app: &mut Shell, ui: &Runner, events: Vec<UiEvent>| {
@@ -85,7 +87,11 @@ fn the_menu_sets_the_lifts() {
         draw(&mut app, &mut ui);
         for (k, c) in CONTROLS.iter().enumerate() {
             let slider = ui.rect_of_key(c.key).expect("the slider is laid out");
-            assert!(slider.y + slider.h < h, "{}'s slider is in the window", c.name);
+            assert!(
+                slider.y + slider.h < h,
+                "{}'s slider is in the window",
+                c.name
+            );
             println!("scale {scale}: {} {slider:?}", c.name);
             // Its ends, then its middle; each a whole stop, and its own.
             let middle = (c.max as f32 / 2.0).round() as i32;
@@ -102,7 +108,10 @@ fn the_menu_sets_the_lifts() {
                 let scene = draw(&mut app, &mut ui);
                 assert_eq!(lifts(&scene.look)[k], 2f32.powi(want));
                 assert_eq!(lifts(&scene.look), app.settings.lifts());
-                assert_eq!(scene.look.exposure, exposure, "the lifts leave the scene's exposure");
+                assert_eq!(
+                    scene.look.exposure, exposure,
+                    "the lifts leave the scene's exposure"
+                );
             }
             // The arrow keys, on the slider focused by the clicks.
             let events = ui.key_down(
@@ -117,7 +126,11 @@ fn the_menu_sets_the_lifts() {
         // Each switch, off and on again, alone.
         for t in &TOGGLES {
             let switch = ui.rect_of_key(t.key).expect("the switch is laid out");
-            assert!(switch.y + switch.h < h, "{}'s switch is in the window", t.name);
+            assert!(
+                switch.y + switch.h < h,
+                "{}'s switch is in the window",
+                t.name
+            );
             for on in [false, true] {
                 let mut others = app.settings;
                 *(t.field)(&mut others) = on;
@@ -195,7 +208,10 @@ fn each_lift_reaches_what_it_names() {
         (scene, gpu.read_rgba16f(&target.hdr))
     };
     let at = |i: usize| {
-        glam::DVec2::new((i % size.0 as usize) as f64 + 0.5, (i / size.0 as usize) as f64 + 0.5)
+        glam::DVec2::new(
+            (i % size.0 as usize) as f64 + 0.5,
+            (i / size.0 as usize) as f64 + 0.5,
+        )
     };
     // The pixels that differ, but for those within `reach` px of `near`.
     let differ = |a: &[[f32; 4]], b: &[[f32; 4]], near: &[glam::DVec2], reach: f64| {
@@ -211,9 +227,8 @@ fn each_lift_reaches_what_it_names() {
         let (scene, true_view) = shown(t, focus, None, truth);
         let camera = scene.camera.unwrap();
         let pixel = 2.0 * (camera.fov_y / 2.0).tan() / f64::from(size.1);
-        let radius_px = |s: &render::Sphere| {
-            (s.radius / (s.center - camera.eye).length()).asin() / pixel
-        };
+        let radius_px =
+            |s: &render::Sphere| (s.radius / (s.center - camera.eye).length()).asin() / pixel;
         // Where bodies under 4 px in radius land (points, or fading from
         // them into their disks), and Earth's disk.
         let points: Vec<glam::DVec2> = scene
@@ -222,11 +237,38 @@ fn each_lift_reaches_what_it_names() {
             .filter(|s| radius_px(s) < 4.0)
             .filter_map(|s| camera.project(s.center, size))
             .collect();
-        let lit = true_view.iter().filter(|p| p[..3].iter().any(|&c| c > 0.0)).count();
+        let lit = true_view
+            .iter()
+            .filter(|p| p[..3].iter().any(|&c| c > 0.0))
+            .count();
         assert!(lit > 1000, "{name} shows little");
-        let (_, sky) = shown(t, focus, None, Settings { background_lift: MAX_LIFT, ..truth });
-        let (_, bodies) = shown(t, focus, None, Settings { body_lift: MAX_LIFT, ..truth });
-        let (_, night) = shown(t, focus, None, Settings { night_lights: MAX_NIGHT_LIGHTS, ..truth });
+        let (_, sky) = shown(
+            t,
+            focus,
+            None,
+            Settings {
+                background_lift: MAX_LIFT,
+                ..truth
+            },
+        );
+        let (_, bodies) = shown(
+            t,
+            focus,
+            None,
+            Settings {
+                body_lift: MAX_LIFT,
+                ..truth
+            },
+        );
+        let (_, night) = shown(
+            t,
+            focus,
+            None,
+            Settings {
+                night_lights: MAX_NIGHT_LIGHTS,
+                ..truth
+            },
+        );
         let earth_disk = scene
             .spheres
             .iter()
@@ -266,13 +308,36 @@ fn each_lift_reaches_what_it_names() {
             .sum()
     };
     let (_, true_view) = shown(t, earth, Some(camera), truth);
-    let (_, lifted) = shown(t, earth, Some(camera), Settings { body_lift: 17, ..truth });
-    let (_, sky) = shown(t, earth, Some(camera), Settings { background_lift: MAX_LIFT, ..truth });
+    let (_, lifted) = shown(
+        t,
+        earth,
+        Some(camera),
+        Settings {
+            body_lift: 17,
+            ..truth
+        },
+    );
+    let (_, sky) = shown(
+        t,
+        earth,
+        Some(camera),
+        Settings {
+            background_lift: MAX_LIFT,
+            ..truth
+        },
+    );
     let ratio = flux(&lifted) / flux(&true_view);
-    println!("Jupiter's point: {:.4e}, lifted {ratio:.1}×", flux(&true_view));
+    println!(
+        "Jupiter's point: {:.4e}, lifted {ratio:.1}×",
+        flux(&true_view)
+    );
     assert!(flux(&true_view) > 0.0, "Jupiter's point is drawn");
     assert!((ratio / 2f64.powi(17) - 1.0).abs() < 1e-3, "{ratio}");
-    assert_eq!(flux(&sky), flux(&true_view), "the sky's lift leaves bodies' points");
+    assert_eq!(
+        flux(&sky),
+        flux(&true_view),
+        "the sky's lift leaves bodies' points"
+    );
 
     // Earth's night side, from its antisolar side: what the lights add.
     let t = Epoch::from_ymd(2045, 3, 1);
@@ -284,7 +349,10 @@ fn each_lift_reaches_what_it_names() {
     let total = |image: &[[f32; 4]]| -> f64 { image.iter().map(|p| f64::from(p[1])).sum() };
     let (_, dark) = shown(t, earth, Some(camera), truth);
     let added = |stops: i32, shown: &mut dyn FnMut(Settings) -> Vec<[f32; 4]>| {
-        (total(&shown(Settings { night_lights: stops, ..truth })) - total(&dark))
+        (total(&shown(Settings {
+            night_lights: stops,
+            ..truth
+        })) - total(&dark))
             / (2f64.powi(stops) - 1.0)
     };
     let mut at_stops = |s: Settings| shown(t, earth, Some(camera), s).1;
@@ -331,7 +399,8 @@ fn hidden_lines_are_left_out() {
         app.update_paths();
         let scene = app.scene(1.0);
         app.place_labels(&scene, Some((1000, 700)), 1.0);
-        let labeled = |f: fn(&Target) -> bool| app.anchors().iter().filter(|a| f(&a.target)).count();
+        let labeled =
+            |f: fn(&Target) -> bool| app.anchors().iter().filter(|a| f(&a.target)).count();
         [
             scene.paths[PLAN_SET].paths.len(),
             scene.paths[ORBIT_SET].paths.len(),
@@ -356,7 +425,9 @@ fn hidden_lines_are_left_out() {
     let no_stations = seen(&mut app);
     app.settings.lines = lines(|l| (l.planets, l.moons, l.small_bodies) = (false, false, false));
     let no_orbits = seen(&mut app);
-    println!("no ships' paths {no_ships:?}, no station orbits {no_stations:?}, no bodies' orbits {no_orbits:?}");
+    println!(
+        "no ships' paths {no_ships:?}, no station orbits {no_stations:?}, no bodies' orbits {no_orbits:?}"
+    );
     // The plan's set holds the station loops, then the ships' paths.
     let loops = no_ships[0];
     assert!(loops > 0 && loops < all[0]);

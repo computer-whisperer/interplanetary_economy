@@ -273,8 +273,8 @@ pub fn bodies(
                 center: eph.barycentric_position(b, t),
                 radius: eph.body(b).radius,
             };
-            let radius = (ball.radius / (ball.center - eye).length()).min(1.0).asin()
-                * view.px_per_radian();
+            let radius =
+                (ball.radius / (ball.center - eye).length()).min(1.0).asin() * view.px_per_radian();
             (b, ball, radius)
         })
         .collect();
@@ -340,7 +340,14 @@ fn point(
 }
 
 /// A ship's anchor: `p` where its marker is, `px` across.
-pub fn ship(view: &View, balls: &[Ball], s: usize, name: &str, p: DVec3, px: f32) -> Option<Anchor> {
+pub fn ship(
+    view: &View,
+    balls: &[Ball],
+    s: usize,
+    name: &str,
+    p: DVec3,
+    px: f32,
+) -> Option<Anchor> {
     let label = Label {
         text: name.to_string(),
         color: SHIP_COLOR,
@@ -385,7 +392,14 @@ pub fn marker(
         item: e.item,
         marker: e.marker,
     };
-    point(view, balls, target, view_pose.to_world(e.position), e.size_px / 2.0, label)
+    point(
+        view,
+        balls,
+        target,
+        view_pose.to_world(e.position),
+        e.size_px / 2.0,
+        label,
+    )
 }
 
 /// A station loop's anchor, named `name`, at `p`.
@@ -405,7 +419,14 @@ pub fn backing(text: Vec2) -> Vec2 {
 
 /// The size of `text`'s backing, measured as damascene draws it.
 pub fn measure(text: &str) -> Vec2 {
-    let m = measure_text(text, TEXT_PX, FontWeight::Regular, false, TextWrap::NoWrap, None);
+    let m = measure_text(
+        text,
+        TEXT_PX,
+        FontWeight::Regular,
+        false,
+        TextWrap::NoWrap,
+        None,
+    );
     backing(Vec2::new(m.width, m.height))
 }
 
@@ -441,7 +462,11 @@ fn reach(a: &Anchor) -> f32 {
 /// names a body) where a body is drawn small (a ship resting at
 /// an asteroid, or in low orbit seen from afar): the body's label names
 /// the spot.
-pub fn declutter(anchors: &[Anchor], extent: Vec2, mut size: impl FnMut(&str) -> Vec2) -> Vec<Placed> {
+pub fn declutter(
+    anchors: &[Anchor],
+    extent: Vec2,
+    mut size: impl FnMut(&str) -> Vec2,
+) -> Vec<Placed> {
     let view = Rect::new(0.0, 0.0, extent.x, extent.y);
     let rank = |a: &Anchor| a.label.as_ref().map_or(Rank::Selected, |l| l.rank);
     let shown: Vec<&Anchor> = anchors
@@ -720,7 +745,11 @@ mod tests {
             all.push(focus.clone());
             // Their own labels never fit.
             declutter(&all, Vec2::new(400.0, 200.0), |t| {
-                if t.is_empty() { Vec2::splat(1e4) } else { size(t) }
+                if t.is_empty() {
+                    Vec2::splat(1e4)
+                } else {
+                    size(t)
+                }
             })
             .into_iter()
             .any(|p| p.target == Target::Ship(1))

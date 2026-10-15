@@ -394,9 +394,7 @@ fn the_point_fades_into_the_disk() {
             let gain = look.point_gain(half, local);
             let point = ((3.0 - radius_px) / 2.0f64).clamp(0.0, 1.0);
             let want = sphere * (point * gain * lift.powf(point) + 1.0 - point);
-            println!(
-                "{place}, {radius_px} px: gain {gain:.2}, flux {got:.4e}, wanted {want:.4e}"
-            );
+            println!("{place}, {radius_px} px: gain {gain:.2}, flux {got:.4e}, wanted {want:.4e}");
             assert!(gain > 1.5, "{gain}");
             assert!(
                 (got / want - 1.0).abs() < 0.03,
@@ -488,8 +486,11 @@ fn clouds_count_in_the_point() {
     let side = 2.0 * (fov / 2.0).tan() / f64::from(size.1);
     let clouded = |cover: u8| {
         let clouds = Image::gray(1, 1, vec![cover]);
-        let (mean, cover) =
-            render::maps::means(&Image::srgba(1, 1, vec![255; 4]), Some(&clouds), render::maps::Weight::Area);
+        let (mean, cover) = render::maps::means(
+            &Image::srgba(1, 1, vec![255; 4]),
+            Some(&clouds),
+            render::maps::Weight::Area,
+        );
         Arc::new(Maps {
             mean,
             cover,

@@ -86,7 +86,9 @@ pub enum Curve {
     Neptune,
     Moon,
     /// The H, G system: its absolute magnitude H.
-    Small { h: f64 },
+    Small {
+        h: f64,
+    },
 }
 
 fn poly(x: f64, c: &[f64]) -> f64 {
@@ -141,7 +143,15 @@ impl Curve {
             // Eq. 2.
             Curve::Mercury => poly(
                 a,
-                &[-0.613, 6.3280e-2, -1.6336e-3, 3.3644e-5, -3.4265e-7, 1.6893e-9, -3.0334e-12],
+                &[
+                    -0.613,
+                    6.3280e-2,
+                    -1.6336e-3,
+                    3.3644e-5,
+                    -3.4265e-7,
+                    1.6893e-9,
+                    -3.0334e-12,
+                ],
             ),
             // Eqs. 3 and 4: a glory near 0°, forward scattering past 163.7°.
             Curve::Venus if a <= 163.7 => {
@@ -150,8 +160,8 @@ impl Curve {
             Curve::Venus => poly(a, &[236.05828, -2.81914, 8.39034e-3]),
             Curve::Earth => {
                 let g = EARTH_G;
-                let phase = ((1.0 + g * g + 2.0 * g * a.to_radians().cos()) / (1.0 + g).powi(2))
-                    .powf(-1.5);
+                let phase =
+                    ((1.0 + g * g + 2.0 * g * a.to_radians().cos()) / (1.0 + g).powi(2)).powf(-1.5);
                 let size = (EARTH_RADIUS_KM / AU_KM).powi(2);
                 V_SUN - 2.5 * (EARTH_ALBEDO_V * size * phase).log10()
             }
@@ -163,7 +173,8 @@ impl Curve {
             // Eqs. 8 and 9 (Cassini's, past 12°).
             Curve::Jupiter if a <= 12.0 => poly(a, &[-9.395, -3.7e-4, 6.16e-4]),
             Curve::Jupiter => {
-                -9.428 - 2.5 * poly(a / 180.0, &[1.0, -1.507, -0.363, -0.062, 2.809, -1.876]).log10()
+                -9.428
+                    - 2.5 * poly(a / 180.0, &[1.0, -1.507, -0.363, -0.062, 2.809, -1.876]).log10()
             }
             // Eqs. 11 and 12 (Pioneer's, past 6°).
             Curve::Saturn if a <= 6.0 => poly(a, &[-8.95, -3.7e-4, 6.16e-4]),
@@ -178,7 +189,11 @@ impl Curve {
                         .abs()
                 };
                 let phi = (graphic(seen.observer_lat) + graphic(seen.sun_lat)) / 2.0;
-                let phase = if a <= 3.2 { 0.0 } else { poly(a, &[0.0, 6.587e-3, 1.045e-4]) };
+                let phase = if a <= 3.2 {
+                    0.0
+                } else {
+                    poly(a, &[0.0, 6.587e-3, 1.045e-4])
+                };
                 -7.110 - 8.4e-4 * phi + phase
             }
             // Eqs. 16 (after 2000) and 17: Voyager's past what Earth sees
@@ -335,7 +350,8 @@ pub fn calibrate(body: &Body, sphere: &mut Sphere, eye: DVec3, sun: DVec3) {
     };
     let seen = Seen::from(sphere, eye, sun);
     let disk = disk_factor(&curve, sphere, &seen);
-    let point = factor(&curve, sphere, &seen, curve.range()) / disk * (1.0 + rings_share(&curve, &seen));
+    let point =
+        factor(&curve, sphere, &seen, curve.range()) / disk * (1.0 + rings_share(&curve, &seen));
     let tint = tint(color, sphere).unwrap_or([1.0; 3]);
     let (on_disk, on_point) = match colored_by_air(body) {
         true => ([1.0; 3], tint),
@@ -350,7 +366,10 @@ pub fn calibrate(body: &Body, sphere: &mut Sphere, eye: DVec3, sun: DVec3) {
 /// shading's): what the exposure is set by.
 pub fn normal_albedo(curve: Option<&Curve>, sphere: &Sphere, seen: &Seen) -> Option<f64> {
     let (albedo, _) = sphere.reflectance()?;
-    let full = Seen { alpha: 0.0, ..*seen };
+    let full = Seen {
+        alpha: 0.0,
+        ..*seen
+    };
     let k = curve.map_or(1.0, |c| disk_factor(c, sphere, &full));
     Some(luminance(albedo) * k)
 }

@@ -200,7 +200,11 @@ pub fn read(
             };
             let radius = eph.body(b).radius;
             let mut problems = Vec::new();
-            let mut maps = match file.body.get(id).map(|e| body(&dir.join(id), id, e, radius)) {
+            let mut maps = match file
+                .body
+                .get(id)
+                .map(|e| body(&dir.join(id), id, e, radius))
+            {
                 Some(Ok(maps)) => maps,
                 Some(Err(why)) => {
                     problems.push(format!("{id}: {why}"));

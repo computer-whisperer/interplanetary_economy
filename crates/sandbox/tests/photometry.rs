@@ -132,10 +132,20 @@ fn curves_match_horizons() {
 fn earths_curve_is_robinsons() {
     let eph = Ephemeris::standard();
     let curve = Curve::of(eph.body(eph.lookup("earth").unwrap())).unwrap();
-    let at = |alpha| curve.magnitude(&Seen { alpha, observer_lat: 0.0, sun_lat: 0.0 });
+    let at = |alpha| {
+        curve.magnitude(&Seen {
+            alpha,
+            observer_lat: 0.0,
+            sun_lat: 0.0,
+        })
+    };
     let full = at(0.0);
     let phase = |alpha| 10f64.powf(-0.4 * (at(alpha) - full));
-    println!("Earth: V(1,0) {full:.4}, phase function at 90° {:.4}, 144° {:.4}", phase(90.0), phase(144.0));
+    println!(
+        "Earth: V(1,0) {full:.4}, phase function at 90° {:.4}, 144° {:.4}",
+        phase(90.0),
+        phase(144.0)
+    );
     assert!((full - -3.216).abs() < 0.001, "{full}");
     assert!((phase(90.0) - 0.258).abs() < 0.001);
     assert!((phase(144.0) - 0.143).abs() < 0.001);
@@ -188,7 +198,11 @@ fn bodies_show_their_brightness() {
         for row in picked {
             let eye = eph.barycentric_position(earth, row.t);
             let at = eph.barycentric_position(b, row.t);
-            let up = if (at - eye).normalize().z.abs() > 0.9 { DVec3::X } else { DVec3::Z };
+            let up = if (at - eye).normalize().z.abs() > 0.9 {
+                DVec3::X
+            } else {
+                DVec3::Z
+            };
             let camera = Camera::looking_at(eye, at, up, fov);
             let mut spheres = bodies::spheres(eph, &[b], row.t, eye);
             let exposure = 1e4f32;
@@ -204,18 +218,29 @@ fn bodies_show_their_brightness() {
             };
             let target_tex = Target::new(&gpu.device, size, size);
             let mut encoder = gpu.device.create_command_encoder(&Default::default());
-            renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target_tex, &scene, None);
+            renderer.render(
+                &gpu.device,
+                &gpu.queue,
+                &mut encoder,
+                &target_tex,
+                &scene,
+                None,
+            );
             gpu.queue.submit(Some(encoder.finish()));
             let image = gpu.read_rgba16f(&target_tex.hdr);
             let mut flux = 0.0;
             for (i, p) in image.iter().enumerate() {
-                let (x, y) = ((i as u32 % size) as f64 + 0.5, (i as u32 / size) as f64 + 0.5);
+                let (x, y) = (
+                    (i as u32 % size) as f64 + 0.5,
+                    (i as u32 / size) as f64 + 0.5,
+                );
                 let r = DVec3::new(
                     (x / f64::from(size) * 2.0 - 1.0) * tan_half,
                     (1.0 - y / f64::from(size) * 2.0) * tan_half,
                     -1.0,
                 );
-                let lum = 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
+                let lum =
+                    0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
                 flux += lum * side * side / r.length().powi(3);
             }
             let v = V_SUN - 2.5 * (flux / f64::from(exposure) / std::f64::consts::PI).log10();
@@ -226,7 +251,10 @@ fn bodies_show_their_brightness() {
             .filter(|(a, _)| *a <= phases)
             .map(|(_, d)| d.abs())
             .fold(0f64, f64::max);
-        let shown: Vec<String> = report.iter().map(|(a, d)| format!("{a:.0}° {d:+.3}")).collect();
+        let shown: Vec<String> = report
+            .iter()
+            .map(|(a, d)| format!("{a:.0}° {d:+.3}"))
+            .collect();
         println!("{target}: {}", shown.join(", "));
         assert!(worst < tolerance, "{target}: {worst} mag");
     }
@@ -279,20 +307,28 @@ fn disks_show_their_curves() {
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
-                    let (x, y) = ((i as u32 % size) as f64 + 0.5, (i as u32 / size) as f64 + 0.5);
+                    let (x, y) = (
+                        (i as u32 % size) as f64 + 0.5,
+                        (i as u32 / size) as f64 + 0.5,
+                    );
                     let r = DVec3::new(
                         (x / f64::from(size) * 2.0 - 1.0) * tan_half,
                         (1.0 - y / f64::from(size) * 2.0) * tan_half,
                         -1.0,
                     );
-                    let lum = 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
+                    let lum = 0.2126 * f64::from(p[0])
+                        + 0.7152 * f64::from(p[1])
+                        + 0.0722 * f64::from(p[2]);
                     lum * side_px * side_px / r.length().powi(3)
                 })
                 .sum();
             let v = V_SUN - 2.5 * (flux / std::f64::consts::PI).log10();
             report.push((alpha, v - want));
         }
-        let shown: Vec<String> = report.iter().map(|(a, d)| format!("{a:.0}° {d:+.3}")).collect();
+        let shown: Vec<String> = report
+            .iter()
+            .map(|(a, d)| format!("{a:.0}° {d:+.3}"))
+            .collect();
         println!("{id}: {}", shown.join(", "));
         let worst = report.iter().map(|(_, d)| d.abs()).fold(0f64, f64::max);
         assert!(worst < 0.03, "{id}: {worst} mag");
@@ -361,7 +397,9 @@ fn bodies_show_their_colors() {
         let peak = draw(1.0).iter().map(|p| p[1]).fold(0f32, f32::max);
         let got = color_of(&draw(100.0 / peak));
         let want = photometry::color(eph.body(b)).expect("a color");
-        let off = (0..3).map(|k| (got[k] - want[k]).abs()).fold(0f64, f64::max);
+        let off = (0..3)
+            .map(|k| (got[k] - want[k]).abs())
+            .fold(0f64, f64::max);
         println!("{id} from {radii} radii: {got:.3?}, its own {want:.3?}: off {off:.3}");
         off
     };

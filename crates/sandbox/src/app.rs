@@ -372,7 +372,11 @@ impl Shell {
             }
         }
         let loop_pose = scene.poses[paths::LOOP_POSE];
-        let loops = if self.settings.lines.stations { &self.loops[..] } else { &[] };
+        let loops = if self.settings.lines.stations {
+            &self.loops[..]
+        } else {
+            &[]
+        };
         for (i, (name, path)) in self.loop_names.iter().zip(loops).enumerate() {
             if let Some(first) = path.samples.first() {
                 let p = loop_pose.to_world(first.position);
@@ -403,8 +407,14 @@ impl Shell {
         let seen = self.seen.as_ref()?;
         pick::marked(at, &seen.placed, &seen.anchors)
             .or_else(|| {
-                let (s, k) =
-                    pick::line(at, &seen.view, &self.paths, &seen.poses, &self.owners, &seen.balls)?;
+                let (s, k) = pick::line(
+                    at,
+                    &seen.view,
+                    &self.paths,
+                    &seen.poses,
+                    &self.owners,
+                    &seen.balls,
+                )?;
                 Some(Pick::Item(s, k))
             })
             .or_else(|| pick::body(at, &seen.anchors))
@@ -518,10 +528,7 @@ impl App for Shell {
             Some(seen) => labels::layer(&seen.placed, seen.view.extent()),
             None => spacer(),
         };
-        let map = stack([scene, labels])
-            .key(VIEWPORT_KEY)
-            .fill_size()
-            .clip();
+        let map = stack([scene, labels]).key(VIEWPORT_KEY).fill_size().clip();
         let middle = match (&self.plan, self.panel_open) {
             (Some(plan), true) => row([
                 map,
@@ -641,7 +648,10 @@ impl App for Shell {
             self.clicked_map(Vec2::new(x - rect.x, y - rect.y));
         } else if clicked
             && let Some((s, k)) = event.route().and_then(panel::parse_item_key)
-            && let Some(item) = self.plan.as_ref().and_then(|p| p.ships.get(s)?.items.get(k))
+            && let Some(item) = self
+                .plan
+                .as_ref()
+                .and_then(|p| p.ships.get(s)?.items.get(k))
         {
             self.clock.seek(item.start);
             self.select(Some((s, k)));

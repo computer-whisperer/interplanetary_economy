@@ -147,7 +147,11 @@ impl Weight {
             } => (2, 1),
         };
         let near = matches!(self, Weight::Disk { near: true, .. });
-        let along = if near { lon.cos().max(0.0).powi(m) } else { 1.0 };
+        let along = if near {
+            lon.cos().max(0.0).powi(m)
+        } else {
+            1.0
+        };
         lat.cos().powi(n) * along
     }
 }
@@ -603,12 +607,23 @@ mod tests {
             })
             .collect();
         let color = Image::srgba(4, 6, rows);
-        let lat = |y: usize| std::f64::consts::FRAC_PI_2 - (y as f64 + 0.5) / 6.0 * std::f64::consts::PI;
+        let lat =
+            |y: usize| std::f64::consts::FRAC_PI_2 - (y as f64 + 0.5) / 6.0 * std::f64::consts::PI;
         for (n, shading) in [(3, Shading::Lambert), (2, Shading::LunarLambert)] {
             let w: Vec<f64> = (0..6).map(|y| lat(y).cos().powi(n)).collect();
             let want = (w[2] + w[3]) / w.iter().sum::<f64>();
-            let (mean, _) = means(&color, None, Weight::Disk { shading, near: false });
-            assert!((f64::from(mean[0]) - want).abs() < 1e-6, "{mean:?} vs {want}");
+            let (mean, _) = means(
+                &color,
+                None,
+                Weight::Disk {
+                    shading,
+                    near: false,
+                },
+            );
+            assert!(
+                (f64::from(mean[0]) - want).abs() < 1e-6,
+                "{mean:?} vs {want}"
+            );
         }
         let (area, _) = means(&color, None, Weight::Area);
         assert!((f64::from(area[0]) - 0.5).abs() < 1e-6, "{area:?}");
@@ -616,8 +631,12 @@ mod tests {
         // |longitude| > 45° (the outer two of the four near ones), black
         // elsewhere; each column by cos² (Lambert) or cos (lunar-Lambert)
         // of its longitude, the far side by none.
-        let lons: Vec<f64> = (0..8).map(|x| ((x as f64 + 0.5) / 8.0 - 0.5) * std::f64::consts::TAU).collect();
-        let white = |lon: f64| lon.abs() > std::f64::consts::FRAC_PI_4 && lon.abs() < std::f64::consts::FRAC_PI_2;
+        let lons: Vec<f64> = (0..8)
+            .map(|x| ((x as f64 + 0.5) / 8.0 - 0.5) * std::f64::consts::TAU)
+            .collect();
+        let white = |lon: f64| {
+            lon.abs() > std::f64::consts::FRAC_PI_4 && lon.abs() < std::f64::consts::FRAC_PI_2
+        };
         let row: Vec<u8> = lons
             .iter()
             .flat_map(|&lon| if white(lon) { [255; 4] } else { [0, 0, 0, 255] })
@@ -625,10 +644,24 @@ mod tests {
         let color = Image::srgba(8, 1, row);
         for (m, shading) in [(2, Shading::Lambert), (1, Shading::LunarLambert)] {
             let w = |lon: f64| lon.cos().max(0.0).powi(m);
-            let want = lons.iter().filter(|&&l| white(l)).map(|&l| w(l)).sum::<f64>()
+            let want = lons
+                .iter()
+                .filter(|&&l| white(l))
+                .map(|&l| w(l))
+                .sum::<f64>()
                 / lons.iter().map(|&l| w(l)).sum::<f64>();
-            let (mean, _) = means(&color, None, Weight::Disk { shading, near: true });
-            assert!((f64::from(mean[0]) - want).abs() < 1e-6, "{mean:?} vs {want}");
+            let (mean, _) = means(
+                &color,
+                None,
+                Weight::Disk {
+                    shading,
+                    near: true,
+                },
+            );
+            assert!(
+                (f64::from(mean[0]) - want).abs() < 1e-6,
+                "{mean:?} vs {want}"
+            );
         }
     }
 

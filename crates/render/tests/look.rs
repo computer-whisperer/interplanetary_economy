@@ -104,10 +104,16 @@ fn tonemap_keeps_hue() {
         let got = shown(&mut renderer, orange);
         let gray = shown(&mut renderer, [level; 3]);
         println!("{orange:?} → {got:?}; gray → {gray:?}");
-        assert!((got[0] - gray[0]).abs() <= 1e-3 * gray[0], "{got:?} vs {gray:?}");
+        assert!(
+            (got[0] - gray[0]).abs() <= 1e-3 * gray[0],
+            "{got:?} vs {gray:?}"
+        );
         for c in 1..3 {
             let (want, ratio) = (orange[c] / orange[0], got[c] / got[0]);
-            assert!((ratio - want).abs() < 2e-3, "channel {c}: {ratio} vs {want}");
+            assert!(
+                (ratio - want).abs() < 2e-3,
+                "channel {c}: {ratio} vs {want}"
+            );
         }
     }
 }
@@ -125,7 +131,12 @@ fn colors_keep_past_f16() {
     for (name, distance, exposure) in [("point", 1e7, 1e12f32), ("disk", 2e4, 1e7)] {
         let eye = center + DVec3::new(-distance, 0.0, 0.0);
         let scene = Scene {
-            camera: Some(Camera::looking_at(eye, center, DVec3::Z, 50f64.to_radians())),
+            camera: Some(Camera::looking_at(
+                eye,
+                center,
+                DVec3::Z,
+                50f64.to_radians(),
+            )),
             sun: DVec3::ZERO,
             spheres: vec![Sphere::plain(center, 3_000.0, Surface::Lit(albedo))],
             look: Look {
@@ -144,11 +155,18 @@ fn colors_keep_past_f16() {
         }
         println!("{name}: brightest {brightest}, sum {sum:?}");
         // At the limit: the spot's red sums to it; the disk's pixels reach it.
-        let red = if name == "point" { sum[0] as f32 } else { brightest };
+        let red = if name == "point" {
+            sum[0] as f32
+        } else {
+            brightest
+        };
         assert!(red > 59_000.0, "{name} is not at the limit: {red}");
         for c in 1..3 {
             let (got, want) = (sum[c] / sum[0], f64::from(albedo[c] / albedo[0]));
-            assert!((got - want).abs() < 0.01 * want, "{name}, channel {c}: {got} vs {want}");
+            assert!(
+                (got - want).abs() < 0.01 * want,
+                "{name}, channel {c}: {got} vs {want}"
+            );
         }
     }
 }

@@ -305,7 +305,10 @@ mod tests {
         let classes: [Class; 3] = [
             (|l| &mut l.planets, |k| matches!(k, BodyKind::Planet)),
             (|l| &mut l.moons, |k| matches!(k, BodyKind::Moon)),
-            (|l| &mut l.small_bodies, |k| matches!(k, BodyKind::SmallBody { .. })),
+            (
+                |l| &mut l.small_bodies,
+                |k| matches!(k, BodyKind::SmallBody { .. }),
+            ),
         ];
         for (field, kind) in classes {
             let n = count(&orbits, kind);

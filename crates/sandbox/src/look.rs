@@ -149,7 +149,8 @@ mod tests {
         for (id, v0) in [("earth", -3.2165), ("jupiter", -9.395)] {
             let b = eph.lookup(id).unwrap();
             let e = exposure_for(eph, b, t);
-            let p = 10f64.powf(-0.4 * (v0 - photometry::V_SUN)) * (AU_KM / eph.body(b).radius).powi(2);
+            let p =
+                10f64.powf(-0.4 * (v0 - photometry::V_SUN)) * (AU_KM / eph.body(b).radius).powi(2);
             let irradiance = (AU_KM / (sun - eph.barycentric_position(b, t)).length()).powi(2);
             let shown = e * 1.5 * p * irradiance;
             println!("{id}: p {p:.3}, shown at {shown:.4}");

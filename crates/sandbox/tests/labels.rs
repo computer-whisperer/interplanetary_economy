@@ -2,17 +2,17 @@
 //! labels beside what they name and drawn where placed, none for what is
 //! hidden; clicks picking what they land on; the panel's rows.
 
+use damascene_core::prelude::*;
+use damascene_wgpu::Runner;
 use glam::{DVec3, Vec2};
-use sandbox::app::VIEWPORT_KEY;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Item, ItemKind, Plan, when};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sandbox::app::Shell;
+use sandbox::app::VIEWPORT_KEY;
 use sandbox::bodies;
 use sandbox::camera::MapCamera;
-use damascene_core::prelude::*;
-use damascene_wgpu::Runner;
 use sandbox::frame::{self, Output, View, shot};
 use sandbox::frames::Frame;
 use sandbox::labels::{self, Target, mps};
@@ -93,10 +93,12 @@ fn labels_beside_what_they_name() {
             for dx in -reach..=reach {
                 let (x, y) = ((cx as i32 + dx) as f32, (cy as i32 + dy) as f32);
                 sum += channel(x, y, 0);
-                moment += channel(x, y, 0) * glam::DVec2::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                moment +=
+                    channel(x, y, 0) * glam::DVec2::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
             }
         }
-        let drawn = (moment / sum) / f64::from(scale) - glam::DVec2::new(f64::from(map.x), f64::from(map.y));
+        let drawn = (moment / sum) / f64::from(scale)
+            - glam::DVec2::new(f64::from(map.x), f64::from(map.y));
         let label = app
             .placed()
             .iter()
@@ -133,7 +135,10 @@ fn no_labels_for_the_hidden() {
     let eph = Ephemeris::standard();
     let t = Epoch::from_ymd(2045, 3, 1);
     let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
-    let (e, m) = (eph.barycentric_position(earth, t), eph.barycentric_position(moon, t));
+    let (e, m) = (
+        eph.barycentric_position(earth, t),
+        eph.barycentric_position(moon, t),
+    );
     let out = (e - m).normalize();
     let eye = e + out * 50_000.0;
     let side = out.cross(DVec3::Z).normalize();
@@ -170,11 +175,21 @@ fn a_ship_at_a_point_is_shown() {
             scale: 1.0,
         };
         let (balls, anchors) = labels::bodies(eph, t, &bodies::drawn(eph), earth, &view);
-        let radius = anchors.iter().find(|a| a.target == Target::Body(moon)).unwrap().radius;
-        (radius, labels::ship(&view, &balls, 0, "Lander", m, 9.0).is_some())
+        let radius = anchors
+            .iter()
+            .find(|a| a.target == Target::Body(moon))
+            .unwrap()
+            .radius;
+        (
+            radius,
+            labels::ship(&view, &balls, 0, "Lander", m, 9.0).is_some(),
+        )
     };
     let (far, near) = (shown(3e6), shown(2e4));
-    println!("from 3e6 km the Moon is {:.2} px, from 2e4 km {:.0} px", far.0, near.0);
+    println!(
+        "from 3e6 km the Moon is {:.2} px, from 2e4 km {:.0} px",
+        far.0, near.0
+    );
     assert!(far.0 < 1.0 && far.1, "drawn as a point");
     assert!(near.0 > 1.0 && !near.1, "drawn as a disk");
 }
@@ -256,9 +271,7 @@ fn clicks_pick_what_they_land_on() {
     assert_eq!(app.pick(on_line), Some(Pick::Item(0, k)));
 
     let empty = Vec2::new(app.view().unwrap().extent().x - 10.0, 5.0);
-    println!(
-        "the Moon at {center}, the ship at {marker}, a label at {r:?}, the line at {on_line}"
-    );
+    println!("the Moon at {center}, the ship at {marker}, a label at {r:?}, the line at {on_line}");
     assert!(anchors.iter().all(|a| a.at.distance(empty) > 30.0));
     assert_eq!(app.pick(empty), None);
 
@@ -298,7 +311,14 @@ fn a_line_over_a_disk_is_picked() {
     assert_eq!(stay.kind, ItemKind::Stay);
     let t = Epoch(0.5 * stay.start.0 + 0.5 * stay.end.0);
     app.clock.seek(t);
-    for (azimuth, elevation) in [(0.0, 0.3), (1.6, 0.3), (3.1, 0.3), (4.7, 0.3), (0.0, 1.2), (0.0, -1.2)] {
+    for (azimuth, elevation) in [
+        (0.0, 0.3),
+        (1.6, 0.3),
+        (3.1, 0.3),
+        (4.7, 0.3),
+        (0.0, 1.2),
+        (0.0, -1.2),
+    ] {
         app.camera.set_direction(azimuth, elevation);
         app.update_paths();
         shot(&gpu, &mut app, None, 1000, 700, 1.0);
@@ -306,7 +326,11 @@ fn a_line_over_a_disk_is_picked() {
         let view = app.view().unwrap();
         let anchors = app.anchors().to_vec();
         let (balls, _) = labels::bodies(eph, t, &bodies::drawn(eph), moon, &view);
-        let disk = anchors.iter().find(|a| a.target == Target::Body(moon)).unwrap().clone();
+        let disk = anchors
+            .iter()
+            .find(|a| a.target == Target::Body(moon))
+            .unwrap()
+            .clone();
         // The stay's line: the one in the view's frame spanning it.
         let line = scene.paths[PLAN_SET]
             .paths
@@ -318,10 +342,15 @@ fn a_line_over_a_disk_is_picked() {
             })
             .expect("the stay is drawn");
         let clear = |q: Vec2| {
-            anchors.iter().all(|a| a.target == disk.target || a.at.distance(q) > 10.0)
+            anchors
+                .iter()
+                .all(|a| a.target == disk.target || a.at.distance(q) > 10.0)
                 && app.placed().iter().all(|l| {
                     let r = l.rect;
-                    q.x < r.x - 5.0 || q.y < r.y - 5.0 || q.x > r.x + r.w + 5.0 || q.y > r.y + r.h + 5.0
+                    q.x < r.x - 5.0
+                        || q.y < r.y - 5.0
+                        || q.x > r.x + r.w + 5.0
+                        || q.y > r.y + r.h + 5.0
                 })
         };
         let on_line: Vec<Vec2> = (0..=2000)
@@ -347,7 +376,10 @@ fn a_line_over_a_disk_is_picked() {
         // On the disk, away from every line drawn there.
         let away = (0..400)
             .map(|i| {
-                let (a, r) = (i as f32 * 2.399, (i as f32 / 400.0).sqrt() * (disk.radius - 10.0));
+                let (a, r) = (
+                    i as f32 * 2.399,
+                    (i as f32 / 400.0).sqrt() * (disk.radius - 10.0),
+                );
                 disk.at + Vec2::new(a.cos(), a.sin()) * r
             })
             .find(|&q| clear(q) && on_line.iter().all(|l| l.distance(q) > 30.0))
@@ -404,7 +436,10 @@ fn panel_rows_carry_dv_and_failures() {
         },
         Ship {
             name: "Failed".into(),
-            items: vec![item(ItemKind::Leg, 3.1), item(ItemKind::Failed(why.into()), 0.0)],
+            items: vec![
+                item(ItemKind::Leg, 3.1),
+                item(ItemKind::Failed(why.into()), 0.0),
+            ],
             done: true,
             failure: Some(why.into()),
             first_leg: 0,
@@ -429,7 +464,11 @@ fn panel_rows_carry_dv_and_failures() {
     let failure = (why.to_string(), Tone::Failure);
     assert!(rows[0].lines.contains(&failure));
     assert!(!rows[1].lines.contains(&failure), "said by its failed item");
-    assert!(rows[4].lines.contains(&(panicked.to_string(), Tone::Failure)));
+    assert!(
+        rows[4]
+            .lines
+            .contains(&(panicked.to_string(), Tone::Failure))
+    );
     assert_eq!(rows[2].dv, "3,100 m/s");
     assert_eq!(rows[3].kind, "failed");
     assert!(rows[3].lines.contains(&failure));
@@ -487,7 +526,9 @@ fn clicks_reach_the_map_and_the_panel() {
                 view: &target,
                 msaa: None,
             };
-            frame::draw(device, queue, ui, app, &mut view, &scene, out, viewport, scale, None);
+            frame::draw(
+                device, queue, ui, app, &mut view, &scene, out, viewport, scale, None,
+            );
             scene
         };
         let mut scene = draw(&mut app, &mut ui);
@@ -497,8 +538,10 @@ fn clicks_reach_the_map_and_the_panel() {
         let click = |app: &mut Shell, ui: &mut Runner, (x, y): (f32, f32)| {
             let mut events = ui.pointer_down(Pointer::mouse(x, y, PointerButton::Primary));
             events.extend(ui.pointer_up(Pointer::mouse(x, y, PointerButton::Primary)));
-            let routes: Vec<_> =
-                events.iter().map(|e| (e.kind, e.route().map(str::to_string))).collect();
+            let routes: Vec<_> = events
+                .iter()
+                .map(|e| (e.kind, e.route().map(str::to_string)))
+                .collect();
             let cx = EventCx::new().with_ui_state(ui.ui_state());
             for e in events {
                 app.on_event(e, &cx);
@@ -517,7 +560,11 @@ fn clicks_reach_the_map_and_the_panel() {
             unreachable!()
         };
         let r = label.rect;
-        let routes = click(&mut app, &mut ui, (map.x + r.x + r.w / 2.0, map.y + r.y + r.h / 2.0));
+        let routes = click(
+            &mut app,
+            &mut ui,
+            (map.x + r.x + r.w / 2.0, map.y + r.y + r.h / 2.0),
+        );
         println!("scale {scale}, on the label: {routes:?}");
         assert!(routes.contains(&(UiEventKind::Click, Some(VIEWPORT_KEY.to_string()))));
         assert_eq!(app.selected, Some((0, item)));
@@ -553,7 +600,9 @@ fn clicks_reach_the_map_and_the_panel() {
         // Down the panel's list to the first item's row (damascene's
         // `rect_of_key` does not index keyed nodes in a virtual list's
         // rows).
-        let list = ui.rect_of_key(panel::LIST_KEY).expect("the panel is laid out");
+        let list = ui
+            .rect_of_key(panel::LIST_KEY)
+            .expect("the panel is laid out");
         let key = panel::item_key(0, 0);
         let x = list.x + list.w / 2.0;
         let y = (0..100)

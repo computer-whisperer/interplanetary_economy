@@ -506,12 +506,19 @@ impl Scene {
             // in front of the sphere's disk (and its air and rings), which
             // it fades into: along its center's ray, nearer than anything
             // of it (every pixel of the spot takes the center's depth).
-            let (exposure, lift) = (f64::from(self.look.exposure), f64::from(self.look.body_lift));
+            let (exposure, lift) = (
+                f64::from(self.look.exposure),
+                f64::from(self.look.body_lift),
+            );
             let front = v * (1.0 - 1.01 * outer / -v.z).max(0.0);
             let mut spot = |k: f64| {
                 let color = radiance.map(|x| x * k * exposure);
                 let most = color.into_iter().fold(0.0, f64::max);
-                let within = if most > SPOT_MAX { SPOT_MAX / most } else { 1.0 };
+                let within = if most > SPOT_MAX {
+                    SPOT_MAX / most
+                } else {
+                    1.0
+                };
                 out.points.push(DotGpu {
                     center: f32x3(front),
                     size: SPOT_SIGMA_PX,

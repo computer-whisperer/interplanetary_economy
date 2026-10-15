@@ -185,7 +185,8 @@ impl Path {
                     }
                     continue;
                 }
-                let (Some(q0), Some(q1)) = (camera.project_view(v0, size), camera.project_view(v1, size))
+                let (Some(q0), Some(q1)) =
+                    (camera.project_view(v0, size), camera.project_view(v1, size))
                 else {
                     continue;
                 };
@@ -743,7 +744,10 @@ mod tests {
             pose: 0,
             samples: (0..=4)
                 .map(|i| {
-                    let (t, a) = (f64::from(i) * 1_570.796_326_794_896_6, f64::from(i) * 0.5 * std::f64::consts::PI);
+                    let (t, a) = (
+                        f64::from(i) * 1_570.796_326_794_896_6,
+                        f64::from(i) * 0.5 * std::f64::consts::PI,
+                    );
                     let (s, c) = a.sin_cos();
                     Sample {
                         t,
@@ -777,15 +781,30 @@ mod tests {
             .project(pose.to_world(path.at(785.398_163_397_448_3).unwrap()), size)
             .unwrap();
         let curve = path.near(&pose, &camera, size, mid, 4.0, |_| true).unwrap();
-        let chord = path.near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 400.0, |_| true).unwrap();
+        let chord = path
+            .near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 400.0, |_| true)
+            .unwrap();
         let px = (mid - on(a, 0.5f64.sqrt())).length();
         println!("on the curve {curve:.3} px; at the chord {chord:.1} px ({px:.1} px in)");
         assert!(curve < 0.25, "{curve}");
         assert!((chord - px).abs() < 1.0, "{chord} {px}");
-        assert!(path.near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 4.0, |_| true).is_none());
+        assert!(
+            path.near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 4.0, |_| true)
+                .is_none()
+        );
         // Behind the eye, nothing.
-        let behind = Camera::looking_at(pose.origin + DVec3::new(0.0, 0.0, 3e4), pose.origin + DVec3::new(0.0, 0.0, 6e4), DVec3::Y, 0.8);
-        assert!(path.near(&pose, &behind, size, DVec2::new(400.0, 400.0), 1e6, |_| true).is_none());
+        let behind = Camera::looking_at(
+            pose.origin + DVec3::new(0.0, 0.0, 3e4),
+            pose.origin + DVec3::new(0.0, 0.0, 6e4),
+            DVec3::Y,
+            0.8,
+        );
+        assert!(
+            path.near(&pose, &behind, size, DVec2::new(400.0, 400.0), 1e6, |_| {
+                true
+            })
+            .is_none()
+        );
     }
 
     /// Against the curve sampled densely, over random one-sided segments
@@ -815,22 +834,41 @@ mod tests {
             let (p0, p1) = (v() * r, v() * r);
             let chord = p1 - p0;
             let off = v().normalize() * chord.length();
-            let eye = if trial % 2 == 0 { p0 + chord * 0.5 + off * 0.4 + v() * 0.3 * r } else { v() * 2.0 * r };
+            let eye = if trial % 2 == 0 {
+                p0 + chord * 0.5 + off * 0.4 + v() * 0.3 * r
+            } else {
+                v() * 2.0 * r
+            };
             let target = v() * r;
             let off = off * (0.5 + 2.0 * f());
             let path = Path {
                 pose: 0,
                 samples: vec![
-                    Sample { t: 0.0, position: p0, velocity: (chord + off) / h },
-                    Sample { t: h, position: p1, velocity: chord / h },
+                    Sample {
+                        t: 0.0,
+                        position: p0,
+                        velocity: (chord + off) / h,
+                    },
+                    Sample {
+                        t: h,
+                        position: p1,
+                        velocity: chord / h,
+                    },
                 ],
                 future: [1.0; 3],
                 past: [1.0; 3],
                 gap: 0.0,
             };
-            let camera = Camera::looking_at(pose.origin + eye, pose.origin + target, DVec3::Z, 50f64.to_radians());
+            let camera = Camera::looking_at(
+                pose.origin + eye,
+                pose.origin + target,
+                DVec3::Z,
+                50f64.to_radians(),
+            );
             let project = |t: f64| camera.project(pose.to_world(path.at(t).unwrap()), size);
-            let Some(on) = project(h * (0.1 + 0.8 * f())) else { continue };
+            let Some(on) = project(h * (0.1 + 0.8 * f())) else {
+                continue;
+            };
             if on.x < 0.0 || on.y < 0.0 || on.x > 1920.0 || on.y > 1080.0 {
                 continue;
             }
@@ -853,7 +891,10 @@ mod tests {
                 panic!("trial {trial}: culled at {truth:.3} px from the curve")
             };
             worst = worst.max((got - truth).abs());
-            assert!(path.near(&pose, &camera, size, at, 4.0, |_| false).is_none());
+            assert!(
+                path.near(&pose, &camera, size, at, 4.0, |_| false)
+                    .is_none()
+            );
         }
         println!("{tried} clicks; worst {worst:.3} px from the dense curve");
         assert!(tried > 300 && worst < 0.3, "{tried} {worst}");
@@ -874,8 +915,16 @@ mod tests {
         let path = Path {
             pose: 0,
             samples: vec![
-                Sample { t: 0.0, position: p0, velocity: (chord + off) / h },
-                Sample { t: h, position: p1, velocity: chord / h },
+                Sample {
+                    t: 0.0,
+                    position: p0,
+                    velocity: (chord + off) / h,
+                },
+                Sample {
+                    t: h,
+                    position: p1,
+                    velocity: chord / h,
+                },
             ],
             future: [1.0; 3],
             past: [1.0; 3],

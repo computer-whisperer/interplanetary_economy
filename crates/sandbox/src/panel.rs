@@ -73,7 +73,12 @@ fn days(d: f64) -> String {
 }
 
 /// The panel's rows for a plan's `ships` at `t`, `selected` marked.
-pub fn rows(eph: &Ephemeris, ships: &[Ship], t: Epoch, selected: Option<(usize, usize)>) -> Vec<Row> {
+pub fn rows(
+    eph: &Ephemeris,
+    ships: &[Ship],
+    t: Epoch,
+    selected: Option<(usize, usize)>,
+) -> Vec<Row> {
     let mut rows = Vec::new();
     for (s, ship) in ships.iter().enumerate() {
         let state = match (&ship.failure, ship.done) {
@@ -93,7 +98,10 @@ pub fn rows(eph: &Ephemeris, ships: &[Ship], t: Epoch, selected: Option<(usize, 
         // Why it stopped, where no failed item says (a ship refused, at
         // its start or when designing it panicked).
         if let Some(why) = &ship.failure
-            && !ship.items.iter().any(|i| matches!(i.kind, ItemKind::Failed(_)))
+            && !ship
+                .items
+                .iter()
+                .any(|i| matches!(i.kind, ItemKind::Failed(_)))
         {
             lines.push((why.clone(), Tone::Failure));
         }
@@ -102,7 +110,11 @@ pub fn rows(eph: &Ephemeris, ships: &[Ship], t: Epoch, selected: Option<(usize, 
             key: format!("ship:{s}"),
             kind: String::new(),
             label: ship.name.clone(),
-            dv: if ship.items.is_empty() { String::new() } else { mps(dv) },
+            dv: if ship.items.is_empty() {
+                String::new()
+            } else {
+                mps(dv)
+            },
             lines,
             current: false,
             selected: false,
@@ -177,7 +189,11 @@ fn item_row(eph: &Ephemeris, item: &Item) -> Row {
         key: String::new(),
         kind: kind.to_string(),
         label: item.label.clone(),
-        dv: if item.dv >= NO_DV { mps(item.dv) } else { String::new() },
+        dv: if item.dv >= NO_DV {
+            mps(item.dv)
+        } else {
+            String::new()
+        },
         lines,
         current: false,
         selected: false,
@@ -199,7 +215,12 @@ fn drawn(r: &Row) -> El {
                 .caption()
                 .width(Size::Fixed(10.0)),
         );
-        head.push(text(r.kind.clone()).caption().muted().width(Size::Fixed(52.0)));
+        head.push(
+            text(r.kind.clone())
+                .caption()
+                .muted()
+                .width(Size::Fixed(52.0)),
+        );
     }
     head.extend([
         label,
@@ -233,7 +254,11 @@ fn drawn(r: &Row) -> El {
         })
     } else {
         let el = el.key(r.key.clone()).cursor(Cursor::Pointer);
-        if r.selected { el.fill(tokens::ACCENT) } else { el }
+        if r.selected {
+            el.fill(tokens::ACCENT)
+        } else {
+            el
+        }
     }
 }
 
