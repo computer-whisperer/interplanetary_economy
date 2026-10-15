@@ -8,6 +8,7 @@ use crate::camera::MapCamera;
 use crate::clock::{self, Clock};
 use crate::frames::{self, Frame};
 use crate::look::{self, Exposure};
+use crate::orbits::Orbits;
 use crate::paths::{self, Event, PAST_DIM};
 use crate::plan::{Loaded, on_track, position};
 use crate::sky;
@@ -91,6 +92,7 @@ pub struct Shell {
     bodies: Vec<BodyId>,
     /// Station orbits' reference loops.
     loops: Vec<render::Path>,
+    orbits: Orbits,
     built: Option<BuiltFor>,
     paths: Arc<render::Paths>,
     /// Each path's ship and item, where it is one's.
@@ -118,6 +120,7 @@ impl Shell {
             plan: None,
             exposure: Exposure::default(),
             bodies: bodies::drawn(eph),
+            orbits: Orbits::new(eph, &bodies::drawn(eph), t),
             loops: paths::loop_paths(&frames::station_loops(
                 Places::standard(),
                 Catalog::standard(),
@@ -164,8 +167,10 @@ impl Shell {
     }
 
     /// Builds the paths and events, if the frame, its center or the plan
-    /// changed since they were.
+    /// changed since they were, and the bodies' orbits whose windows moved.
     pub fn update_paths(&mut self) {
+        self.orbits
+            .update(self.eph, self.clock.t, self.camera.focus);
         let key = BuiltFor {
             frame: self.frame,
             focus: (self.frame == Frame::Focus).then_some(self.camera.focus),
@@ -205,7 +210,8 @@ impl Shell {
     /// logical one.
     pub fn scene(&self, px: f32) -> render::Scene {
         let (eph, t, focus) = (self.eph, self.clock.t, self.camera.focus);
-        let poses = paths::poses(eph, &self.frame, focus, t);
+        let mut poses = paths::poses(eph, &self.frame, focus, t);
+        poses.extend(self.orbits.poses(eph, t));
         let view = poses[paths::VIEW_POSE];
         let mut markers: Vec<render::Marker> = self
             .events
@@ -241,7 +247,8 @@ impl Shell {
                 .collect(),
             markers,
             sky: sky::loaded().map(|d| sky::sky(d, t)),
-            paths: Some(self.paths.clone()),
+            // By `paths::PLAN_SET` and `ORBIT_SET`.
+            paths: vec![self.paths.clone(), self.orbits.paths()],
             poses,
             now: paths::seconds(t),
             line_px: LINE_PX * px,

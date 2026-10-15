@@ -152,7 +152,13 @@ fn stars_land_on_their_places() {
                     flux += f64::from(image[(y * size.0 as i64 + x) as usize][1]) * sky;
                 }
             }
+            // Times the gain the look gives a spot this bright: by its
+            // peak pixel where it lands (pixel² cos³θ of sky).
             let star = data.stars[0];
+            let cos = -camera.rotate(d).z;
+            let peak = f64::from(star.flux) / (side * side * cos.powi(3))
+                * f64::from(render::scene::SPOT_PEAK);
+            let gain = scene.look.point_gain(peak as f32);
             let want =
                 f64::from(star.flux) * f64::from((star.color >> 8) & 255) / 255.0 * f64::from(gain);
             println!("Sirius: flux {flux:.4e}, wanted {want:.4e}");

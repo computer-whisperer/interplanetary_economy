@@ -19,7 +19,9 @@
 //!
 //! Each frame the CPU also finds where each path is at the scene's moment
 //! (a segment and a fraction along it), which splits its past color from
-//! its future one.
+//! its future one; and, for a path that leaves a gap there (a body's
+//! orbit, so that the body shows through it), where that is on the
+//! screen.
 
 use crate::camera::Camera;
 use crate::scene::Frustum;
@@ -47,7 +49,7 @@ const MAX_BOW_PX: f64 = 0.25;
 const F32_ERROR: f64 = 2.4e-7;
 
 /// The most poses a scene places paths with.
-pub const MAX_POSES: usize = 4;
+pub const MAX_POSES: usize = 8;
 
 /// Where a frame's coordinates are in the world at one moment: a point `p`
 /// is at `origin + axes · (scale · p)`.
@@ -98,6 +100,9 @@ pub struct Path {
     /// Linear colors after the scene's moment and before it.
     pub future: [f32; 3],
     pub past: [f32; 3],
+    /// The radius of the gap left where the path is at the scene's moment,
+    /// in line widths; 0 for none.
+    pub gap: f32,
 }
 
 /// The cubic Hermite curve at `u` between samples `a` and `b`, relative to
@@ -169,7 +174,9 @@ pub struct VertexGpu {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct PathGpu {
     pub pose: u32,
-    pub _pad: [u32; 3],
+    /// Line widths.
+    pub gap: f32,
+    pub _pad: [u32; 2],
     pub future: [f32; 4],
     pub past: [f32; 4],
 }
@@ -238,10 +245,15 @@ pub struct Visible {
     /// Pieces the CPU placed.
     pub pieces: Vec<PieceGpu>,
     /// Per path, where it is at the scene's moment: the first vertex of
-    /// the segment it is on, and the fraction along it (bits of an f32).
-    /// Segments before are past, after are future.
-    pub splits: Vec<[u32; 2]>,
+    /// the segment it is on, and the fraction along it (bits of an f32);
+    /// segments before are past, after are future. Then, for a path with
+    /// a gap, where that point is on the screen (pixels, bits of f32s;
+    /// far off it for none).
+    pub splits: Vec<[u32; 4]>,
 }
+
+/// A gap's center where there is none: pixels, far off the screen.
+const NO_GAP: f32 = -1e9;
 
 /// High and low f32 parts of `x`.
 pub fn split(x: f64) -> [f32; 2] {
@@ -317,7 +329,8 @@ impl Prepared {
             assert!(path.pose < MAX_POSES, "a path's pose is one of the scene's");
             out.paths.push(PathGpu {
                 pose: path.pose as u32,
-                _pad: [0; 3],
+                gap: path.gap,
+                _pad: [0; 2],
                 future: [path.future[0], path.future[1], path.future[2], 1.0],
                 past: [path.past[0], path.past[1], path.past[2], 1.0],
             });
@@ -450,7 +463,17 @@ impl Prepared {
             .zip(&self.bases)
             .map(|(path, &base)| {
                 let (k, u) = path.split(now);
-                [base + k as u32, (u as f32).to_bits()]
+                let gap = (path.gap > 0.0)
+                    .then(|| path.at(now))
+                    .flatten()
+                    .and_then(|p| camera.project(poses[path.pose].to_world(p), size))
+                    .map_or([NO_GAP; 2], |g| [g.x as f32, g.y as f32]);
+                [
+                    base + k as u32,
+                    (u as f32).to_bits(),
+                    gap[0].to_bits(),
+                    gap[1].to_bits(),
+                ]
             })
             .collect();
         out
@@ -635,6 +658,7 @@ mod tests {
                 .collect(),
             future: [1.0; 3],
             past: [0.5; 3],
+            gap: 0.0,
         }
     }
 
@@ -703,6 +727,7 @@ mod tests {
             samples: vec![a, b],
             future: [1.0; 3],
             past: [1.0; 3],
+            gap: 0.0,
         };
         // The curve's highest point, 96 km above the chord at u ≈ 0.21
         // (1,000 km · u(2u − 1)(u − 1)).

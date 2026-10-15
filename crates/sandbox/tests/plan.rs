@@ -8,7 +8,7 @@ use orbit::places::Places;
 use orbit::time::Epoch;
 use sandbox::app::Shell;
 use sandbox::frames::Frame;
-use sandbox::paths::{self, VIEW_POSE};
+use sandbox::paths::{self, PLAN_SET, VIEW_POSE};
 use sandbox::plan::{Loaded, on_track};
 
 /// From the NRHO to low lunar orbit: designed in a fraction of a second.
@@ -77,7 +77,7 @@ fn ship_and_burns_on_the_line() {
     app.clock.seek(t);
     let scene = app.scene(1.0);
     let view = scene.poses[VIEW_POSE];
-    let paths = scene.paths.as_ref().unwrap();
+    let paths = &scene.paths[PLAN_SET];
     let line = paths.paths.last().unwrap();
     let on_line = view.to_world(line.at(paths::seconds(t)).unwrap());
     let ship = scene
@@ -146,19 +146,12 @@ fn small_body_focus_before_2040() {
     app.follow_focus();
     app.update_paths();
     let scene = app.scene(1.0);
-    let loops = scene
-        .paths
-        .as_ref()
-        .unwrap()
+    let loops = scene.paths[PLAN_SET]
         .paths
         .iter()
         .filter(|p| p.pose == paths::LOOP_POSE)
         .count();
-    assert_eq!(
-        scene.paths.as_ref().unwrap().paths.len(),
-        loops,
-        "no ship paths"
-    );
+    assert_eq!(scene.paths[PLAN_SET].paths.len(), loops, "no ship paths");
     app.clock.seek(Epoch::from_ymd(2035, 1, 1));
     assert_eq!(app.clock.t, start);
     app.tick(0.1);
@@ -209,10 +202,7 @@ fn published_plan_gpu_time() {
         app.follow_focus();
         app.update_paths();
         let scene = app.scene(1.0);
-        let samples: usize = scene
-            .paths
-            .as_ref()
-            .unwrap()
+        let samples: usize = scene.paths[PLAN_SET]
             .paths
             .iter()
             .map(|p| p.samples.len())

@@ -18,6 +18,13 @@ pub const AU_KM: f64 = 149_597_870.7;
 /// a pixel across at half its peak.
 pub const SPOT_SIGMA_PX: f32 = 0.6;
 
+/// The largest share of a spot's flux one pixel takes (centered on it).
+pub const SPOT_PEAK: f32 = 0.354;
+
+/// The brightest a point of light's brightest pixel shows at through
+/// [`Look::sky`] (1.0 is the SDR white): a saturated star.
+pub const POINT_CAP: f32 = 8.0;
+
 /// Where a sphere is drawn as a disk under this radius, pixels, a spot
 /// over it carries what [`Look::point_gain`] adds to its flux, fading to
 /// none here.
@@ -41,7 +48,8 @@ pub struct Scene {
     pub sun: DVec3,
     pub spheres: Vec<Sphere>,
     pub markers: Vec<Marker>,
-    pub paths: Option<Arc<Paths>>,
+    /// Sets of paths, each uploaded when another is given in its place.
+    pub paths: Vec<Arc<Paths>>,
     /// Where each frame the paths are in is now, by `Path::pose`.
     pub poses: Vec<Pose>,
     /// The moment drawn, s on the paths' time axis: before it they take
@@ -69,9 +77,17 @@ pub struct Look {
 }
 
 impl Look {
-    /// What points of light and the sky are multiplied by, before
-    /// `exposure`: so that they show at `sky` where it is the larger.
-    pub fn point_gain(&self) -> f32 {
+    /// What a point of light whose brightest pixel has radiance `peak` is
+    /// multiplied by, before `exposure`: so that it shows at `sky` where
+    /// that is the larger, but then no brighter than [`POINT_CAP`] (a
+    /// planet from afar shows as a bright star, not a flare).
+    pub fn point_gain(&self, peak: f32) -> f32 {
+        let boosted = self.sky.min(POINT_CAP / peak.max(1e-30));
+        boosted.max(self.exposure) / self.exposure
+    }
+
+    /// What the sky's diffuse light is multiplied by, before `exposure`.
+    pub fn sky_gain(&self) -> f32 {
         self.sky.max(self.exposure) / self.exposure
     }
 }
@@ -293,12 +309,12 @@ impl Scene {
                 let irradiance = (AU_KM / to_sun.length()).powi(2);
                 (albedo, irradiance, to_sun.normalize(), to_sun)
             };
-            // The sphere's flux as a spot, times `k`: as the radiance of
-            // the pixel it is spread over.
-            let mut spot = |k: f64| {
+            // The sphere's flux as a spot: as the radiance of the pixel it
+            // is spread over.
+            let radiance = {
                 let disk = std::f64::consts::PI * half_angle * half_angle;
                 let spread = local_pixel * local_pixel;
-                let radiance = match s.surface {
+                match s.surface {
                     Surface::Emissive(c) => c.map(|c| f64::from(c) * disk / spread),
                     Surface::Lit(albedo) => {
                         let (albedo, irradiance, _, to_sun) = lit(albedo);
@@ -306,7 +322,10 @@ impl Scene {
                         let mean = 2.0 / 3.0 * irradiance * lambert_phase(alpha);
                         albedo.map(|a| f64::from(a) * mean * disk / spread)
                     }
-                };
+                }
+            };
+            // That spot's flux times `k`.
+            let mut spot = |k: f64| {
                 out.points.push(DotGpu {
                     center: f32x3(v),
                     size: SPOT_SIGMA_PX,
@@ -314,7 +333,8 @@ impl Scene {
                     shape: Shape::Spot as u32,
                 });
             };
-            let gain = f64::from(self.look.point_gain());
+            let peak = radiance.into_iter().fold(0.0, f64::max) * f64::from(SPOT_PEAK);
+            let gain = f64::from(self.look.point_gain(peak as f32));
             let radius_px = half_angle / local_pixel;
             if radius_px < 1.0 {
                 // Under a pixel: a point of light.

@@ -28,7 +28,7 @@ struct Frame {
     viewport: vec2<f32>,
     // Lines' width, pixels.
     line_px: f32,
-    slots: array<Slot, 4>,
+    slots: array<Slot, 8>,
 }
 
 struct Sphere {
@@ -75,6 +75,9 @@ struct PathVertex {
 
 struct PathInfo {
     pose: u32,
+    // The gap's radius where the path is at the scene's moment, line
+    // widths; 0 for none.
+    gap: f32,
     future: vec4<f32>,
     past: vec4<f32>,
 }
@@ -99,9 +102,10 @@ struct Piece {
 // with the pieces each is cut into above them (segments | pieces << 16).
 @group(1) @binding(2) var<storage, read> runs: array<vec2<u32>>;
 // Per path, where it is at the scene's moment: the first vertex of the
-// segment it is on, and the fraction along it (an f32's bits). Segments
-// before are past, after future.
-@group(1) @binding(3) var<storage, read> splits: array<vec2<u32>>;
+// segment it is on, and the fraction along it (an f32's bits); segments
+// before are past, after future. Then where that is on the screen, for a
+// path with a gap there (pixels, f32s' bits).
+@group(1) @binding(3) var<storage, read> splits: array<vec4<u32>>;
 @group(1) @binding(4) var<storage, read> pieces: array<Piece>;
 
 // Two triangles over a quad's corners 0..3 (x, y in {0, 1}).
@@ -418,15 +422,17 @@ fn line_fs(in: LineOut) -> @location(0) vec4<f32> {
         s = clamp(dot(p - in.a, ab) / length2, 0.0, 1.0);
     }
     let d = length(p - (in.a + s * ab));
-    let coverage = clamp(frame.line_px * 0.5 + 0.5 - d, 0.0, 1.0);
+    let split = splits[in.path];
+    let info = paths[in.path];
+    // Antialiased, and left out within the gap, whose edge is antialiased.
+    let gap = length(p - bitcast<vec2<f32>>(split.zw)) - info.gap * frame.line_px;
+    let coverage = clamp(frame.line_px * 0.5 + 0.5 - d, 0.0, 1.0) * clamp(gap + 0.5, 0.0, 1.0);
     if (coverage <= 0.0) {
         discard;
     }
     let along = s * in.depths.x / ((1.0 - s) * in.depths.y + s * in.depths.x);
     let u = mix(in.fractions.x, in.fractions.y, along);
-    let split = splits[in.path];
     let past = in.segment < split.x || (in.segment == split.x && u < bitcast<f32>(split.y));
-    let info = paths[in.path];
     let color = select(info.future.rgb, info.past.rgb, past);
     return vec4<f32>(color * coverage, coverage);
 }
@@ -439,14 +445,18 @@ struct Sky {
     to_view: mat3x3<f32>,
     // Julian years since J2000, for proper motion.
     years: f32,
-    // Radiance written per radiance of the sky: the sky's gain over the
-    // exposure, at least 1.
-    gain: f32,
-    // Radiance of a unit of the Milky Way's texture, times the gain.
+    // The frame's exposure, and the sky's (`Look` in scene.rs).
+    exposure: f32,
+    sky: f32,
+    // Radiance written for a unit of the Milky Way's texture: its
+    // radiance, times the sky's exposure over the frame's (at least 1).
     milky_way: f32,
     // Stars whose brightest pixel would write less than this are left
     // out: invisible once exposed.
     faintest: f32,
+    // The brightest a star's brightest pixel shows at through the sky's
+    // exposure (`POINT_CAP`).
+    cap: f32,
 }
 
 // A catalog star: its direction at J2000, its flux (radiance × sr, the
@@ -509,7 +519,11 @@ fn star_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u
     let pixel = 2.0 * frame.tan_half / frame.viewport.y;
     let cos = -d.z;
     let omega = pixel * pixel * cos * cos * cos;
-    let radiance = s.flux * sky.gain / max(omega, 1e-30);
+    // As `Look::point_gain` in scene.rs: at the sky's exposure, up to the
+    // cap, or the frame's where that is brighter.
+    let physical = s.flux / max(omega, 1e-30);
+    let boosted = min(sky.sky, sky.cap / max(physical * SPOT_PEAK, 1e-30));
+    let radiance = physical * max(boosted, sky.exposure) / sky.exposure;
     // Behind the eye, near its side, or too faint to see.
     if (cos < 0.01 || radiance * SPOT_PEAK < sky.faintest) {
         var out: DotOut;

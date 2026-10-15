@@ -10,6 +10,7 @@
 //! 32-bit float buffer, with no far plane.
 
 pub mod camera;
+mod lines;
 pub mod offscreen;
 pub mod paths;
 mod post;
@@ -149,27 +150,21 @@ impl Storage {
 }
 
 /// Draws scenes (scene.wgsl): the scene's pass (the sky, then ray-cast
-/// spheres, then points, additive) into its radiance; bloom and the tonemap into the
-/// shown image (post.wgsl); and over that, depth-tested against the
-/// scene, the overlay (paths' lines, then markers), which exposure does
-/// not touch.
+/// spheres, then points, additive) into its radiance; bloom and the
+/// tonemap into the shown image (post.wgsl); and over that, depth-tested
+/// against the scene, the overlay (each set of paths' lines, then
+/// markers), which exposure does not touch.
 pub struct Renderer {
     frame: wgpu::Buffer,
     spheres: Storage,
     points: Storage,
     markers: Storage,
-    vertices: Storage,
-    path_infos: Storage,
-    runs: Storage,
-    splits: Storage,
-    pieces: Storage,
+    /// By the scene's sets of paths.
+    path_sets: Vec<lines::PathSet>,
     layout: wgpu::BindGroupLayout,
     path_layout: wgpu::BindGroupLayout,
     /// Over the point and marker buffers respectively (spheres in both).
     groups: Option<[wgpu::BindGroup; 2]>,
-    path_group: Option<wgpu::BindGroup>,
-    /// The paths uploaded, and their chunks.
-    uploaded: Option<(Arc<Paths>, paths::Prepared)>,
     sphere_pipeline: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
     marker_pipeline: wgpu::RenderPipeline,
@@ -284,14 +279,8 @@ impl Renderer {
             spheres: Storage::new(device, "spheres"),
             points: Storage::new(device, "points"),
             markers: Storage::new(device, "markers"),
-            vertices: Storage::new(device, "path vertices"),
-            path_infos: Storage::new(device, "paths"),
-            runs: Storage::new(device, "path runs"),
-            splits: Storage::new(device, "path splits"),
-            pieces: Storage::new(device, "path pieces"),
+            path_sets: Vec::new(),
             groups: None,
-            path_group: None,
-            uploaded: None,
             sphere_pipeline: pipeline(
                 "spheres",
                 &pipeline_layout,
@@ -331,35 +320,30 @@ impl Renderer {
     ) {
         let inst = scene.instances(target.size);
         let mut grew = false;
-        // Paths: uploaded when the scene holds others; culled and cut each
-        // frame.
-        let new_paths = match (&scene.paths, &self.uploaded) {
-            (Some(p), Some((q, _))) => !Arc::ptr_eq(p, q),
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-        if let Some(p) = scene.paths.as_ref().filter(|_| new_paths) {
-            let prepared = paths::Prepared::new(p);
-            grew |= self.vertices.write(device, queue, &prepared.vertices);
-            grew |= self.path_infos.write(device, queue, &prepared.paths);
-            self.uploaded = Some((p.clone(), prepared));
+        while self.path_sets.len() < scene.paths.len() {
+            self.path_sets.push(lines::PathSet::new(device));
         }
-        let visible = match (&scene.camera, &self.uploaded) {
-            (Some(cam), Some((paths, prepared))) if scene.paths.is_some() => {
-                prepared.visible(paths, cam, &scene.poses, target.size, scene.now)
+        if let Some(camera) = &scene.camera {
+            for (set, paths) in self.path_sets.iter_mut().zip(&scene.paths) {
+                set.prepare(
+                    device,
+                    queue,
+                    &self.path_layout,
+                    paths,
+                    camera,
+                    &scene.poses,
+                    target.size,
+                    scene.now,
+                );
             }
-            _ => paths::Visible::default(),
-        };
-        grew |= self.runs.write(device, queue, &visible.instances);
-        grew |= self.splits.write(device, queue, &visible.splits);
-        grew |= self.pieces.write(device, queue, &visible.pieces);
+        }
         if let Some(frame) = &inst.frame {
             queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(frame));
         }
         grew |= self.spheres.write(device, queue, &inst.spheres);
         grew |= self.points.write(device, queue, &inst.points);
         grew |= self.markers.write(device, queue, &inst.markers);
-        if grew || self.groups.is_none() || self.path_group.is_none() {
+        if grew || self.groups.is_none() {
             let group = |dots: &Storage| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("scene"),
@@ -381,25 +365,6 @@ impl Renderer {
                 })
             };
             self.groups = Some([group(&self.points), group(&self.markers)]);
-            let entries: Vec<wgpu::BindGroupEntry> = [
-                &self.vertices,
-                &self.path_infos,
-                &self.runs,
-                &self.splits,
-                &self.pieces,
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(binding, s)| wgpu::BindGroupEntry {
-                binding: binding as u32,
-                resource: s.buffer.as_entire_binding(),
-            })
-            .collect();
-            self.path_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("paths"),
-                layout: &self.path_layout,
-                entries: &entries,
-            }));
         }
         let (first, last) = match &timestamps {
             Some(t) => (
@@ -488,17 +453,9 @@ impl Renderer {
         if inst.frame.is_none() {
             return;
         }
-        if !visible.draws.is_empty() || !visible.pieces.is_empty() {
-            pass.set_bind_group(0, with_markers, &[]);
-            pass.set_bind_group(1, self.path_group.as_ref().expect("bind group"), &[]);
-            pass.set_pipeline(&self.line_pipeline);
-            for (segments, pieces, instances) in &visible.draws {
-                pass.draw(0..6 * segments * pieces, instances.clone());
-            }
-            if !visible.pieces.is_empty() {
-                pass.set_pipeline(&self.piece_pipeline);
-                pass.draw(0..6, 0..visible.pieces.len() as u32);
-            }
+        pass.set_bind_group(0, with_markers, &[]);
+        for set in &self.path_sets[..scene.paths.len()] {
+            set.draw(&mut pass, &self.line_pipeline, &self.piece_pipeline);
         }
         if !inst.markers.is_empty() {
             pass.set_pipeline(&self.marker_pipeline);

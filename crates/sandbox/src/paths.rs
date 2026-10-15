@@ -15,9 +15,15 @@ use rayon::prelude::*;
 use render::{Path, Sample, Shape};
 
 /// The poses paths are drawn with (`render::Path::pose`): the view's frame,
-/// and the frame reference loops are in.
+/// and the frame reference loops are in; the bodies' orbits' follow
+/// (`orbits`).
 pub const VIEW_POSE: usize = 0;
 pub const LOOP_POSE: usize = 1;
+
+/// The scene's sets of paths (`render::Scene::paths`): the plan's with the
+/// reference loops, and the bodies' orbits.
+pub const PLAN_SET: usize = 0;
+pub const ORBIT_SET: usize = 1;
 
 /// Legs' colors, in order (sRGB).
 const LEG_COLORS: [u32; 8] = [
@@ -133,6 +139,7 @@ fn item_path(
         samples,
         future: color,
         past: scaled(color, PAST_DIM),
+        gap: 0.0,
     })
 }
 
@@ -145,6 +152,7 @@ pub fn loop_paths(loops: &[(String, Vec<Sample>)]) -> Vec<Path> {
             samples: samples.clone(),
             future: LOOP_COLOR,
             past: LOOP_COLOR,
+            gap: 0.0,
         })
         .collect()
 }

@@ -54,9 +54,12 @@ pub struct Sky {
 struct SkyGpu {
     to_view: [[f32; 4]; 3],
     years: f32,
-    gain: f32,
+    exposure: f32,
+    sky: f32,
     milky_way: f32,
     faintest: f32,
+    cap: f32,
+    _pad: [f32; 2],
 }
 
 /// The least a pixel shows (after exposure) for a star to be drawn: a
@@ -292,7 +295,6 @@ impl SkyPass {
             let v = camera.rotate(sky.orientation * c);
             [v.x as f32, v.y as f32, v.z as f32, 0.0]
         };
-        let gain = look.point_gain();
         let uniform = SkyGpu {
             to_view: [
                 column(glam::DVec3::X),
@@ -300,9 +302,12 @@ impl SkyPass {
                 column(glam::DVec3::Z),
             ],
             years: sky.years as f32,
-            gain,
-            milky_way: sky.milky_way_radiance * gain,
+            exposure: look.exposure,
+            sky: look.sky,
+            milky_way: sky.milky_way_radiance * look.sky_gain(),
             faintest: FAINTEST_SHOWN / look.exposure,
+            cap: crate::scene::POINT_CAP,
+            _pad: [0.0; 2],
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         true

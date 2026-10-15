@@ -136,14 +136,15 @@ fn agreement(pixels: &[[f32; 4]], size: (u32, u32), curve: &[DVec2]) -> (f64, f6
 fn scene(camera: Camera, pose: Pose, samples: Vec<Sample>, now: f64) -> Scene {
     Scene {
         camera: Some(camera),
-        paths: Some(Arc::new(Paths {
+        paths: vec![Arc::new(Paths {
             paths: vec![Path {
                 pose: 0,
                 samples,
                 future: [1.0, 1.0, 0.0],
                 past: [0.0, 1.0, 1.0],
+                gap: 0.0,
             }],
-        })),
+        })],
         poses: vec![pose],
         now,
         line_px: 1.5,
@@ -491,6 +492,7 @@ fn past_meets_future_100_days_in() {
             samples: samples.clone(),
             future: [0.0; 3],
             past: [0.0; 3],
+            gap: 0.0,
         }
         .at(now)
         .unwrap(),
@@ -549,6 +551,7 @@ fn long_segments_up_close() {
             samples: samples.clone(),
             future: [1.0, 1.0, 0.0],
             past: [0.0, 1.0, 1.0],
+            gap: 0.0,
         };
         // 30% into the middle segment, looking along the curve from
         // beside it.
@@ -604,7 +607,7 @@ fn line_cut_on_the_gpu_from_300_km() {
         50f64.to_radians(),
     );
     let scene = scene(camera, pose, samples.clone(), -1.0);
-    let paths = scene.paths.clone().unwrap();
+    let paths = scene.paths[0].clone();
     let visible = render::paths::Prepared::new(&paths).visible(&paths, &camera, &[pose], size, 0.0);
     let cuts: Vec<u32> = visible.draws.iter().map(|d| d.1).collect();
     println!(
@@ -660,6 +663,7 @@ fn two_million_segments_gpu_time() {
                 samples,
                 future: [0.3, 0.6, 1.0],
                 past: [0.1, 0.2, 0.35],
+                gap: 0.0,
             }
         })
         .collect();
@@ -679,7 +683,7 @@ fn two_million_segments_gpu_time() {
         let camera = Camera::looking_at(eye, center, DVec3::Z, 50f64.to_radians());
         let scene = Scene {
             camera: Some(camera),
-            paths: Some(paths.clone()),
+            paths: vec![paths.clone()],
             poses: vec![Pose::default()],
             now: 1.5e6,
             line_px: 1.5,
