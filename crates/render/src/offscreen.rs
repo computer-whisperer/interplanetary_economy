@@ -159,9 +159,9 @@ mod tests {
         assert_eq!(f16_to_f32(0x7bff), 65504.0);
     }
 
-    /// The empty scene is its background, in linear HDR: values above
-    /// the SDR white survive. And where the device has timestamps, the
-    /// frame is timed.
+    /// The empty scene's radiance is its background, in linear HDR:
+    /// values above the SDR white survive. And where the device has
+    /// timestamps, the frame is timed.
     #[test]
     fn empty_scene_reads_back_its_background() {
         let gpu = Offscreen::new().expect("a GPU");
@@ -193,7 +193,7 @@ mod tests {
         if let Some(t) = &timer {
             t.submitted(m);
         }
-        let pixels = gpu.read_rgba16f(&target.color);
+        let pixels = gpu.read_rgba16f(&target.hdr);
         assert_eq!(pixels.len(), 64 * 32);
         assert!(
             pixels.iter().all(|p| *p == [0.25, 1.5, 7.0, 1.0]),

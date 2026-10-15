@@ -1,11 +1,13 @@
 //! The sandbox's UI (M1c.md, step 2 plan, item 5; step 3 plan, items 6
-//! and 7; step 4 plan, items 2, 4 and 6): a top bar with the focus, the
-//! frame and the clock; the map view; a scrubber; and a status line.
+//! and 7; step 4 plan, items 2, 4 and 6; step 6 plan, item 1): a top bar
+//! with the focus, the frame and the clock; the map view; a scrubber; and
+//! a status line.
 
 use crate::bodies;
 use crate::camera::MapCamera;
 use crate::clock::{self, Clock};
 use crate::frames::{self, Frame};
+use crate::look::{self, Exposure};
 use crate::paths::{self, Event, PAST_DIM};
 use crate::plan::{Loaded, on_track, position};
 use damascene_core::prelude::*;
@@ -31,6 +33,9 @@ const SCRUBBER_KEY: &str = "scrubber";
 /// The longest step of wall time a frame advances, s.
 const MAX_STEP_S: f64 = 0.25;
 
+/// Stops of exposure set by hand, at most either way.
+const MAX_BIAS: i32 = 12;
+
 /// Lines' width, and a ship's marker's, logical pixels.
 const LINE_PX: f32 = 1.5;
 const SHIP_PX: f32 = 9.0;
@@ -47,6 +52,19 @@ pub struct Stats {
     /// The output's headroom over SDR white, and that white in nits,
     /// where the compositor says.
     pub output: Option<(f32, f32)>,
+    /// Whether the output is HDR.
+    pub hdr: bool,
+}
+
+impl Stats {
+    /// The output's headroom over SDR white: 1 on SDR, or where the
+    /// compositor does not say.
+    pub fn headroom(&self) -> f32 {
+        match (self.hdr, self.output) {
+            (true, Some((headroom, _))) => headroom.max(1.0),
+            _ => 1.0,
+        }
+    }
 }
 
 /// What the paths were last built for: rebuilt when it changes.
@@ -67,6 +85,7 @@ pub struct Shell {
     pub stats: Stats,
     pub frame: Frame,
     pub plan: Option<Loaded>,
+    pub exposure: Exposure,
     /// The bodies the focus select offers.
     bodies: Vec<BodyId>,
     /// Station orbits' reference loops.
@@ -95,6 +114,7 @@ impl Shell {
             stats: Stats::default(),
             frame: Frame::Focus,
             plan: None,
+            exposure: Exposure::default(),
             bodies: bodies::drawn(eph),
             loops: paths::loop_paths(&frames::station_loops(
                 Places::standard(),
@@ -134,6 +154,7 @@ impl Shell {
         self.follow_focus();
         self.clock.tick(dt);
         self.camera.tick(dt);
+        self.exposure.tick(self.target_exposure(), dt);
         if let Some(plan) = self.plan.as_mut() {
             plan.poll();
         }
@@ -171,6 +192,11 @@ impl Shell {
             Some(p) => p.span(),
             None => self.eph.span(),
         }
+    }
+
+    /// The exposure the focus calls for now.
+    fn target_exposure(&self) -> f64 {
+        look::exposure_for(self.eph, self.camera.focus, self.clock.t)
     }
 
     /// What the map view shows now, with `px` physical pixels to a
@@ -216,6 +242,11 @@ impl Shell {
             poses,
             now: paths::seconds(t),
             line_px: LINE_PX * px,
+            look: render::Look {
+                exposure: self.exposure.value(self.target_exposure()),
+                bloom: look::BLOOM,
+                headroom: self.stats.headroom(),
+            },
             ..Default::default()
         }
     }
@@ -263,7 +294,11 @@ impl Shell {
         } else {
             format!("{:.3} au", altitude / render::scene::AU_KM)
         };
-        format!("{distance} above {}", self.eph.body(self.camera.focus).name)
+        let mut s = format!("{distance} above {}", self.eph.body(self.camera.focus).name);
+        if self.exposure.bias != 0 {
+            s.push_str(&format!(" · exposure {:+} stops", self.exposure.bias));
+        }
+        s
     }
 
     fn frame_name(&self) -> &'static str {
@@ -310,7 +345,7 @@ impl App for Shell {
                 ))
                 .caption()
                 .tabular_numerals(),
-                text("space pauses · , and . warp · [ and ] events")
+                text("space pause · , . warp · [ ] events · - = exposure")
                     .muted()
                     .caption(),
                 text(output).muted().caption(),
@@ -380,6 +415,10 @@ impl App for Shell {
             self.clock.next(&self.event_times);
         } else if event.is_hotkey("previous") {
             self.clock.previous(&self.event_times);
+        } else if event.is_hotkey("brighter") {
+            self.exposure.bias = (self.exposure.bias + 1).min(MAX_BIAS);
+        } else if event.is_hotkey("darker") {
+            self.exposure.bias = (self.exposure.bias - 1).max(-MAX_BIAS);
         } else if matches!(event.kind, UiEventKind::PointerDown | UiEventKind::Drag)
             && event.route() == Some(SCRUBBER_KEY)
             && let (Some(rect), Some(x)) = (event.target_rect(), event.pointer_x())
@@ -425,6 +464,8 @@ impl App for Shell {
             (KeyChord::vim(','), "slower".into()),
             (KeyChord::vim(']'), "next".into()),
             (KeyChord::vim('['), "previous".into()),
+            (KeyChord::vim('='), "brighter".into()),
+            (KeyChord::vim('-'), "darker".into()),
         ]
     }
 

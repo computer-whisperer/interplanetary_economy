@@ -2,7 +2,7 @@
 //! reduction to 32-bit view-space instances for the GPU.
 //!
 //! Radiance is linear, in units of a white Lambertian surface under the
-//! Sun at 1 au: 1.0 is SDR white until step 6's exposure.
+//! Sun at 1 au; [`Look::exposure`] maps it to the shown image.
 
 use crate::camera::{Camera, NEAR_KM};
 use crate::paths::{MAX_POSES, Paths, Pose, split};
@@ -13,8 +13,9 @@ use std::sync::Arc;
 /// The astronomical unit, km.
 pub const AU_KM: f64 = 149_597_870.7;
 
-/// Pixels across a point standing in for a sphere under a pixel.
-pub const POINT_PX: f64 = 2.0;
+/// The width of a point of light's spot (a Gaussian, σ), pixels: about
+/// a pixel across at half its peak.
+pub const SPOT_SIGMA_PX: f32 = 0.6;
 
 /// A sphere's quad is the whole screen when the cone of rays that hit it
 /// is wider than this, or reaches behind the eye.
@@ -23,7 +24,9 @@ const BILLBOARD_MAX_HALF_ANGLE: f64 = 1.2;
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
     pub camera: Option<Camera>,
+    /// Radiance where nothing is drawn.
     pub background: [f32; 3],
+    pub look: Look,
     /// Where the Sun's light comes from.
     pub sun: DVec3,
     pub spheres: Vec<Sphere>,
@@ -36,6 +39,28 @@ pub struct Scene {
     pub now: f64,
     /// Lines' width, pixels.
     pub line_px: f32,
+}
+
+/// How the scene's radiance is shown (M1c.md, step 6 plan, item 1).
+#[derive(Clone, Copy, Debug)]
+pub struct Look {
+    /// Radiance to the shown image's units, where 1.0 is the SDR white.
+    pub exposure: f32,
+    /// The fraction of the image's energy that bloom spreads.
+    pub bloom: f32,
+    /// The output's peak over the SDR white; 1 on SDR, which is dithered.
+    pub headroom: f32,
+}
+
+impl Default for Look {
+    /// Radiance shown as it is, unbloomed, on SDR.
+    fn default() -> Look {
+        Look {
+            exposure: 1.0,
+            bloom: 0.0,
+            headroom: 1.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,13 +93,14 @@ pub struct Marker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Shape {
-    /// Hard-edged, for points of light.
-    Square = 0,
+    /// A point of light: a Gaussian spot ([`SPOT_SIGMA_PX`]) whose pixels
+    /// sum to the dot's color, additive.
+    Spot = 0,
     Disc = 1,
     Ring = 2,
     Diamond = 3,
     Cross = 4,
-    /// A square with a rim and antialiased, unlike [`Shape::Square`].
+    /// A square with a rim.
     Block = 5,
 }
 
@@ -125,6 +151,7 @@ pub struct SphereGpu {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct DotGpu {
     pub center: [f32; 3],
+    /// Pixels across; a spot's σ.
     pub size: f32,
     pub color: [f32; 3],
     pub shape: u32,
@@ -242,12 +269,13 @@ impl Scene {
                 (albedo, irradiance, to_sun.normalize(), to_sun)
             };
             if half_angle < local_pixel {
-                // Under a pixel: a point with the sphere's flux.
+                // Under a pixel: a point with the sphere's flux, as the
+                // radiance of the pixel it is spread over.
                 if v.z >= -NEAR_KM {
                     continue;
                 }
                 let disk = std::f64::consts::PI * half_angle * half_angle;
-                let spread = (POINT_PX * local_pixel).powi(2);
+                let spread = local_pixel * local_pixel;
                 let radiance = match s.surface {
                     Surface::Emissive(c) => c.map(|c| f64::from(c) * disk / spread),
                     Surface::Lit(albedo) => {
@@ -259,9 +287,9 @@ impl Scene {
                 };
                 out.points.push(DotGpu {
                     center: f32x3(v),
-                    size: POINT_PX as f32,
+                    size: SPOT_SIGMA_PX,
                     color: radiance.map(|x| x as f32),
-                    shape: Shape::Square as u32,
+                    shape: Shape::Spot as u32,
                 });
                 continue;
             }

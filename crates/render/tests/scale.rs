@@ -12,19 +12,23 @@ use render::{Marker, Renderer, Scene, Shape, Sphere, Surface, Target};
 const MOON: DVec3 = DVec3::new(-1.384_1e8, 4.612_3e7, 2.071e4);
 const MOON_RADIUS: f64 = 1_737.4;
 
+/// The scene's radiance, and the shown image.
 fn draw(
     gpu: &Offscreen,
     renderer: &mut Renderer,
     scene: &Scene,
     size: (u32, u32),
-) -> Vec<[f32; 4]> {
+) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
     let target = Target::new(&gpu.device, size.0, size.1);
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target, scene, None);
     gpu.queue.submit(Some(encoder.finish()));
-    gpu.read_rgba16f(&target.color)
+    (
+        gpu.read_rgba16f(&target.hdr),
+        gpu.read_rgba16f(&target.color),
+    )
 }
 
 /// The centroid of pixels with green over 0.5.
@@ -68,7 +72,7 @@ fn marker_in_low_lunar_orbit_lands_within_a_pixel() {
                 ..Default::default()
             };
             let expected = camera.project(ship, size).unwrap();
-            let pixels = draw(&gpu, &mut renderer, &scene, size);
+            let (_, pixels) = draw(&gpu, &mut renderer, &scene, size);
             let got = green_centroid(&pixels, size).expect("the marker is drawn");
             let error = (got - expected).length();
             println!("{distance:>12.0} km: off by {error:.4} px at {expected:.1}");
@@ -102,7 +106,7 @@ fn moon_limb_from_low_orbit() {
         let cos = MOON_RADIUS / (MOON_RADIUS + altitude);
         let tangent = MOON + (up * cos + ahead * (1.0 - cos * cos).sqrt()) * MOON_RADIUS;
         let expected = camera.project(tangent, size).unwrap().y;
-        let pixels = draw(&gpu, &mut renderer, &scene, size);
+        let (pixels, _) = draw(&gpu, &mut renderer, &scene, size);
         let column = size.0 / 2;
         let first = (0..size.1)
             .find(|&y| pixels[(y * size.0 + column) as usize][0] > 0.5)
@@ -135,7 +139,7 @@ fn radiance_has_its_units() {
         }],
         ..Default::default()
     };
-    let pixels = draw(&gpu, &mut renderer, &scene, size);
+    let (pixels, _) = draw(&gpu, &mut renderer, &scene, size);
     let mid = pixels[150 * 300 + 150];
     println!("lit center {mid:?}");
     for (got, want) in mid.iter().zip([0.5, 0.25, 0.125]) {
@@ -156,7 +160,7 @@ fn radiance_has_its_units() {
         }],
         ..Default::default()
     };
-    let pixels = draw(&gpu, &mut renderer, &sun_scene, size);
+    let (pixels, _) = draw(&gpu, &mut renderer, &sun_scene, size);
     let mid = pixels[150 * 300 + 150];
     println!("the Sun {mid:?}, wanted {sun_radiance}");
     assert!((mid[0] / sun_radiance - 1.0).abs() < 1e-3);
@@ -166,9 +170,11 @@ fn radiance_has_its_units() {
 /// weighted by the sky it subtends, at the screen's center and near its
 /// corner:
 /// - resolved (40 and 200 pixels across), the same as the image
-///   integrated in f64 on the CPU (the Lambertian formula for a distant
-///   sphere runs 2–7% low at these sizes: up close less than a hemisphere
-///   is visible);
+///   integrated in f64 on the CPU, 8×8 rays a pixel (the Lambertian
+///   formula for a distant sphere runs 2–7% low at these sizes: up close
+///   less than a hemisphere is visible); edges are antialiased, so the
+///   pixels at the limb carry their share (with one ray a pixel, the
+///   reference was itself 0.7% off at 40 px);
 /// - as a point (one pixel across), the distant sphere's flux, (2/3)·A·E·
 ///   Φ(α)·Ω (found in review: off the axis, points were too faint by up
 ///   to 1/cos³θ).
@@ -186,12 +192,14 @@ fn points_carry_their_spheres_flux() {
     let light = (sun - center).normalize();
     let tan_half = (fov / 2.0).tan();
     let aspect = f64::from(size.0) / f64::from(size.1);
-    // A pixel's view direction (unnormalized), and the sky it subtends.
-    let ray = |cam: &Camera, x: u32, y: u32| {
-        let ndc_x = (f64::from(x) + 0.5) / f64::from(size.0) * 2.0 - 1.0;
-        let ndc_y = 1.0 - (f64::from(y) + 0.5) / f64::from(size.1) * 2.0;
+    // A view direction (unnormalized) through `(x, y)` in pixels, and
+    // the sky a pixel there subtends.
+    let ray = |cam: &Camera, x: f64, y: f64| {
+        let ndc_x = x / f64::from(size.0) * 2.0 - 1.0;
+        let ndc_y = 1.0 - y / f64::from(size.1) * 2.0;
         cam.forward + cam.right * ndc_x * tan_half * aspect + cam.up * ndc_y * tan_half
     };
+    const RAYS: u32 = 8;
     let side = 2.0 * tan_half / f64::from(size.1);
     let sky = |r: DVec3| side * side / r.length().powi(3);
     for (place, offset) in [("center", (0.0, 0.0)), ("corner", (0.85, 0.8))] {
@@ -211,20 +219,26 @@ fn points_carry_their_spheres_flux() {
                 }],
                 ..Default::default()
             };
-            let image = draw(&gpu, &mut renderer, &scene, size);
+            let (image, _) = draw(&gpu, &mut renderer, &scene, size);
             let (mut flux, mut exact) = (0.0, 0.0);
+            let oc = center - eye;
             for (i, p) in image.iter().enumerate() {
-                let (x, y) = (i as u32 % size.0, i as u32 / size.0);
-                let r = ray(&camera, x, y);
-                flux += f64::from(p[0]) * sky(r);
-                // The same pixel ray-cast in f64.
-                let d = r.normalize();
-                let oc = center - eye;
-                let b = d.dot(oc);
-                let disc = b * b - (oc.length_squared() - radius * radius);
-                if disc >= 0.0 && b > 0.0 {
-                    let n = (eye + d * (b - disc.sqrt()) - center) / radius;
-                    exact += n.dot(light).max(0.0) * sky(r);
+                let (x, y) = (f64::from(i as u32 % size.0), f64::from(i as u32 / size.0));
+                flux += f64::from(p[0]) * sky(ray(&camera, x + 0.5, y + 0.5));
+                // The same pixel ray-cast in f64, a sky's worth per ray.
+                for k in 0..RAYS * RAYS {
+                    let (u, v) = (
+                        (f64::from(k % RAYS) + 0.5) / f64::from(RAYS),
+                        (f64::from(k / RAYS) + 0.5) / f64::from(RAYS),
+                    );
+                    let r = ray(&camera, x + u, y + v);
+                    let d = r.normalize();
+                    let b = d.dot(oc);
+                    let disc = b * b - (oc.length_squared() - radius * radius);
+                    if disc >= 0.0 && b > 0.0 {
+                        let n = (eye + d * (b - disc.sqrt()) - center) / radius;
+                        exact += n.dot(light).max(0.0) * sky(r) / f64::from(RAYS * RAYS);
+                    }
                 }
             }
             let half = (radius / distance).asin();
@@ -234,7 +248,7 @@ fn points_carry_their_spheres_flux() {
             );
             if pixels_across > 2.0 {
                 assert!(
-                    (flux / exact - 1.0).abs() < 2e-3,
+                    (flux / exact - 1.0).abs() < 1e-3,
                     "{place}: {flux} vs {exact}"
                 );
             } else {

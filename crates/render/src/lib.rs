@@ -1,49 +1,62 @@
 //! The map view's renderer (M1c.md, The view): a scene drawn in linear
-//! HDR into a texture that the app composites under its UI. It knows
+//! HDR, then exposed, bloomed and tonemapped into a texture that the app
+//! composites under its UI, with lines and markers over it. It knows
 //! nothing of orbits or missions.
 //!
-//! The target is `Rgba16Float`, linear, with 1.0 the SDR reference white
-//! (scRGB's convention, which damascene composites in). Depth is reversed
-//! (1 near, 0 at infinity) in a 32-bit float buffer, with no far plane.
+//! Textures are `Rgba16Float`, linear. The scene's is radiance (scene.rs
+//! has its units); the shown one has 1.0 the SDR reference white
+//! (scRGB's convention, which damascene composites in), up to the
+//! output's headroom. Depth is reversed (1 near, 0 at infinity) in a
+//! 32-bit float buffer, with no far plane.
 
 pub mod camera;
 pub mod offscreen;
 pub mod paths;
+mod post;
 pub mod scene;
 pub mod timer;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use camera::Camera;
 pub use paths::{Path, Paths, Pose, Sample};
-pub use scene::{Marker, Scene, Shape, Sphere, Surface};
+pub use scene::{Look, Marker, Scene, Shape, Sphere, Surface};
 pub use timer::{GpuTimer, Timings};
 
-/// The scene's color format.
+/// The scene's and the shown image's color format.
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The scene's depth format.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Where the scene is drawn: color the app composites (and tests read
-/// back), and depth.
+/// Where the scene is drawn: its radiance, the image the app composites
+/// (and tests read back), depth, and bloom's levels.
 pub struct Target {
-    /// Shared, since the app's UI holds it too.
+    /// Tells targets apart, for what the renderer keeps per target.
+    id: u64,
+    /// The shown image. Shared, since the app's UI holds it too.
     pub color: Arc<wgpu::Texture>,
     pub color_view: wgpu::TextureView,
+    /// The scene's radiance, before exposure.
+    pub hdr: wgpu::Texture,
+    pub hdr_view: wgpu::TextureView,
     pub depth_view: wgpu::TextureView,
+    /// Half size, and halving.
+    bloom: Vec<wgpu::TextureView>,
     /// Pixels.
     pub size: (u32, u32),
 }
 
 impl Target {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Target {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let size = wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
             depth_or_array_layers: 1,
         };
-        let texture = |label, format, usage| {
+        let texture = |label, size, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size,
@@ -56,17 +69,36 @@ impl Target {
             })
         };
         use wgpu::TextureUsages as U;
-        let color = Arc::new(texture(
-            "scene color",
-            COLOR_FORMAT,
-            U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC,
-        ));
-        let depth = texture("scene depth", DEPTH_FORMAT, U::RENDER_ATTACHMENT);
+        let shown = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC;
+        let color = Arc::new(texture("shown color", size, COLOR_FORMAT, shown));
+        let hdr = texture("scene radiance", size, COLOR_FORMAT, shown);
+        let depth = texture("scene depth", size, DEPTH_FORMAT, U::RENDER_ATTACHMENT);
+        let (w, h) = (size.width, size.height);
+        let bloom = (1..=post::levels((w, h)))
+            .map(|k| {
+                let level = wgpu::Extent3d {
+                    width: (w >> k).max(1),
+                    height: (h >> k).max(1),
+                    depth_or_array_layers: 1,
+                };
+                texture(
+                    "bloom",
+                    level,
+                    COLOR_FORMAT,
+                    U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
+                )
+                .create_view(&Default::default())
+            })
+            .collect();
         Target {
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
             color_view: color.create_view(&Default::default()),
-            depth_view: depth.create_view(&Default::default()),
             color,
-            size: (size.width, size.height),
+            hdr_view: hdr.create_view(&Default::default()),
+            hdr,
+            depth_view: depth.create_view(&Default::default()),
+            bloom,
+            size: (w, h),
         }
     }
 }
@@ -114,10 +146,11 @@ impl Storage {
     }
 }
 
-/// Draws scenes (scene.wgsl) in two passes: the scene (ray-cast spheres,
-/// then points, additive), and over it, depth-tested against it, the
-/// overlay (paths' lines, then markers). Step 6 puts its exposure and
-/// tonemap between the two.
+/// Draws scenes (scene.wgsl): the scene's pass (ray-cast spheres, then
+/// points, additive) into its radiance; bloom and the tonemap into the
+/// shown image (post.wgsl); and over that, depth-tested against the
+/// scene, the overlay (paths' lines, then markers), which exposure does
+/// not touch.
 pub struct Renderer {
     frame: wgpu::Buffer,
     spheres: Storage,
@@ -140,6 +173,7 @@ pub struct Renderer {
     marker_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     piece_pipeline: wgpu::RenderPipeline,
+    post: post::Post,
 }
 
 impl Renderer {
@@ -260,7 +294,7 @@ impl Renderer {
                 &pipeline_layout,
                 "sphere_vs",
                 "sphere_fs",
-                wgpu::BlendState::REPLACE,
+                over,
                 true,
             ),
             point_pipeline: pipeline(
@@ -274,13 +308,14 @@ impl Renderer {
             marker_pipeline: pipeline("markers", &pipeline_layout, "dot_vs", "dot_fs", over, false),
             line_pipeline: pipeline("lines", &line_layout, "line_vs", "line_fs", over, false),
             piece_pipeline: pipeline("pieces", &line_layout, "piece_vs", "line_fs", over, false),
+            post: post::Post::new(device),
             layout,
             path_layout,
         }
     }
 
     /// Records `scene` into `target`: its passes timed by `timestamps` if
-    /// given, from the first's start to the last's end.
+    /// given, from the scene's start to the overlay's end.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -383,7 +418,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.color_view,
+                    view: &target.hdr_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -417,6 +452,8 @@ impl Renderer {
                 }
             }
         }
+        self.post
+            .record(device, queue, encoder, target, &scene.look);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("overlay"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

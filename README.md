@@ -92,7 +92,9 @@ Earth and the Moon, the Sun and Earth, or the Sun and Mars; `--frame`).
 Right drag orbits, the wheel zooms (down to 10 km above the focus's
 surface), space pauses, `,` and `.` step the time warp from 1 s to 1
 year per second, `[` and `]` jump between burns and events, and the
-scrubber under the map spans the plan. `--focus ID --altitude KM
+scrubber under the map spans the plan. Exposure follows the focus (its
+sunlit side at a fixed level); `-` and `=` shift it a stop at a time. On
+an HDR output, highlights use the display's headroom. `--focus ID --altitude KM
 --azimuth DEG --elevation DEG --date YYYY-MM-DD` set the starting view
 (the direction about the frame's axes), for screenshots too; with a
 plan, a screenshot waits for it to be designed.

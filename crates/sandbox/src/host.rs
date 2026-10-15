@@ -363,7 +363,6 @@ impl Host {
         self.app.stats.frame_ms = Some(dt.as_secs_f32() * 1e3);
         self.app.tick(dt.as_secs_f64());
         let scale = gfx.window.scale_factor() as f32;
-        let scene = self.app.scene(scale);
         self.app.stats.output = gfx.color.output_luminance();
         let diagnostics = HostDiagnostics {
             backend: self.backend,
@@ -379,6 +378,8 @@ impl Host {
             ..Default::default()
         };
         self.log.hdr = diagnostics.hdr_active();
+        self.app.stats.hdr = self.log.hdr;
+        let scene = self.app.scene(scale);
         self.log.output = self.app.stats.output;
         if self.frame_index > 1 {
             self.log.wall.push(dt.as_secs_f32() * 1e3);

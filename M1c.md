@@ -1,6 +1,7 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-14: steps 1–4 done; next, step 5 (panels and labels).
+Status, 2026-10-14: steps 1–4 done; next, step 6 (realism), moved ahead
+of step 5 (panels and labels). See the step 6 plan below.
 
 - Step 4: plans designed in the background and drawn as lines in fixed
   or rotating frames, with markers for ships and events, and playback.
@@ -340,6 +341,8 @@ As realistic as we can afford, in stages, while the map stays readable.
 - Paths: antialiased lines colored by leg, with past and future
   distinguished.
 - Station orbits as reference loops.
+- The bodies' orbits, each about its parent, through the body (added
+  2026-10-14).
 - Burns and flyby periapses as markers carrying their Δv and altitude.
 
 Textures, elevation, star catalogs and shape models come from NASA, USGS,
@@ -445,10 +448,12 @@ Hushfold's procedural sky, polychora's 4D renderers and its vulkano glue.
    - the plan's legs, Δv and failures;
    - labels with declutter;
    - picking.
-6. Realism:
+6. Realism (done before step 5, decided 2026-10-14: a visual pass
+   first):
    - rotation models and textures;
    - the HDR chain;
    - stars and the Milky Way;
+   - the bodies' orbits;
    - atmospheres, clouds and night lights;
    - relief, eclipses, rings and shape models.
 7. Editing: a leg's window or duration, re-planned in place; loading and
@@ -768,3 +773,133 @@ samples in all (the crew rotation's first stay in LEO, 2.6 days, is
    form for long stays' tracks themselves (each sample is 56 bytes in
    `Track`, 48 on the GPU; at two million samples, worth revisiting when
    step 8's plan is written).
+
+### Step 6 plan (2026-10-14)
+
+Moved ahead of step 5 (decided 2026-10-14), with the bodies' orbits
+added. Built assets (textures, the star catalog, the Milky Way) are
+committed under `data/`, as `de440.bin` is, rebuilt by scripts in
+`tools/` (decided 2026-10-14; ~80–100 MB in all). Each source's license
+or terms are recorded beside it when imported.
+
+The renderer as step 4 left it: one HDR pass (ray-cast spheres, then
+points as 2 px squares of light, additive), then an overlay pass
+(lines, markers) over its depth, straight into the texture damascene
+shows. A clear color for the sky, Lambertian spheres of one albedo each,
+no tonemap.
+
+Order of work, each part committed with its tests:
+
+1. **The HDR chain.**
+   - The scene renders into its own HDR texture; a post pass writes the
+     texture damascene shows: exposure, bloom, a tonemap to the output's
+     headroom (from the host; 1.0 on SDR), and on SDR a dither of one
+     8-bit step against banding. The overlay pass then draws over the
+     tonemapped image, against the scene's depth, so exposure does not
+     touch lines and markers.
+   - Bloom: Hushfold's chain (13-tap downsample, tent upsample), with
+     no threshold and a small weight (energy kept, as a lens's glare),
+     and no clamp below f16's range: the Sun's 46,000 survives.
+   - Tonemap: linear up to a knee, then a smooth shoulder that
+     approaches the headroom; per channel, so the Sun goes white.
+   - Exposure follows the focus: its sunlit side at normal incidence
+     maps to a fixed level (key / (albedo × irradiance)), eased over
+     0.6 s on refocus. `-` and `=` shift it by a stop.
+   - Points of light (stars, and bodies under a pixel) are a Gaussian
+     spot carrying the same flux, not a 2 px square, and take the
+     stars' fixed exposure ("Realism": stars get their own), so planets
+     seen from afar look like the bright stars they are. Where a body
+     grows from a point to a disk (1–3 px), the two cross-fade.
+2. **The sky.**
+   - Stars: the Hipparcos catalog (118,000 stars, to V ≈ 9; CDS
+     I/239): direction in ecliptic J2000, proper motion applied on the
+     GPU for the scene's date, flux from V, color from B−V (blackbody
+     temperature, Ballesteros 2012). Parallax from anywhere in the
+     solar system is under 1″, and aberration ~20″: both left out.
+     `tools/sky/` builds `data/sky/stars.bin`.
+   - The Milky Way: NASA SVS's Deep Star Maps 2020 background (Gaia
+     DR2's faint stars and the diffuse light, in celestial coordinates,
+     with Hipparcos and Tycho stars removed, so none is drawn twice),
+     resampled into a texture. Its scale against the stars' fluxes is
+     calibrated from SVS's matching bright-star image, so both share
+     units. Tycho-2's stars fainter than Hipparcos (V 9–11.5) are
+     splatted into it at build time if the gap shows.
+   - The sky is fixed in the ICRF. In a rotating frame the camera turns
+     with the frame, so the stars turn across the view: once a month in
+     the Earth–Moon frame.
+3. **The bodies' orbits** (new, in `sandbox`). Each body's path about
+   its parent (planets and small bodies about the Sun, the Moon about
+   Earth, Phobos and Deimos about Mars) over one period around now, from
+   the ephemeris, drawn as paths with a pose per parent placed at the
+   parent's position now, as KSP does: the line passes through the body
+   in every frame. Windows step by 1/16 of a period, so rebuilds are
+   rare. They are a second set of paths, uploaded apart from the plan's,
+   dim, with past and future showing the direction of motion.
+4. **Rotation models and textures.**
+   - `orbit::rotation`: each body's orientation from IAU WGCCRE 2015
+     (Archinal et al. 2018): pole and prime meridian, with the Moon's
+     and Neptune's periodic terms. Earth's rotation uses UT1 = TT −
+     ΔT, ΔT taken as 69 s (its 2024 value; it cannot be predicted, and
+     each 10 s is 0.04°). Checked against Horizons's sub-observer
+     longitudes and latitudes, fetched as fixtures. `ephem::pole` is
+     made to read it, if the mission tests hold; else reported.
+   - Textures, equirectangular, east longitude, 0° at the center, with
+     mipmaps; the level picked from the pixel's footprint on the
+     sphere (no seam at the date line):
+     - Earth: Blue Marble Next Generation (NASA Earth Observatory);
+     - the Moon: SVS CGI Moon Kit (LROC WAC, LOLA);
+     - Mars: Viking colorized mosaic (USGS), MOLA;
+     - Mercury: MESSENGER MDIS (USGS);
+     - Jupiter: Cassini (PIA07782); Saturn from Cassini if a global
+       map is found, else bands;
+     - Venus, Uranus and Neptune near uniform, as they look in
+       visible light.
+   - Each texture is scaled so its mean matches the body's albedo, so a
+     resolved body and its point agree.
+   - Shading: Lambert for clouded bodies; for the Moon, Mercury and
+     small bodies, the lunar-Lambert law (McEwen), which keeps the full
+     Moon flat to its limb.
+   - Relief: normals from elevation (LOLA, MOLA, ETOPO), lit, not
+     displaced.
+5. **Atmospheres.** Earth, Mars and Venus, by Hillaire's 2020 method:
+   transmittance and multiple-scattering tables computed on the CPU at
+   start (in f64, so tests can check them), and a ray march per pixel
+   through the shell, from the sphere's own quad grown to the
+   atmosphere's top. The surface is seen through it (transmittance and
+   in-scattering), and beyond the limb it blends over the sky. Lit from
+   behind, the shell glows as a ring.
+   - Earth: Rayleigh, Mie, ozone (Hillaire's values); clouds folded into
+     the surface's albedo; night lights (Black Marble 2016) shown with a
+     fixed boost, like the stars, since at the day side's exposure they
+     would not show; a sun glint off the oceans.
+   - Mars: dust (Mie) and CO₂, from published parameters; Venus: a haze
+     over a bright cloud deck.
+6. **Shadows, rings, the Sun, shape models.**
+   - Eclipses: the Sun's visible fraction from each surface point, as
+     the overlap of the Sun's disk with up to four occluding spheres the
+     CPU picks (Earth on the Moon, the Moon on Earth, Phobos on Mars).
+   - Saturn's rings: a radial profile of color and opacity (Cassini,
+     PDS Ring-Moon Systems Node), lit, with the planet's shadow on them
+     and theirs on the planet.
+   - The Sun: limb darkening that keeps its total flux; bloom does the
+     glare.
+   - Shape models for Phobos, Deimos, Bennu and Ryugu (PDS; Ryugu's
+     terms checked), drawn as meshes once over a few pixels.
+7. **Tests**, beside each part:
+   - The tonemap: monotonic, linear below its knee, under the headroom;
+     SDR has no flat run of more than an 8-bit step in a smooth ramp.
+   - Exposure leaves lines' and markers' colors alone.
+   - Stars: Sirius, Betelgeuse and Polaris land within a pixel of their
+     positions projected in f64; a star's spot sums to its flux.
+   - Orbits: each body's line passes within a pixel of the body in
+     every frame.
+   - Rotation: sub-observer points against Horizons, per body.
+   - Textures: a known feature (Tycho crater, Olympus Mons, the Strait
+     of Gibraltar) lands within a pixel of its projected position.
+   - Atmospheres: the tables against analytic optical depths; the limb
+     brighter than the disk's center; a ring from the night side.
+   - Eclipses: the Moon's shadow on Earth at 2045-08-12's total eclipse
+     falls where the Besselian elements put it.
+   - GPU time at 1920×1080 for each part, for gate item 3.
+8. **Not here:** Earth's clouds moving, cities growing, Jupiter's
+   features drifting (the textures are fixed in time); shadows on ships.

@@ -28,6 +28,11 @@ fn look(id: &str) -> (f64, [f64; 3]) {
     }
 }
 
+/// The Bond albedo of the body `id`.
+pub fn bond_albedo(id: &str) -> f64 {
+    look(id).0
+}
+
 /// The albedo per channel: the Bond albedo, tinted.
 fn albedo(id: &str) -> [f32; 3] {
     let (bond, tint) = look(id);
@@ -43,6 +48,12 @@ pub fn drawn(eph: &Ephemeris) -> Vec<BodyId> {
     ids
 }
 
+/// The Sun's radiance: a white Lambertian surface under the Sun at 1 au
+/// has radiance E/π; the Sun's disk E/Ω, Ω = π (R☉ / 1 au)².
+pub fn sun_radiance(eph: &Ephemeris) -> f64 {
+    (AU_KM / eph.body(eph.sun()).radius).powi(2)
+}
+
 /// `b` as a sphere at `t`, if the ephemeris covers it then.
 pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
     if !eph.covers(b, t) {
@@ -50,9 +61,7 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
     }
     let radius = eph.body(b).radius;
     let surface = if b == eph.sun() {
-        // A white Lambertian surface under the Sun at 1 au has radiance
-        // E/π; the Sun's disk E/Ω, Ω = π (R☉ / 1 au)².
-        Surface::Emissive([(AU_KM / radius).powi(2) as f32; 3])
+        Surface::Emissive([sun_radiance(eph) as f32; 3])
     } else {
         Surface::Lit(albedo(&eph.body(b).id))
     };

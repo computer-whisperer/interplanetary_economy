@@ -1,5 +1,6 @@
-// The scene (M1c.md, step 3 plan): spheres ray-cast per pixel, and dots
-// of a fixed size in pixels (points for bodies under a pixel, markers);
+// The scene (M1c.md, step 3 plan): spheres ray-cast per pixel, their
+// edges antialiased, and dots of a fixed size in pixels (spots of light
+// for bodies under a pixel; markers);
 // and over it, paths' lines (step 4 plan, item 1). Spheres and dots
 // arrive in view space, already relative to the eye in 64 bits on the
 // CPU: x right, y up, looking down -z. Paths arrive in their frames'
@@ -54,11 +55,11 @@ struct Sphere {
 
 struct Dot {
     center: vec3<f32>,
-    // Pixels across.
+    // Pixels across; a spot's σ.
     size: f32,
     color: vec3<f32>,
-    // `Shape` in scene.rs: 0 a hard square of light; otherwise a shape
-    // with a dark rim, antialiased.
+    // `Shape` in scene.rs: 0 a spot of light (a Gaussian whose pixels sum
+    // to `color`); otherwise a shape with a dark rim, antialiased.
     shape: u32,
 }
 
@@ -143,6 +144,8 @@ struct SphereFragment {
     @builtin(frag_depth) depth: f32,
 }
 
+// Premultiplied: the sphere over what is behind it, by how much of the
+// pixel it covers.
 @fragment
 fn sphere_fs(in: SphereOut) -> SphereFragment {
     let s = spheres[in.index];
@@ -151,19 +154,28 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     // |c|² - r², from the altitude: exact where it is small.
     let q = s.altitude * (2.0 * s.radius + s.altitude);
     let disc = b * b - q;
-    if (disc < 0.0 || b <= 0.0) {
+    // How far the ray passes outside the limb, km (negative inside): the
+    // ray's distance from the center is √(r² - disc). In pixels, by its
+    // change across them.
+    let outside = -disc / (sqrt(max(s.radius * s.radius - disc, 0.0)) + s.radius);
+    let per_pixel = length(vec2<f32>(dpdx(outside), dpdy(outside)));
+    let coverage = clamp(0.5 - outside / max(per_pixel, 1e-30), 0.0, 1.0);
+    if (coverage <= 0.0 || b <= 0.0) {
         discard;
     }
-    // The near hit, without b - √disc's cancellation.
-    let t = q / (b + sqrt(disc));
-    let p = d * t;
-    var out: SphereFragment;
-    if (s.emissive > 0.5) {
-        out.color = vec4<f32>(s.color, 1.0);
-    } else {
-        let n = normalize(p - s.center);
-        out.color = vec4<f32>(s.color * s.irradiance * max(dot(n, s.light), 0.0), 1.0);
+    // The near hit, without b - √disc's cancellation; just outside, the
+    // limb's nearest point.
+    var p = d * b;
+    if (disc >= 0.0) {
+        p = d * (q / (b + sqrt(disc)));
     }
+    var color = s.color;
+    if (s.emissive < 0.5) {
+        let n = normalize(p - s.center);
+        color = s.color * s.irradiance * max(dot(n, s.light), 0.0);
+    }
+    var out: SphereFragment;
+    out.color = vec4<f32>(color * coverage, coverage);
     out.depth = frame.near / max(-p.z, frame.near);
     return out;
 }
@@ -185,7 +197,8 @@ fn dot_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u3
     let p = dots[index];
     let k = corner_index(vertex);
     let uv = vec2<f32>(f32(k & 1u) * 2.0 - 1.0, f32(k >> 1u) * 2.0 - 1.0);
-    let half = p.size * 0.5 + select(DOT_MARGIN, 0.0, p.shape == 0u);
+    // A spot reaches 3.5 σ past the pixel its center is in.
+    let half = select(p.size * 0.5 + DOT_MARGIN, 3.5 * p.size + 0.5, p.shape == 0u);
     var clip = clip_of(p.center);
     // A fixed size in pixels: an offset in NDC, scaled by w.
     clip = vec4<f32>(clip.xy + uv * 2.0 * half / frame.viewport * clip.w, clip.zw);
@@ -222,11 +235,26 @@ fn shape_distance(shape: u32, q: vec2<f32>, r: f32) -> f32 {
     }
 }
 
-// Premultiplied: points of light are drawn additively, shapes over.
+// The error function (Abramowitz and Stegun 7.1.26: within 1.5e-7).
+fn erf(x: f32) -> f32 {
+    let t = 1.0 / (1.0 + 0.3275911 * abs(x));
+    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    return sign(x) * (1.0 - poly * exp(-x * x));
+}
+
+// The share of a Gaussian of `sigma` (pixels) falling on the pixel whose
+// center is `u` pixels from its center, along one axis.
+fn spot_share(u: f32, sigma: f32) -> f32 {
+    let k = 1.0 / (sigma * 1.41421356);
+    return 0.5 * (erf((u + 0.5) * k) - erf((u - 0.5) * k));
+}
+
+// Premultiplied: spots of light are drawn additively, shapes over.
 @fragment
 fn dot_fs(in: DotOut) -> @location(0) vec4<f32> {
     if (in.shape == 0u) {
-        return vec4<f32>(in.color, 1.0);
+        let share = spot_share(in.offset.x, in.size) * spot_share(in.offset.y, in.size);
+        return vec4<f32>(in.color * share, 1.0);
     }
     let d = shape_distance(in.shape, in.offset, in.size * 0.5);
     let coverage = clamp(0.5 - d, 0.0, 1.0);
