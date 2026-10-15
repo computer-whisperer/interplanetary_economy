@@ -9,6 +9,7 @@
 //! again only when now moves a step.
 
 use crate::paths::LOOP_POSE;
+use crate::settings::Lines;
 use glam::DMat3;
 use orbit::ephem::{BodyId, BodyKind, Ephemeris};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -65,7 +66,19 @@ pub struct Orbits {
     /// The parents, in the order of their poses after [`LOOP_POSE`].
     parents: Vec<BodyId>,
     focus: Option<BodyId>,
+    /// The classes of lines shown when the paths were built.
+    lines: Option<Lines>,
     paths: Arc<Paths>,
+}
+
+/// Whether `lines` shows the orbits of bodies of `kind`.
+fn shown(lines: &Lines, kind: &BodyKind) -> bool {
+    match kind {
+        BodyKind::Planet => lines.planets,
+        BodyKind::Moon => lines.moons,
+        BodyKind::SmallBody { .. } => lines.small_bodies,
+        BodyKind::Star => false,
+    }
 }
 
 /// The body `b`'s parent, whose orbit about it is drawn: the planet its
@@ -122,15 +135,18 @@ impl Orbits {
             orbits,
             parents,
             focus: None,
+            lines: None,
             paths: Arc::default(),
         }
     }
 
-    /// Samples again the orbits whose windows moved at `t`, and colors the
-    /// focus's; `true` if the paths changed.
-    pub fn update(&mut self, eph: &Ephemeris, t: Epoch, focus: BodyId) -> bool {
-        let mut changed = self.focus != Some(focus);
+    /// Samples again the orbits whose windows moved at `t`, colors the
+    /// focus's, and leaves out the classes `lines` hides; `true` if the
+    /// paths changed.
+    pub fn update(&mut self, eph: &Ephemeris, t: Epoch, focus: BodyId, lines: Lines) -> bool {
+        let mut changed = self.focus != Some(focus) || self.lines != Some(lines);
         self.focus = Some(focus);
+        self.lines = Some(lines);
         let now = t.seconds();
         for orbit in &mut self.orbits {
             let step = orbit.period / STEPS as f64;
@@ -165,7 +181,7 @@ impl Orbits {
                 paths: self
                     .orbits
                     .iter()
-                    .filter(|o| o.samples.len() > 1)
+                    .filter(|o| o.samples.len() > 1 && shown(&lines, &eph.body(o.body).kind))
                     .map(|o| {
                         let small = matches!(eph.body(o.body).kind, BodyKind::SmallBody { .. });
                         let mut color = if small {
@@ -235,7 +251,7 @@ mod tests {
         let bodies = crate::bodies::drawn(eph);
         let t = Epoch::from_ymd(2045, 3, 1).plus_days(0.37);
         let mut orbits = Orbits::new(eph, &bodies, t);
-        assert!(orbits.update(eph, t, eph.lookup("earth").unwrap()));
+        assert!(orbits.update(eph, t, eph.lookup("earth").unwrap(), Lines::default()));
         let poses: Vec<Pose> = orbits.poses(eph, t).collect();
         let paths = orbits.paths();
         let (mut checked, mut worst) = (0, 0f64);
@@ -262,7 +278,45 @@ mod tests {
         assert!(worst < 0.2, "{worst} px");
         assert!(checked >= 12, "{checked}");
         // Unmoved, nothing is sampled again.
-        assert!(!orbits.update(eph, t, eph.lookup("earth").unwrap()));
+        assert!(!orbits.update(eph, t, eph.lookup("earth").unwrap(), Lines::default()));
+    }
+
+    /// Each class of orbit is left out alone when hidden, and comes back
+    /// when shown.
+    #[test]
+    fn hidden_classes_are_left_out() {
+        let eph = Ephemeris::standard();
+        let bodies = crate::bodies::drawn(eph);
+        let t = Epoch::from_ymd(2045, 3, 1);
+        let earth = eph.lookup("earth").unwrap();
+        let mut orbits = Orbits::new(eph, &bodies, t);
+        let count = |orbits: &Orbits, kind: fn(&BodyKind) -> bool| {
+            orbits
+                .orbits
+                .iter()
+                .filter(|o| o.samples.len() > 1 && kind(&eph.body(o.body).kind))
+                .count()
+        };
+        let all = Lines::default();
+        orbits.update(eph, t, earth, all);
+        let total = orbits.paths().paths.len();
+        // Each class's switch, and the kinds of bodies it holds.
+        type Class = (fn(&mut Lines) -> &mut bool, fn(&BodyKind) -> bool);
+        let classes: [Class; 3] = [
+            (|l| &mut l.planets, |k| matches!(k, BodyKind::Planet)),
+            (|l| &mut l.moons, |k| matches!(k, BodyKind::Moon)),
+            (|l| &mut l.small_bodies, |k| matches!(k, BodyKind::SmallBody { .. })),
+        ];
+        for (field, kind) in classes {
+            let n = count(&orbits, kind);
+            assert!(n > 0);
+            let mut lines = all;
+            *field(&mut lines) = false;
+            assert!(orbits.update(eph, t, earth, lines));
+            assert_eq!(orbits.paths().paths.len(), total - n);
+            assert!(orbits.update(eph, t, earth, all));
+            assert_eq!(orbits.paths().paths.len(), total);
+        }
     }
 
     #[test]

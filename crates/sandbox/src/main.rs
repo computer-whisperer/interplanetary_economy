@@ -114,6 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         background_lift: cli.background_lift.clamp(0, sandbox::look::MAX_LIFT),
         body_lift: cli.body_lift.clamp(0, sandbox::look::MAX_LIFT),
         night_lights: cli.night_lights.clamp(0, sandbox::look::MAX_NIGHT_LIGHTS),
+        ..app.settings
     };
     // The view's direction is about this frame's axes.
     app.frame = frame;

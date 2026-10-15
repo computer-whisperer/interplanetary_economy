@@ -1,7 +1,8 @@
 //! The settings menu, through damascene as the window delivers input, in
 //! the window's first size: the gear opens it, its sliders set the
-//! departures from realism by whole stops, and a click outside it or
-//! Escape closes it. Each lift reaches what it names alone.
+//! departures from realism by whole stops, its switches the lines drawn,
+//! and a click outside it or Escape closes it. Each lift reaches what it
+//! names alone; each class of lines hidden is left out alone.
 
 use damascene_core::prelude::*;
 use damascene_wgpu::Runner;
@@ -11,8 +12,15 @@ use render::offscreen::Offscreen;
 use sandbox::app::Shell;
 use sandbox::camera::MapCamera;
 use sandbox::frame::{self, Output, View};
+use orbit::ephem::Ephemeris;
+use orbit::mission::Plan;
+use orbit::places::Places;
+use sandbox::frames::Frame;
+use sandbox::labels::Target;
 use sandbox::look::{MAX_LIFT, MAX_NIGHT_LIGHTS};
-use sandbox::settings::{self, CONTROLS, Settings};
+use sandbox::paths::{ORBIT_SET, PLAN_SET};
+use sandbox::plan::Loaded;
+use sandbox::settings::{self, CONTROLS, Lines, Settings, TOGGLES};
 
 #[test]
 fn the_menu_sets_the_lifts() {
@@ -104,6 +112,19 @@ fn the_menu_sets_the_lifts() {
             deliver(&mut app, &ui, events);
             assert_eq!(*(c.field)(&mut app.settings), c.max / 2 + 1, "{}", c.name);
         }
+        // Each switch, off and on again, alone.
+        for t in &TOGGLES {
+            let switch = ui.rect_of_key(t.key).expect("the switch is laid out");
+            assert!(switch.y + switch.h < h, "{}'s switch is in the window", t.name);
+            for on in [false, true] {
+                let mut others = app.settings.lines;
+                *(t.field)(&mut others) = on;
+                click(&mut app, &mut ui, center(switch));
+                assert_eq!(app.settings.lines, others, "scale {scale}, {}", t.name);
+                assert!(app.settings_open, "the switch leaves the menu open");
+                draw(&mut app, &mut ui);
+            }
+        }
 
         // Outside it, on the map: closed, and the map takes no click.
         let focus = app.camera.focus;
@@ -153,6 +174,7 @@ fn each_lift_reaches_what_it_names() {
         background_lift: 0,
         body_lift: 0,
         night_lights: 0,
+        ..Settings::default()
     };
     let mut shown = |t: Epoch, focus, camera: Option<render::Camera>, settings: Settings| {
         let mut app = Shell::new(t);
@@ -268,4 +290,86 @@ fn each_lift_reaches_what_it_names() {
     println!("night lights: {ten:.4e} a unit at 10 stops, {twenty:.4e} at 20");
     assert!(ten > 0.0, "lights show on the night side");
     assert!((twenty / ten - 1.0).abs() < 0.01, "{ten} vs {twenty}");
+}
+
+/// From the NRHO to low lunar orbit: designed in a fraction of a second.
+const QUICK: &str = r#"
+name = "Quick"
+
+[[ship]]
+name = "Lander"
+start = { at = "nrho", epoch = "2045-03-05" }
+
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+"#;
+
+/// Each class of lines hidden is left out alone, and shown again comes
+/// back: the ships' paths with their events' markers and labels (the
+/// ships' own markers stay), the station orbits with their labels, and
+/// the bodies' orbits (`orbits`' own test checks each class). Near the
+/// Moon, in the Earth–Moon frame, where the lander's events are; and
+/// focused on Earth, where the station orbits are labeled.
+#[test]
+fn hidden_lines_are_left_out() {
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(QUICK, eph, Places::standard()).unwrap());
+    plan.wait();
+    assert!(plan.done());
+    let mut app = Shell::new(Epoch::from_ymd(2045, 3, 5));
+    app.plan = Some(plan);
+    app.frame = Frame::offered(eph)[1].2;
+    let moon = eph.lookup("moon").unwrap();
+    app.camera = MapCamera::new(eph, moon);
+    app.camera.set_altitude(eph, 40_000.0);
+    // The plan's paths, the bodies' orbits, the markers, and the events'
+    // and station orbits' labels.
+    let seen = |app: &mut Shell| {
+        app.update_paths();
+        let scene = app.scene(1.0);
+        app.place_labels(&scene, Some((1000, 700)), 1.0);
+        let labeled = |f: fn(&Target) -> bool| app.anchors().iter().filter(|a| f(&a.target)).count();
+        [
+            scene.paths[PLAN_SET].paths.len(),
+            scene.paths[ORBIT_SET].paths.len(),
+            scene.markers.len(),
+            labeled(|t| matches!(t, Target::Marker { .. })),
+            labeled(|t| matches!(t, Target::Loop(_))),
+        ]
+    };
+    let lines = |f: fn(&mut Lines)| {
+        let mut l = Lines::default();
+        f(&mut l);
+        l
+    };
+    let all = seen(&mut app);
+    let ships = app.plan.as_ref().unwrap().ships.len();
+    println!("near the Moon, all shown: {all:?}");
+    assert!(all[..4].iter().all(|&n| n > 0), "{all:?}");
+
+    app.settings.lines = lines(|l| l.ships = false);
+    let no_ships = seen(&mut app);
+    app.settings.lines = lines(|l| l.stations = false);
+    let no_stations = seen(&mut app);
+    app.settings.lines = lines(|l| (l.planets, l.moons, l.small_bodies) = (false, false, false));
+    let no_orbits = seen(&mut app);
+    println!("no ships' paths {no_ships:?}, no station orbits {no_stations:?}, no bodies' orbits {no_orbits:?}");
+    // The plan's set holds the station loops, then the ships' paths.
+    let loops = no_ships[0];
+    assert!(loops > 0 && loops < all[0]);
+    assert_eq!(no_ships, [loops, all[1], ships, 0, all[4]]);
+    assert_eq!(no_stations, [all[0] - loops, all[1], all[2], all[3], 0]);
+    assert_eq!(no_orbits, [all[0], 0, all[2], all[3], all[4]]);
+    app.settings.lines = Lines::default();
+    assert_eq!(seen(&mut app), all);
+
+    // Focused on Earth by default, on a day its view shows them.
+    let mut app = Shell::new(Epoch::from_ymd(2045, 3, 1));
+    let all = seen(&mut app);
+    app.settings.lines = lines(|l| l.stations = false);
+    let no_stations = seen(&mut app);
+    println!("focused on Earth: all {all:?}, no station orbits {no_stations:?}");
+    assert!(all[4] > 0, "the station orbits are labeled");
+    assert_eq!(no_stations[4], 0);
 }

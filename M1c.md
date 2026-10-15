@@ -531,6 +531,9 @@ night lights, below.
 - The bodies' orbits, each about its parent, through the body (added
   2026-10-14).
 - Burns and flyby periapses as markers carrying their Δv and altitude.
+- Each class of line shown or hidden in the settings: the ships' paths
+  with their events, the station orbits, and the planets', moons' and
+  small bodies' orbits (added 2026-10-15).
 
 Textures, elevation, star catalogs and shape models come from NASA, USGS,
 ESA and PDS. Each source's license is checked when it is imported and

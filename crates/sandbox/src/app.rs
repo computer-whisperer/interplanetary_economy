@@ -95,6 +95,9 @@ struct BuiltFor {
     /// The focus, where the frame is centered on it.
     focus: Option<BodyId>,
     generation: u64,
+    /// Whether the ships' paths and the station orbits are shown.
+    ships: bool,
+    stations: bool,
 }
 
 pub struct Shell {
@@ -206,21 +209,29 @@ impl Shell {
         self.update_paths();
     }
 
-    /// Builds the paths and events, if the frame, its center or the plan
-    /// changed since they were, and the bodies' orbits whose windows moved.
+    /// Builds the paths and events, if the frame, its center, the plan or
+    /// the classes of lines shown changed since they were, and the bodies'
+    /// orbits whose windows moved.
     pub fn update_paths(&mut self) {
+        let lines = self.settings.lines;
         self.orbits
-            .update(self.eph, self.clock.t, self.camera.focus);
+            .update(self.eph, self.clock.t, self.camera.focus, lines);
         let key = BuiltFor {
             frame: self.frame,
             focus: (self.frame == Frame::Focus).then_some(self.camera.focus),
             generation: self.plan.as_ref().map_or(0, |p| p.generation),
+            ships: lines.ships,
+            stations: lines.stations,
         };
         if self.built == Some(key) {
             return;
         }
-        let ships = self.plan.as_ref().map_or(&[][..], |p| &p.ships);
-        let built = paths::build(self.eph, &self.frame, self.camera.focus, &self.loops, ships);
+        let ships = match &self.plan {
+            Some(p) if lines.ships => &p.ships[..],
+            _ => &[],
+        };
+        let loops = if lines.stations { &self.loops[..] } else { &[] };
+        let built = paths::build(self.eph, &self.frame, self.camera.focus, loops, ships);
         self.owners = built
             .owners
             .iter()
@@ -363,7 +374,8 @@ impl Shell {
             }
         }
         let loop_pose = scene.poses[paths::LOOP_POSE];
-        for (i, (name, path)) in self.loop_names.iter().zip(&self.loops).enumerate() {
+        let loops = if self.settings.lines.stations { &self.loops[..] } else { &[] };
+        for (i, (name, path)) in self.loop_names.iter().zip(loops).enumerate() {
             if let Some(first) = path.samples.first() {
                 let p = loop_pose.to_world(first.position);
                 anchors.extend(labels::station(&view, &balls, i, name, p));

@@ -1,6 +1,6 @@
 //! The settings menu: a popover under the top bar's gear, with the
 //! departures from realism (M1c.md, Realism), each in stops, 0 being
-//! true to life.
+//! true to life; and the classes of lines drawn.
 
 use crate::look;
 use damascene_core::prelude::*;
@@ -11,7 +11,8 @@ pub const KEY: &str = "settings";
 /// The sliders' width, logical pixels.
 const SLIDER_PX: f32 = 240.0;
 
-/// What the settings menu sets: stops over the truth.
+/// What the settings menu sets: stops over the truth, and the lines
+/// drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// The sky's (the stars' and the Milky Way's) over the scene's
@@ -21,6 +22,7 @@ pub struct Settings {
     pub body_lift: i32,
     /// Earth's night lights', over their radiance.
     pub night_lights: i32,
+    pub lines: Lines,
 }
 
 impl Default for Settings {
@@ -29,9 +31,72 @@ impl Default for Settings {
             background_lift: look::BACKGROUND_LIFT,
             body_lift: look::BODY_LIFT,
             night_lights: look::NIGHT_LIGHTS,
+            lines: Lines::default(),
         }
     }
 }
+
+/// The classes of lines, each drawn or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lines {
+    /// The plan's ships' paths, with their burns' and events' markers.
+    pub ships: bool,
+    /// The station orbits' reference loops, with their labels.
+    pub stations: bool,
+    /// The bodies' orbits: planets', moons' and small bodies'.
+    pub planets: bool,
+    pub moons: bool,
+    pub small_bodies: bool,
+}
+
+impl Default for Lines {
+    /// All drawn.
+    fn default() -> Lines {
+        Lines {
+            ships: true,
+            stations: true,
+            planets: true,
+            moons: true,
+            small_bodies: true,
+        }
+    }
+}
+
+/// A class of lines' switch: its key, its name, and its field.
+pub struct Toggle {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub field: fn(&mut Lines) -> &mut bool,
+}
+
+/// The menu's classes of lines, in its order.
+pub const TOGGLES: [Toggle; 5] = [
+    Toggle {
+        key: "settings:lines:ships",
+        name: "Ships' paths and events",
+        field: |l| &mut l.ships,
+    },
+    Toggle {
+        key: "settings:lines:stations",
+        name: "Station orbits",
+        field: |l| &mut l.stations,
+    },
+    Toggle {
+        key: "settings:lines:planets",
+        name: "Planets' orbits",
+        field: |l| &mut l.planets,
+    },
+    Toggle {
+        key: "settings:lines:moons",
+        name: "Moons' orbits",
+        field: |l| &mut l.moons,
+    },
+    Toggle {
+        key: "settings:lines:small-bodies",
+        name: "Small bodies' orbits",
+        field: |l| &mut l.small_bodies,
+    },
+];
 
 /// A setting's slider: its key, its name, what it lifts, its most, and
 /// its field.
@@ -85,7 +150,8 @@ impl Settings {
     }
 
     /// Takes `event` if it is one of the menu's sliders' (dragged, clicked
-    /// or stepped by the arrow keys), by whole stops; whether it was.
+    /// or stepped by the arrow keys), by whole stops, or switches';
+    /// whether it was.
     pub fn apply(&mut self, event: &UiEvent) -> bool {
         for c in &CONTROLS {
             let max = c.max as f32;
@@ -96,7 +162,9 @@ impl Settings {
                 return true;
             }
         }
-        false
+        TOGGLES
+            .iter()
+            .any(|t| switch::apply_event((t.field)(&mut self.lines), event, t.key))
     }
 }
 
@@ -130,6 +198,16 @@ pub fn menu(settings: &Settings) -> El {
         );
     }
     rows.push(text("Each at 0 is true to life.").muted().caption());
+    rows.push(separator());
+    rows.push(text("Lines").bold());
+    for t in &TOGGLES {
+        let on = *(t.field)(&mut settings.lines);
+        rows.push(
+            row([text(t.name), spacer(), switch(t.key, on)])
+                .align(Align::Center)
+                .width(Size::Fixed(SLIDER_PX)),
+        );
+    }
     popover(
         KEY,
         Anchor::below_key(KEY),
