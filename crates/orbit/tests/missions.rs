@@ -79,6 +79,36 @@ fn assert_continuous(eph: &Ephemeris, items: &[Item], km: f64) {
     }
 }
 
+/// A plan written out reads back as the same plan, and writes out the
+/// same again.
+fn assert_round_trip(p: &Plan) {
+    let text = p.to_toml();
+    let back = Plan::parse(&text, Ephemeris::standard(), Places::standard())
+        .unwrap_or_else(|e| panic!("{e}\n{text}"));
+    assert_eq!(back.to_toml(), text);
+    assert_eq!(back.name, p.name);
+    assert_eq!(back.ships.len(), p.ships.len());
+    for (a, b) in p.ships.iter().zip(&back.ships) {
+        assert_eq!(
+            (&a.name, &a.start.label, a.epoch),
+            (&b.name, &b.start.label, b.epoch)
+        );
+        assert_eq!(a.steps.len(), b.steps.len());
+        for (x, y) in a.steps.iter().zip(&b.steps) {
+            match (x, y) {
+                (Step::Wait(x), Step::Wait(y)) => assert_eq!(x, y),
+                (Step::Go(x), Step::Go(y)) => {
+                    assert_eq!(
+                        (&x.to.label, &x.days, x.window, x.depart, x.aero, &x.note),
+                        (&y.to.label, &y.days, y.window, y.depart, y.aero, &y.note)
+                    );
+                }
+                _ => panic!("{x:?} read back as {y:?}"),
+            }
+        }
+    }
+}
+
 #[test]
 fn every_plan_parses() {
     let dir = format!("{}/../../data/missions", env!("CARGO_MANIFEST_DIR"));
@@ -89,6 +119,7 @@ fn every_plan_parses() {
         let p = Plan::parse(&src, Ephemeris::standard(), Places::standard())
             .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert!(!p.ships.is_empty());
+        assert_round_trip(&p);
         n += 1;
     }
     assert!(n >= 2);
@@ -370,4 +401,61 @@ fn an_edit_goes_on_from_the_middle() {
     // start.
     assert!(resume_from(&checkpoints, 0).is_none());
     assert_eq!(resume_from(&checkpoints, 1).map(Checkpoint::next), Some(1));
+}
+
+/// A departure pinned with `depart` flies at that date, as the published
+/// leg pinned by a window of one day does; pinned before the ship is
+/// ready, or within a system, it is refused.
+#[test]
+fn a_pinned_departure_flies_then() {
+    let world = World::standard();
+    let published = plan("published.toml");
+    let windowed = fly(&world, &published, "Mars 2031, Type I");
+    let src = r#"
+name = "Pinned"
+
+[[ship]]
+name = "Mars 2031, Type I"
+start = { at = "leo", epoch = "2031-01-28" }
+
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+depart = "2031-01-28"
+days = [190]
+"#;
+    let pinned = Plan::parse(src, world.eph, Places::standard()).unwrap();
+    assert_round_trip(&pinned);
+    let items = fly(&world, &pinned, "Mars 2031, Type I");
+    let (a, b) = (
+        windowed.iter().find(|i| i.kind == ItemKind::Leg).unwrap(),
+        items.iter().find(|i| i.kind == ItemKind::Leg).unwrap(),
+    );
+    assert_eq!(b.start, Epoch::from_ymd(2031, 1, 28));
+    assert!((a.dv - b.dv).abs() < 1e-9 && (a.end.0 - b.end.0).abs() < 1e-9);
+
+    for (leg, why) in [
+        (
+            "to = { low = \"mars\", altitude = 400 }\ndepart = \"2031-01-27\"",
+            "before the ship is ready",
+        ),
+        (
+            "to = \"nrho\"\ndays = [5]\ndepart = \"2031-01-29\"",
+            "between planets",
+        ),
+    ] {
+        let src = format!(
+            "name = \"x\"\n[[ship]]\nname = \"s\"\nstart = {{ at = \"leo\", epoch = \"2031-01-28\" }}\n\
+             [[ship.leg]]\n{leg}\n"
+        );
+        let p = Plan::parse(&src, world.eph, Places::standard()).unwrap();
+        match &fly(&world, &p, "s")[..] {
+            [
+                Item {
+                    kind: ItemKind::Failed(e),
+                    ..
+                },
+            ] => assert!(e.contains(why), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

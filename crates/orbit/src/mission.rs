@@ -20,7 +20,7 @@ use crate::time::{Epoch, SECONDS_PER_DAY};
 use crate::track::Track;
 use glam::DVec3;
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -68,6 +68,9 @@ const UPKEEP_REVOLUTIONS: f64 = 4.0;
 pub struct Plan {
     pub name: String,
     pub ships: Vec<Ship>,
+    /// The comments its file opens with, kept when it is written out
+    /// (the rest of its comments are not).
+    pub header: String,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +87,8 @@ pub struct Spot {
     /// Its id, or a description of a place written out.
     pub label: String,
     pub kind: PlaceKind,
+    /// As the plan wrote it: an id, or a table.
+    pub source: toml::Value,
 }
 
 #[derive(Clone, Debug)]
@@ -103,44 +108,55 @@ pub struct Go {
     /// When the ship may leave; by default from when it is ready, for as
     /// long as [`Planner`] says.
     pub window: Option<(Epoch, Epoch)>,
+    /// When it leaves, pinned: a leg between planets (at the cheapest of
+    /// `days` that day) or an event. What choosing an option writes.
+    pub depart: Option<Epoch>,
     /// Arriving through the atmosphere: aerocapture into a low orbit,
     /// entry to the surface.
     pub aero: bool,
     pub note: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PlanFile {
     name: String,
+    #[serde(default)]
     ship: Vec<ShipFile>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ShipFile {
     name: String,
     start: StartFile,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     leg: Vec<LegFile>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StartFile {
     at: toml::Value,
     epoch: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LegFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<toml::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     wait: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     days: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     window: Option<[String; 2]>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    depart: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     aero: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
 }
 
@@ -164,7 +180,11 @@ impl Plan {
                         let fail = |e: String| format!("ship {name:?}, leg {}: {e}", i + 1);
                         match (leg.to, leg.wait) {
                             (None, Some(days)) => {
-                                if leg.days.is_some() || leg.window.is_some() || leg.aero {
+                                if leg.days.is_some()
+                                    || leg.window.is_some()
+                                    || leg.depart.is_some()
+                                    || leg.aero
+                                {
                                     return Err(fail("a wait takes no other keys".into()));
                                 }
                                 if days < 0.0 {
@@ -193,6 +213,12 @@ impl Plan {
                                     })
                                     .transpose()
                                     .map_err(fail)?,
+                                depart: leg
+                                    .depart
+                                    .as_deref()
+                                    .map(date)
+                                    .transpose()
+                                    .map_err(fail)?,
                                 aero: leg.aero,
                                 note: leg.note,
                             })),
@@ -208,10 +234,59 @@ impl Plan {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let header: String = src
+            .lines()
+            .take_while(|l| l.trim_start().starts_with('#'))
+            .map(|l| format!("{l}\n"))
+            .collect();
         Ok(Plan {
             name: file.name,
             ships,
+            header,
         })
+    }
+
+    /// The plan as a file, which [`Plan::parse`] reads back as this plan
+    /// (times to the minute).
+    pub fn to_toml(&self) -> String {
+        let file = PlanFile {
+            name: self.name.clone(),
+            ship: self
+                .ships
+                .iter()
+                .map(|ship| ShipFile {
+                    name: ship.name.clone(),
+                    start: StartFile {
+                        at: ship.start.source.clone(),
+                        epoch: ship.epoch.stamp(),
+                    },
+                    leg: ship
+                        .steps
+                        .iter()
+                        .map(|step| match step {
+                            Step::Wait(days) => LegFile {
+                                wait: Some(*days),
+                                ..LegFile::default()
+                            },
+                            Step::Go(go) => LegFile {
+                                to: Some(go.to.source.clone()),
+                                days: (!go.days.is_empty()).then(|| go.days.clone()),
+                                window: go.window.map(|(a, b)| [a.stamp(), b.stamp()]),
+                                depart: go.depart.map(Epoch::stamp),
+                                aero: go.aero,
+                                note: go.note.clone(),
+                                ..LegFile::default()
+                            },
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+        let body = toml::to_string(&file).expect("a plan serializes");
+        match self.header.is_empty() {
+            true => body,
+            false => format!("{}\n{body}", self.header),
+        }
     }
 }
 
@@ -235,6 +310,7 @@ fn spot(v: &toml::Value, eph: &Ephemeris, places: &Places) -> Result<Spot, Strin
             .map(|p| Spot {
                 label: id.clone(),
                 kind: p.kind.clone(),
+                source: v.clone(),
             })
             .ok_or_else(|| format!("no place {id:?}")),
         toml::Value::Table(t) => {
@@ -242,6 +318,7 @@ fn spot(v: &toml::Value, eph: &Ephemeris, places: &Places) -> Result<Spot, Strin
             Ok(Spot {
                 label: describe(eph, &kind),
                 kind,
+                source: v.clone(),
             })
         }
         _ => Err("a place is an id or a table".into()),
@@ -581,8 +658,19 @@ impl<'w> Planner<'w> {
         None
     }
 
-    /// The departure window for `go`, given its default length in days.
+    /// The departure window for `go`, given its default length in days: an
+    /// instant where its departure is pinned.
     fn window(&self, go: &Go, default_days: f64) -> Result<(Epoch, Epoch), String> {
+        if let Some(depart) = go.depart {
+            if depart.0 < self.ready.0 {
+                return Err(format!(
+                    "the leg is pinned to leave {}, before the ship is ready ({})",
+                    when(depart),
+                    when(self.ready)
+                ));
+            }
+            return Ok((depart, depart));
+        }
         match go.window {
             Some((open, close)) => {
                 if close.0 < self.ready.0 {
@@ -723,6 +811,12 @@ impl<'w> Planner<'w> {
             _ if Some(system) == eph.lookup("earth") => EARTH_WINDOW_DAYS,
             _ => OTHER_WINDOW_DAYS,
         };
+        if go.depart.is_some() {
+            return Err(
+                "a pinned departure (`depart`) is for legs between planets and events; within a system, set a `window`"
+                    .into(),
+            );
+        }
         let (open, close) = self.window(go, default_days)?;
         if close.0 <= open.0 {
             return Err("a leg within a system needs a window longer than an instant".into());
@@ -873,9 +967,11 @@ impl<'w> Planner<'w> {
             if tried.len() == TRIES || flown.is_some() {
                 break;
             }
-            if tried
-                .iter()
-                .any(|c| (c.depart.0 - depart.0).abs() < TRIES_APART_DAYS)
+            // Designs tried leave days apart; at a pinned date, any.
+            if go.depart.is_none()
+                && tried
+                    .iter()
+                    .any(|c| (c.depart.0 - depart.0).abs() < TRIES_APART_DAYS)
             {
                 continue;
             }

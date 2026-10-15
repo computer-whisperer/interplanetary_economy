@@ -21,6 +21,7 @@ use crate::timeline::{self, Timeline};
 use damascene_core::prelude::*;
 use damascene_core::scroll::{ScrollAlignment, ScrollRequest};
 use damascene_core::surface::AppTexture;
+use damascene_core::toast::ToastSpec;
 use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
@@ -36,6 +37,10 @@ pub const VIEWPORT_KEY: &str = "viewport";
 /// The selects' keys.
 const FOCUS_KEY: &str = "focus";
 const FRAME_KEY: &str = "frame";
+const PLAN_KEY: &str = "plan-file";
+
+/// The plan menu's option for a new plan.
+const NEW_PLAN: &str = "new";
 
 /// The longest step of wall time a frame advances, s.
 const MAX_STEP_S: f64 = 0.25;
@@ -126,6 +131,8 @@ pub struct Shell {
     event_times: Vec<Epoch>,
     focus_open: bool,
     frame_open: bool,
+    plan_open: bool,
+    toasts: Vec<ToastSpec>,
     pub settings_open: bool,
     /// The item selected, by its ship and place: in the panel, its
     /// markers' labels first.
@@ -170,6 +177,8 @@ impl Shell {
             event_times: Vec::new(),
             focus_open: false,
             frame_open: false,
+            plan_open: false,
+            toasts: Vec::new(),
             settings_open: false,
             selected: None,
             panel_open: true,
@@ -177,6 +186,35 @@ impl Shell {
             sizes: HashMap::new(),
             scrolls: Vec::new(),
         }
+    }
+
+    fn close_menus(&mut self) {
+        self.focus_open = false;
+        self.frame_open = false;
+        self.plan_open = false;
+        self.settings_open = false;
+    }
+
+    /// Shows `plan` from its first ship's start, the timeline fitted to
+    /// it.
+    pub fn load(&mut self, plan: Loaded) {
+        self.clock.seek(plan.start);
+        self.plan = Some(plan);
+        self.selected = None;
+        self.built = None;
+        self.timeline.fitted = true;
+        self.poll();
+    }
+
+    /// Saves the plan to its file, saying so.
+    fn save(&mut self) {
+        let Some(plan) = &self.plan else {
+            return;
+        };
+        self.toasts.push(match plan.save() {
+            Ok(path) => ToastSpec::success(format!("Saved {}", path.display())),
+            Err(why) => ToastSpec::error(format!("Not saved: {why}")),
+        });
     }
 
     /// Holds the clock within the span the focus is known over (a small
@@ -542,6 +580,19 @@ impl Shell {
         s
     }
 
+    /// The plan's file's name, or the plan's.
+    fn plan_name(&self) -> String {
+        match &self.plan {
+            Some(p) => p
+                .path
+                .as_deref()
+                .and_then(|p| p.file_stem()?.to_str())
+                .unwrap_or(&p.name)
+                .to_string(),
+            None => "None".to_string(),
+        }
+    }
+
     fn frame_name(&self) -> &'static str {
         Frame::offered(self.eph)
             .into_iter()
@@ -594,8 +645,10 @@ impl App for Shell {
                 select_trigger(FOCUS_KEY, focus_name).width(Size::Fixed(180.0)),
                 text("Frame").muted().caption(),
                 select_trigger(FRAME_KEY, self.frame_name()).width(Size::Fixed(270.0)),
+                text("Plan").muted().caption(),
+                select_trigger(PLAN_KEY, self.plan_name()).width(Size::Fixed(200.0)),
                 // The keys' hints give way where the bar is short of room.
-                text("space pause · , . warp · [ ] events · - = exposure · p plan")
+                text("space pause · , . warp · [ ] events · - = exposure · p plan · ctrl+s save")
                     .muted()
                     .caption()
                     .ellipsis()
@@ -654,6 +707,14 @@ impl App for Shell {
                 .collect();
             layers.push(select_menu(FRAME_KEY, options));
         }
+        if self.plan_open {
+            let mut options: Vec<(String, String)> = crate::plan::plans_in(&missions_dir())
+                .into_iter()
+                .map(|(name, _)| (name.clone(), name))
+                .collect();
+            options.push((NEW_PLAN.to_string(), "New plan".to_string()));
+            layers.push(select_menu(PLAN_KEY, options));
+        }
         if self.settings_open {
             layers.push(settings::menu(&self.settings));
         }
@@ -678,6 +739,8 @@ impl App for Shell {
             self.exposure.bias = (self.exposure.bias - 1).max(-MAX_BIAS);
         } else if event.is_hotkey("panel") {
             self.panel_open = !self.panel_open;
+        } else if event.is_hotkey("save") {
+            self.save();
         } else if event.kind == UiEventKind::Click
             && event.route() == Some(VIEWPORT_KEY)
             && let (Some(rect), Some((x, y))) = (event.target_rect(), event.pointer)
@@ -697,27 +760,42 @@ impl App for Shell {
         } else if self.settings.apply(&event) {
             // One of the menu's sliders moved.
         } else if event.is_click_or_activate(FOCUS_KEY) {
-            self.focus_open = !self.focus_open;
-            self.frame_open = false;
-            self.settings_open = false;
+            let open = !self.focus_open;
+            self.close_menus();
+            self.focus_open = open;
         } else if event.is_click_or_activate(FRAME_KEY) {
-            self.frame_open = !self.frame_open;
-            self.focus_open = false;
-            self.settings_open = false;
+            let open = !self.frame_open;
+            self.close_menus();
+            self.frame_open = open;
+        } else if event.is_click_or_activate(PLAN_KEY) {
+            let open = !self.plan_open;
+            self.close_menus();
+            self.plan_open = open;
         } else if event.is_click_or_activate(settings::KEY) {
-            self.settings_open = !self.settings_open;
-            self.focus_open = false;
-            self.frame_open = false;
+            let open = !self.settings_open;
+            self.close_menus();
+            self.settings_open = open;
         } else if event.is_click_or_activate(&format!("{FOCUS_KEY}:dismiss")) {
             self.focus_open = false;
         } else if event.is_click_or_activate(&format!("{FRAME_KEY}:dismiss")) {
             self.frame_open = false;
+        } else if event.is_click_or_activate(&format!("{PLAN_KEY}:dismiss")) {
+            self.plan_open = false;
         } else if event.is_click_or_activate(&format!("{}:dismiss", settings::KEY)) {
             self.settings_open = false;
         } else if event.kind == UiEventKind::Escape {
-            self.focus_open = false;
-            self.frame_open = false;
-            self.settings_open = false;
+            self.close_menus();
+        } else if clicked && let Some(id) = event.route_suffix(&format!("{PLAN_KEY}:option")) {
+            let dir = missions_dir();
+            let loaded = match id {
+                NEW_PLAN => Ok(Loaded::empty("New plan", crate::plan::new_plan_path(&dir))),
+                id => Loaded::open(&dir.join(format!("{id}.toml"))),
+            };
+            match loaded {
+                Ok(plan) => self.load(plan),
+                Err(why) => self.toasts.push(ToastSpec::error(why)),
+            }
+            self.plan_open = false;
         } else if clicked
             && let Some(id) = event.route_suffix(&format!("{FOCUS_KEY}:option"))
             && let Some(b) = self.eph.lookup(id)
@@ -759,6 +837,10 @@ impl App for Shell {
         }
     }
 
+    fn drain_toasts(&mut self) -> Vec<ToastSpec> {
+        std::mem::take(&mut self.toasts)
+    }
+
     fn hotkeys(&self) -> Vec<(KeyChord, String)> {
         vec![
             (
@@ -772,6 +854,7 @@ impl App for Shell {
             (KeyChord::vim('='), "brighter".into()),
             (KeyChord::vim('-'), "darker".into()),
             (KeyChord::vim('p'), "panel".into()),
+            (KeyChord::ctrl('s'), "save".into()),
         ]
     }
 
@@ -782,4 +865,9 @@ impl App for Shell {
     fn theme(&self) -> Theme {
         Theme::damascene_dark()
     }
+}
+
+/// Where plans are opened from and new ones saved: `data/missions/`.
+fn missions_dir() -> std::path::PathBuf {
+    crate::data_dir().join("missions")
 }

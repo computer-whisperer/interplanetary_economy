@@ -6,6 +6,23 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, part 3: plans written out. As planned (step 7 plan, item 3):
+  - `Plan::to_toml` writes ships' starts as tables (`[ship.start]`),
+    times as `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` (`Epoch::stamp`, to
+    the minute), places as they were written. A file's opening
+    comments are kept; its other comments are lost when the sandbox
+    saves over it (notes on legs are kept).
+  - `depart` pins legs between planets and events; within a system it
+    is refused (set a window), as is a pin before the ship is ready. A
+    pinned leg tries the cheapest durations at its date.
+  - The top bar's Plan menu lists `data/missions/` and "New plan"
+    (empty, saved as `new-plan.toml`, or `new-plan-2.toml`, … if
+    taken); Ctrl+S saves to the plan's file, with a toast.
+  - Checks: every plan in `data/missions/` written out reads back as
+    itself and writes out the same; the published Mars 2031 leg pinned
+    by `depart` flies as when pinned by a one-day window; the menu
+    opens a plan; a plan saved reads back.
+
 - Step 7, part 2: re-planning from the middle. As planned (step 7
   plan, item 2):
   - Each item names its step (`Item::step`). A planner's checkpoint
@@ -848,6 +865,9 @@ lines); Hushfold's distance-field text and polychora's label declutter
    - `days` is required within a system. Between planets it is
      optional; without it the leg takes the cheapest date and duration
      by patched conics in the window.
+   - `depart = "2045-03-01T12:00"` (added in step 7) pins the departure
+     of a leg between planets, or of a landing or an ascent: the window
+     is that instant, and a leg takes the cheapest of `days` then.
 3. **One entry point** (`mission::Planner`) by the kinds of the two
    ends:
    - a low orbit and its body's surface: an event priced by `surface`

@@ -122,7 +122,9 @@ cargo run --release -p sandbox -- --screenshot shot.png      # one frame offscre
 
 `--plan` designs a plan's ships in the background and draws each item as
 it is ready, colored by leg, the past dimmer; the clock starts at the
-first ship's start. The top bar picks the body the camera follows and
+first ship's start. The top bar's Plan menu opens the plans in
+`data/missions/` or starts a new one, and Ctrl+S saves the plan to its
+file. The top bar picks the body the camera follows and
 the frame paths are drawn in (centered on the focus, or rotating with
 Earth and the Moon, the Sun and Earth, or the Sun and Mars; `--frame`).
 Right drag orbits, the wheel zooms (down to a tenth of the focus's

@@ -13,7 +13,7 @@ use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::track::Track;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, LazyLock};
@@ -56,8 +56,9 @@ static WORLD: LazyLock<World> = LazyLock::new(World::standard);
 /// A plan being designed.
 pub struct Loaded {
     pub name: String,
-    /// The plan as edited.
+    /// The plan as edited, and the file it is saved to.
     pub plan: Plan,
+    pub path: Option<PathBuf>,
     pub ships: Vec<Ship>,
     designs: Vec<Design>,
     /// The first ship's start.
@@ -89,7 +90,28 @@ impl Loaded {
         let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let plan = Plan::parse(&src, Ephemeris::standard(), Places::standard())
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Loaded::start(plan))
+        let mut loaded = Loaded::start(plan);
+        loaded.path = Some(path.to_path_buf());
+        Ok(loaded)
+    }
+
+    /// An empty plan named `name`, to be saved at `path`.
+    pub fn empty(name: &str, path: PathBuf) -> Loaded {
+        let mut loaded = Loaded::start(Plan {
+            name: name.to_string(),
+            ships: Vec::new(),
+            header: String::new(),
+        });
+        loaded.path = Some(path);
+        loaded
+    }
+
+    /// Writes the plan to its file: where, or why not.
+    pub fn save(&self) -> Result<PathBuf, String> {
+        let path = self.path.clone().ok_or("the plan has no file")?;
+        std::fs::write(&path, self.plan.to_toml())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path)
     }
 
     pub fn start(plan: Plan) -> Loaded {
@@ -130,6 +152,7 @@ impl Loaded {
         let loaded = Loaded {
             name: plan.name.clone(),
             plan,
+            path: None,
             ships,
             designs,
             start,
@@ -359,4 +382,30 @@ pub fn on_track(eph: &Ephemeris, track: &Track, t: Epoch) -> Option<DVec3> {
         .center
         .map_or(DVec3::ZERO, |c| eph.barycentric_position(c, t));
     Some(center + DVec3::new(s[0], s[1], s[2]))
+}
+
+/// The plans in `dir`, by their files' names (without `.toml`), sorted.
+pub fn plans_in(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut plans: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+        .filter_map(|p| Some((p.file_stem()?.to_str()?.to_string(), p)))
+        .collect();
+    plans.sort();
+    plans
+}
+
+/// A file in `dir` for a new plan: `new-plan.toml`, else the first of
+/// `new-plan-2.toml`, … not taken.
+pub fn new_plan_path(dir: &Path) -> PathBuf {
+    (1..)
+        .map(|k| match k {
+            1 => dir.join("new-plan.toml"),
+            k => dir.join(format!("new-plan-{k}.toml")),
+        })
+        .find(|p| !p.exists())
+        .expect("a free name")
 }

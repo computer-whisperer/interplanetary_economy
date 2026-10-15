@@ -61,6 +61,19 @@ impl Epoch {
     pub fn plus_days(self, days: f64) -> Self {
         Epoch(self.0 + days)
     }
+
+    /// `YYYY-MM-DD` at midnight, else `YYYY-MM-DDTHH:MM`, to the nearest
+    /// minute: what [`FromStr`] reads.
+    pub fn stamp(self) -> String {
+        let minutes = (self.0 * 1_440.0).round() / 1_440.0;
+        let (y, m, d) = Epoch(minutes).ymd();
+        let of_day = ((d.fract() * 1_440.0).round() as u32).min(1_439);
+        let date = format!("{y:04}-{m:02}-{:02}", d.floor() as u32);
+        match of_day {
+            0 => date,
+            _ => format!("{date}T{:02}:{:02}", of_day / 60, of_day % 60),
+        }
+    }
 }
 
 impl fmt::Display for Epoch {
@@ -114,6 +127,23 @@ impl FromStr for Epoch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stamps read back as the moment they stamp, to the minute.
+    #[test]
+    fn stamps_read_back() {
+        for s in [
+            "2045-03-01",
+            "2045-03-01T12:30",
+            "2031-12-31T23:59",
+            "2040-02-29T00:01",
+        ] {
+            let t: Epoch = s.parse().unwrap();
+            assert_eq!(t.stamp(), s);
+            assert_eq!(t.stamp().parse::<Epoch>().unwrap(), t);
+        }
+        let t = Epoch::from_ymd(2045, 3, 1).plus_days(0.999_999);
+        assert_eq!(t.stamp(), "2045-03-02");
+    }
 
     #[test]
     fn j2000_and_known_dates() {
