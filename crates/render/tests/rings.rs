@@ -36,6 +36,7 @@ fn ringed() -> Arc<Maps> {
             &vec![TAU as f32; n as usize],
             &vec![[ALBEDO as f32; 3]; n as usize],
         )),
+        shape: None,
     })
 }
 

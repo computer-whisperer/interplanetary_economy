@@ -1413,6 +1413,50 @@ Order of work, each part committed with its tests:
      from the side: shadowed where a CPU ray says; the eye inside the
      bounding sphere; the cube map's lookup on the GPU against the
      CPU's. GPU time with one filling 1920×1080 (a measurement).
+   - As built (2026-10-15), where it differs:
+     - The faces are a six-layer `Rg16Float` array, not a cube texture,
+       each bordered by a sixteenth of its side sampled past its edges:
+       a cube texture's seamless filtering takes the next face's texels,
+       whose centers drift along a shared edge by up to half a texel, so
+       the radius was off at first order there (1.6e-3 of an ellipsoid's
+       at 128² a face) and its slope did not shrink with the texels.
+       Bordered, second order to the edges (2.8e-4, 7.0e-5 at 256²). The
+       radius is two half floats (a high one and the rest × 1/1024: f16
+       alone would step Phobos's by ~3 m), the normal taken in the
+       shader by differences, a texel of the level apart.
+     - Edges: a miss covers by its least height over the surface (along
+       the normal, not radially); a hit near the edge by c² / 2κ, from
+       the view's cosine to its normal and the surface's curvature toward
+       the eye, measured from the normals a step either side (a sphere's
+       of the local radius was 4× off on the ellipsoid's flanks); wholly
+       where the ray, out of the body, meets it again. An edge pixel is
+       shaded at its covered strip's middle: at the limb, a backlit
+       crescent thinner than a pixel showed 16 times its light.
+     - The shadow march's least step is a 24th of the bounding radius,
+       as well as a pixel's footprint: by the footprint alone, a ray
+       skimming the surface went ~100 pixels, and across a body 500
+       pixels wide, shadows from farther were lost.
+     - Every sphere's quad (not only a shape's) grew by two pixels: its
+       old 2% margin is 0.06 pixels on a 3-pixel disk, cutting off the
+       edge's coverage (a disk off the axis at 2.5 pixels showed 1.7%
+       under its flux; now 0.5%).
+     - Checks: the ellipsoid (off its origin, so no plane through the
+       origin mirrors it) from five directions at phase 13° to 157°,
+       150–300 px across: pixels within its edges within 1% + 0.006 of
+       exact (0.006: the map's own normals at 128² a face are 0.12–0.39°
+       off where it curves most), sums 0.03–0.51% off (the thinnest
+       crescent, 0.02 of light in all, shows none: under a
+       hundred-thousandth of its pixels at full light); two lobes under a 10° Sun, ~120 and ~500
+       px across: 152 and 4,538 pixels deep in cast shadow dark, lit
+       ones within 2%; the eye 0.6 km over the ellipsoid, inside its
+       bounding sphere, within 1%; inside it, nothing drawn; markers a
+       hair in front of the surface shown, a hair behind hidden.
+       Reintroducing each fault found here (the far-part check, the
+       strip's middle, the shadow's step), removing self-shadowing,
+       mirroring a face, or skipping the eye inside the bounds fails a
+       test. On lavapipe as on the GPU.
+     - Cost: the ellipsoid filling 1920×1080, 1.1 ms (2.5 ms with the GPU
+       clocked down); its self-shadowing 0.15 ms of that.
 2. **Shapes' photometry** (`sandbox::photometry`, `render`).
    - The disk: averaged over orientations, a convex body's brightness is
      a sphere's of the same area (each facet counts alone, whatever its

@@ -17,6 +17,7 @@ pub mod offscreen;
 pub mod paths;
 mod post;
 pub mod scene;
+pub mod shape;
 mod sky;
 pub mod timer;
 
@@ -153,10 +154,11 @@ impl Storage {
 }
 
 /// Draws scenes (scene.wgsl): the scene's pass (the sky, then ray-cast
-/// spheres, each with its maps, then points, additive) into its radiance; bloom and the
-/// tonemap into the shown image (post.wgsl); and over that, depth-tested
-/// against the scene, the overlay (each set of paths' lines, then
-/// markers), which exposure does not touch.
+/// spheres, each with its maps, shaped ones marched, then points,
+/// additive) into its radiance; bloom and the tonemap into the shown image
+/// (post.wgsl); and over that, depth-tested against the scene, the overlay
+/// (each set of paths' lines, then markers), which exposure does not
+/// touch.
 pub struct Renderer {
     frame: wgpu::Buffer,
     spheres: Storage,
@@ -169,6 +171,7 @@ pub struct Renderer {
     /// Over the point and marker buffers respectively (spheres in both).
     groups: Option<[wgpu::BindGroup; 2]>,
     sphere_pipeline: wgpu::RenderPipeline,
+    shape_pipeline: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
     marker_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
@@ -296,6 +299,14 @@ impl Renderer {
                 &sphere_layout,
                 "sphere_vs",
                 "sphere_fs",
+                over,
+                true,
+            ),
+            shape_pipeline: pipeline(
+                "shapes",
+                &sphere_layout,
+                "sphere_vs",
+                "shape_fs",
                 over,
                 true,
             ),
@@ -429,9 +440,14 @@ impl Renderer {
                     self.sky.draw(&mut pass, with_points);
                 }
                 pass.set_bind_group(0, with_points, &[]);
-                // Each sphere with its maps.
-                pass.set_pipeline(&self.sphere_pipeline);
+                // Each sphere with its maps; a shaped one marched.
                 for (k, maps) in inst.maps.iter().enumerate() {
+                    let shaped = maps.as_ref().is_some_and(|m| m.shape.is_some());
+                    pass.set_pipeline(if shaped {
+                        &self.shape_pipeline
+                    } else {
+                        &self.sphere_pipeline
+                    });
                     pass.set_bind_group(3, self.maps.group(maps.as_ref()), &[]);
                     pass.draw(0..6, k as u32..k as u32 + 1);
                 }

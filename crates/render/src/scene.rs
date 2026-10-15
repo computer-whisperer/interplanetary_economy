@@ -129,6 +129,8 @@ impl Default for Look {
 pub struct Sphere {
     /// km.
     pub center: DVec3,
+    /// km. A shaped body's (its maps' `shape`) is its volume's: its
+    /// point's size and fade, and what it hides of the Sun from others.
     pub radius: f64,
     pub surface: Surface,
     /// The body's frame, as columns in the scene's: x through its prime
@@ -265,6 +267,9 @@ pub struct SphereGpu {
     pub shadows: ShadowsGpu,
     /// The rings' inner and outer radii, km (0 for none).
     pub rings: [f32; 4],
+    /// A shaped body's least and greatest radius, km, its slope bound, and
+    /// its volume-equivalent radius (`Shape`; zeros for a sphere).
+    pub shape: [f32; 4],
 }
 
 /// What may hide the Sun from a sphere (`Shadows` in scene.wgsl): the Sun
@@ -465,11 +470,19 @@ impl Scene {
             // What the sphere reaches: its atmosphere's top, if any.
             let air = s.maps.as_ref().and_then(|m| m.air.as_ref());
             let rings = s.maps.as_ref().and_then(|m| m.rings.as_ref());
+            let shape = s.maps.as_ref().and_then(|m| m.shape.as_ref());
+            // A shaped body's sphere, for the GPU: the one bounding it.
+            let bound = shape.map_or(s.radius, |sh| sh.greatest);
             let outer = air
-                .map_or(s.radius, |a| a.atmosphere.top)
+                .map_or(bound, |a| a.atmosphere.top)
                 .max(rings.map_or(0.0, |r| r.outer));
-            // Inside it, or wholly behind the eye or off the screen.
-            if altitude <= 0.0 || !frustum.sees(v, outer) {
+            // Inside it (a shaped body itself, not its bounding sphere), or
+            // wholly behind the eye or off the screen.
+            let inside = match shape {
+                Some(sh) => d <= sh.radius(s.axes.transpose() * (cam.eye - s.center)),
+                None => altitude <= 0.0,
+            };
+            if inside || !frustum.sees(v, outer) {
                 continue;
             }
             let half_angle = (s.radius / d).asin();
@@ -542,11 +555,12 @@ impl Scene {
                 spot(gain * fade * lift.powf(fade));
             }
             // The quad: across the cone of rays that hit the sphere (or its
-            // atmosphere), in the plane through its center facing the eye;
-            // the whole screen when that is too wide, reaches behind the
-            // eye, or the eye is in the atmosphere.
+            // atmosphere), in the plane through its center facing the eye,
+            // with two pixels to spare for the edge's coverage; the whole
+            // screen when that is too wide, reaches behind the eye, or the
+            // eye is in the atmosphere (or a shape's bounding sphere).
             let outer_angle = (outer / d).min(1.0).asin();
-            let reach = d * outer_angle.tan() * 1.02;
+            let reach = d * outer_angle.tan() * 1.02 + 2.0 * d * pixel;
             let e1 = (v / d).any_orthonormal_vector();
             let e2 = (v / d).cross(e1);
             let corners: Vec<DVec3> = [-1.0, 1.0]
@@ -575,8 +589,8 @@ impl Scene {
             };
             out.spheres.push(SphereGpu {
                 center: f32x3(v),
-                radius: s.radius as f32,
-                altitude: altitude as f32,
+                radius: bound as f32,
+                altitude: (d - bound) as f32,
                 emissive,
                 irradiance,
                 fullscreen: if billboard.is_some() { 0.0 } else { 1.0 },
@@ -610,6 +624,9 @@ impl Scene {
                 atmosphere: air.map_or_else(AtmosphereGpu::default, |a| a.atmosphere.gpu()),
                 shadows: self.shadows(s, &cam),
                 rings: rings.map_or([0.0; 4], |r| [r.inner as f32, r.outer as f32, 0.0, 0.0]),
+                shape: shape.map_or([0.0; 4], |sh| {
+                    [sh.least, sh.greatest, sh.slope, s.radius].map(|x| x as f32)
+                }),
             });
             out.maps.push(s.maps.clone());
         }

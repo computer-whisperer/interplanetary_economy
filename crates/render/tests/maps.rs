@@ -39,6 +39,7 @@ fn maps(color: Image, relief: Option<Image>) -> Arc<Maps> {
         shading: Shading::Lambert,
         air: None,
         rings: None,
+        shape: None,
     })
 }
 

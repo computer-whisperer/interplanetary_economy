@@ -248,6 +248,9 @@ pub struct Maps {
     pub air: Option<crate::atmosphere::Air>,
     /// Its rings, in its equator's plane.
     pub rings: Option<Rings>,
+    /// Its shape, where it is not a sphere: drawn by `shape_fs`, its maps
+    /// on it by its points' directions from its center.
+    pub shape: Option<crate::shape::Shape>,
 }
 
 /// Rings in a body's equatorial plane: from `inner` to `outer` km, their
@@ -321,11 +324,12 @@ pub(crate) struct MapsPass {
 
 /// The textures a sphere's bind group holds, in binding order: the maps,
 /// then (after their sampler, which wraps east to west) the atmosphere's
-/// three tables, and theirs (which clamps); then the rings' profile (read
-/// with the tables').
+/// three tables, and theirs (which clamps); then the rings' profile and
+/// the shape's faces (read with the tables').
 const TEXTURES: usize = 5;
 const TABLES: usize = 3;
 const RINGS_BINDING: u32 = (TEXTURES + 2 + TABLES) as u32;
+const SHAPE_BINDING: u32 = RINGS_BINDING + 1;
 
 impl MapsPass {
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> MapsPass {
@@ -351,6 +355,16 @@ impl MapsPass {
         entries.extend((0..TABLES as u32).map(|k| texture(TEXTURES as u32 + 1 + k)));
         entries.push(sampler_entry((TEXTURES + 1 + TABLES) as u32));
         entries.push(texture(RINGS_BINDING));
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: SHAPE_BINDING,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("maps"),
             entries: &entries,
@@ -380,13 +394,14 @@ impl MapsPass {
         let flat = one(wgpu::TextureFormat::Rg16Float, &[0; 4]);
         let none = one(wgpu::TextureFormat::R8Unorm, &[0]);
         let no_table = one(wgpu::TextureFormat::Rgba16Float, &[0; 8]);
+        let no_shape = faces(device, queue, &[(1, vec![0; 24])]);
         let plain = group(
             device,
             &layout,
             [&sampler, &table_sampler],
             [&white, &flat, &none, &none, &none],
             [&no_table, &no_table, &no_table],
-            &no_table,
+            [&no_table, &no_shape],
         );
         MapsPass {
             layout,
@@ -443,13 +458,20 @@ impl MapsPass {
                 Some(r) => post.upload_with_mips(device, queue, encoder, &r.profile),
                 None => plain(wgpu::TextureFormat::Rgba16Float, &[0; 8]),
             };
+            let shape = faces(
+                device,
+                queue,
+                &m.shape
+                    .as_ref()
+                    .map_or_else(|| vec![(1, vec![0; 24])], |s| s.levels()),
+            );
             let g = group(
                 device,
                 &self.layout,
                 [&self.sampler, &self.table_sampler],
                 std::array::from_fn(|k| &views[k]),
                 std::array::from_fn(|k| &tables[k]),
-                &rings,
+                [&rings, &shape],
             );
             self.uploaded.insert(key, (m.clone(), g));
         }
@@ -492,13 +514,62 @@ fn single(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::Te
     texture.create_view(&Default::default())
 }
 
+/// A shape's faces (`Shape::levels`: each level's side and its six
+/// layers' `Rg16Float` texels), as a six-layer array with those levels.
+fn faces(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    levels: &[(u32, Vec<u8>)],
+) -> wgpu::TextureView {
+    let side = levels[0].0;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("shape"),
+        size: wgpu::Extent3d {
+            width: side,
+            height: side,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rg16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, (side, data)) in levels.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * side),
+                rows_per_image: Some(*side),
+            },
+            wgpu::Extent3d {
+                width: *side,
+                height: *side,
+                depth_or_array_layers: 6,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
+}
+
 fn group<'a>(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     [sampler, table_sampler]: [&'a wgpu::Sampler; 2],
     views: [&'a wgpu::TextureView; TEXTURES],
     tables: [&'a wgpu::TextureView; TABLES],
-    rings: &'a wgpu::TextureView,
+    [rings, shape]: [&'a wgpu::TextureView; 2],
 ) -> wgpu::BindGroup {
     fn view(binding: usize, v: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
         wgpu::BindGroupEntry {
@@ -523,6 +594,7 @@ fn group<'a>(
         resource: wgpu::BindingResource::Sampler(table_sampler),
     });
     entries.push(view(RINGS_BINDING as usize, rings));
+    entries.push(view(SHAPE_BINDING as usize, shape));
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("maps"),
         layout,
@@ -687,6 +759,7 @@ mod tests {
             shading: Shading::Lambert,
             air: None,
             rings: None,
+            shape: None,
         });
         let mut frame = |held: &[Option<Arc<Maps>>]| {
             let mut encoder = gpu.device.create_command_encoder(&Default::default());

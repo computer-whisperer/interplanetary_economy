@@ -146,6 +146,7 @@ fn body(dir: &Path, id: &str, entry: &Entry, radius: f64) -> Result<BodyMaps, St
             shading,
             air: None,
             rings: None,
+            shape: None,
         }),
         albedo: [entry.albedo; 3],
     })
@@ -168,6 +169,7 @@ fn plain(body: &Body) -> BodyMaps {
             shading: Shading::Lambert,
             air: None,
             rings: None,
+            shape: None,
         }),
         albedo: crate::bodies::albedo(body),
     }

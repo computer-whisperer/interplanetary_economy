@@ -39,6 +39,7 @@ fn earth_air() -> Arc<Maps> {
         shading: Shading::Lambert,
         air: Some(air),
         rings: None,
+        shape: None,
     })
 }
 

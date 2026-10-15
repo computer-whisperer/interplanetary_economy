@@ -188,6 +188,7 @@ fn white(shading: Shading) -> Arc<Maps> {
         shading,
         air: None,
         rings: None,
+        shape: None,
     })
 }
 

@@ -74,6 +74,10 @@ struct Sphere {
     shadows: Shadows,
     // Its rings' inner and outer radii, km (0 for none).
     rings: vec4<f32>,
+    // A shaped body's least and greatest radius, km (its bounding sphere is
+    // the greatest: `radius` and `altitude` are that's), the bound on its
+    // field's slope, and its volume-equivalent radius (scene.rs).
+    shape: vec4<f32>,
 }
 
 // The Sun and the spheres that may hide part of it from a sphere's
@@ -220,6 +224,10 @@ struct Piece {
 // The rings' profile across them, inner edge to outer: their particles'
 // albedo (rgb) and normal optical depth (a).
 @group(3) @binding(10) var ring_map: texture_2d<f32>;
+// A shaped body's faces (shape.rs): six layers of its radius between its
+// least and greatest, a high half float and the rest over `SHAPE_LOW`,
+// each face bordered by `SHAPE_BORDER` of its side past its edges.
+@group(3) @binding(11) var shape_faces: texture_2d_array<f32>;
 @group(1) @binding(0) var<storage, read> vertices: array<PathVertex>;
 @group(1) @binding(1) var<storage, read> paths: array<PathInfo>;
 // Per instance, a run of segments: its first vertex, and its segments
@@ -314,8 +322,7 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     // Where that is on the maps, and how fast that changes across the
     // screen (before any pixel is discarded), the longitude's change
     // taken across the date line the short way.
-    let local = transpose(s.axes) * up;
-    let uv = vec2<f32>(0.5 + atan2(local.y, local.x) / (2.0 * PI), 0.5 - asin(clamp(local.z, -1.0, 1.0)) / PI);
+    let uv = map_uv(transpose(s.axes) * up);
     var ddx = dpdx(uv);
     var ddy = dpdy(uv);
     ddx.x -= round(ddx.x);
@@ -410,6 +417,285 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
         out.color = vec4<f32>(base.rgb + (1.0 - base.a) * ring.rgb, base.a + (1.0 - base.a) * (1.0 - ring.a));
     }
     out.color = written(s, out.color);
+    return out;
+}
+
+// Where direction `local` (unit, the body's frame) is on its maps:
+// equirectangular, east longitude from −180° at the left, north up.
+fn map_uv(local: vec3<f32>) -> vec2<f32> {
+    return vec2<f32>(0.5 + atan2(local.y, local.x) / (2.0 * PI), 0.5 - asin(clamp(local.z, -1.0, 1.0)) / PI);
+}
+
+// Shaped bodies (M1c.md, step 6, part 9 plan, item 1). `shape.rs`'s
+// faces: a sixteenth of a side's border; the low half's scale.
+const SHAPE_BORDER: f32 = 0.0625;
+const SHAPE_LOW: f32 = 1024.0;
+
+// Steps of a ray's march to a shape, and of the march from its surface
+// toward the Sun.
+const SHAPE_STEPS: u32 = 160u;
+const SHADOW_STEPS: u32 = 96u;
+
+// The radius of shaped body `s` toward `l` (any length, the body's
+// frame), km, at its faces' `level`.
+fn shape_radius(s: Sphere, l: vec3<f32>, level: f32) -> f32 {
+    let a = abs(l);
+    var face = 0;
+    var uv: vec2<f32>;
+    if (a.x >= a.y && a.x >= a.z) {
+        face = select(1, 0, l.x > 0.0);
+        uv = vec2<f32>(select(l.z, -l.z, l.x > 0.0), -l.y) / a.x;
+    } else if (a.y >= a.z) {
+        face = select(3, 2, l.y > 0.0);
+        uv = vec2<f32>(l.x, select(-l.z, l.z, l.y > 0.0)) / a.y;
+    } else {
+        face = select(5, 4, l.z > 0.0);
+        uv = vec2<f32>(select(-l.x, l.x, l.z > 0.0), -l.y) / a.z;
+    }
+    let t = ((uv + 1.0) * 0.5 + SHAPE_BORDER) / (1.0 + 2.0 * SHAPE_BORDER);
+    let k = textureSampleLevel(shape_faces, table_sampler, t, face, level).rg;
+    return s.shape.x + (s.shape.y - s.shape.x) * (k.x + k.y / SHAPE_LOW);
+}
+
+// How far the point `p` (from the center, view space) is above shaped
+// body `s`'s surface, radially, km (negative inside).
+fn shape_above(s: Sphere, p: vec3<f32>, level: f32) -> f32 {
+    return length(p) - shape_radius(s, transpose(s.axes) * p, level);
+}
+
+// The surface point toward `l` (unit, the body's frame), from the center.
+fn shape_point(s: Sphere, l: vec3<f32>, level: f32) -> vec3<f32> {
+    return normalize(l) * shape_radius(s, l, level);
+}
+
+// The surface's outward normal toward `up` (unit, the body's frame), by
+// differences `h` radians apart.
+fn shape_normal(s: Sphere, up: vec3<f32>, level: f32, h: f32) -> vec3<f32> {
+    var e1 = cross(up, vec3<f32>(0.0, 0.0, 1.0));
+    if (dot(e1, e1) < 1e-6) {
+        e1 = cross(up, vec3<f32>(1.0, 0.0, 0.0));
+    }
+    e1 = normalize(e1);
+    let e2 = cross(up, e1);
+    let n = cross(
+        shape_point(s, up + e1 * h, level) - shape_point(s, up - e1 * h, level),
+        shape_point(s, up + e2 * h, level) - shape_point(s, up - e2 * h, level),
+    );
+    return normalize(select(-n, n, dot(n, up) > 0.0));
+}
+
+// The surface's curvature at `up` (unit, the body's frame) along tangent
+// `t` (unit, the body's frame), from its normals `step` radians either
+// side: positive where it curves away from `t`'s side.
+fn shape_bend(s: Sphere, up: vec3<f32>, t: vec3<f32>, step: f32, level: f32, h: f32) -> f32 {
+    let ahead = normalize(up + t * step);
+    let behind = normalize(up - t * step);
+    return dot(shape_normal(s, ahead, level, h) - shape_normal(s, behind, level, h), t)
+        / length(shape_point(s, ahead, level) - shape_point(s, behind, level));
+}
+
+// A shaped body over its bounding sphere's quad: its ray sphere-traced
+// through the field |p| − r(p̂) (each step that over the field's slope
+// bound, or at least a share of the pixel's footprint), past the first
+// crossing, then bisected to it. At its edge, a pixel is covered as far
+// as the surface lies in from the edge across it (a ray that misses, by
+// its least height over the surface; one that hits, by c² / 2κ, from the
+// view's tilt to its normal and the surface's curvature), and shaded at
+// its covered strip's middle. Its surface shadows itself: a march toward
+// the Sun, its penumbra the Sun's size (Quílez's). Its maps lie on it by
+// direction from the center.
+@fragment
+fn shape_fs(in: SphereOut) -> SphereFragment {
+    let s = spheres[in.index];
+    let d = normalize(in.ray);
+    let b = dot(d, s.center);
+    let to_body = transpose(s.axes);
+    // The maps' coordinates' change across the screen, taken on the sphere
+    // of the body's volume, here: after the march, whose end depends on
+    // the pixel, control flow is not uniform.
+    let mean = s.shape.w;
+    let q_mean = s.altitude * (2.0 * s.radius + s.altitude) + (s.radius - mean) * (s.radius + mean);
+    let disc_mean = b * b - q_mean;
+    var on_mean = d * b;
+    if (disc_mean >= 0.0 && q_mean > 0.0) {
+        on_mean = d * (q_mean / (b + sqrt(disc_mean)));
+    }
+    let uv_mean = map_uv(to_body * normalize(on_mean - s.center));
+    var ddx = dpdx(uv_mean);
+    var ddy = dpdy(uv_mean);
+    ddx.x -= round(ddx.x);
+    ddy.x -= round(ddy.x);
+    // A pixel's angle along this ray: smaller off the axis, as cos².
+    let pixel = 2.0 * frame.tan_half / frame.viewport.y * d.z * d.z;
+    // The ray through the bounding sphere grown by a pixel (for the edge's
+    // coverage), from the near plane: `at` km along it from its closest
+    // approach to the center, `across` that from the center.
+    let grow = pixel * max(b, frame.near);
+    let q = s.altitude * (2.0 * s.radius + s.altitude) - grow * (2.0 * s.radius + grow);
+    let disc = b * b - q;
+    if (disc <= 0.0) {
+        discard;
+    }
+    let half = sqrt(disc);
+    let first = max(-half, frame.near - b);
+    if (first >= half) {
+        discard;
+    }
+    let across = d * b - s.center;
+    let slope = s.shape.z;
+    let size = f32(textureDimensions(shape_faces).x) / (1.0 + 2.0 * SHAPE_BORDER);
+    // A texel at a face's center, km, on the body's mean sphere.
+    let texel = mean * (0.5 * PI) / size;
+    let top = f32(textureNumLevels(shape_faces) - 1u);
+    var at = first;
+    var last = at;
+    var hit = false;
+    // The ray's least height over the surface in pixels, and where.
+    var miss = 1e30;
+    var nearest = at;
+    var level = 0.0;
+    var f = 0.0;
+    for (var i = 0u; i < SHAPE_STEPS; i++) {
+        let foot = pixel * max(b + at, frame.near);
+        level = clamp(log2(foot / texel), 0.0, top);
+        f = shape_above(s, d * at + across, level);
+        if (f < miss * foot) {
+            miss = f / foot;
+            nearest = at;
+        }
+        if (f < 0.0) {
+            hit = true;
+            break;
+        }
+        last = at;
+        at += max(f / slope, 0.3 * foot);
+        if (at > half) {
+            break;
+        }
+    }
+    if (hit) {
+        // Past the surface: bisected back to it. (Stopping where the ray
+        // first came within a share of a pixel over it put grazing hits
+        // up to pixels short along the ray: under the limb, 1° off in
+        // their normals.)
+        var lo = last;
+        var hi = at;
+        for (var k = 0u; k < 10u; k++) {
+            let mid = 0.5 * (lo + hi);
+            if (shape_above(s, d * mid + across, level) > 0.0) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        at = hi;
+    }
+    if (!hit) {
+        if (miss >= 0.5) {
+            discard;
+        }
+        at = nearest;
+    }
+    // The surface there (below the nearest miss, for one that misses), its
+    // normal by differences a texel of its level apart.
+    let foot = pixel * max(b + at, frame.near);
+    level = clamp(log2(foot / texel), 0.0, top);
+    let up = normalize(to_body * (d * at + across));
+    let r = shape_radius(s, up, level);
+    let h = 0.5 * PI / size * exp2(level);
+    let normal = shape_normal(s, up, level, h);
+    var n = s.axes * normal;
+    let surface_point = s.axes * (up * r);
+    let p = s.center + surface_point;
+    // The surface's curvature along the tangent toward the eye, from the
+    // normals a step either side (none where it does not curve away).
+    let facing = max(dot(n, -d), 0.0);
+    let toward = -d - n * facing;
+    var bend = 0.0;
+    if (dot(toward, toward) > 1e-12) {
+        let step = max(foot, h * r) / r;
+        bend = shape_bend(s, up, to_body * normalize(toward), step, level, h);
+    }
+    // A miss's height over the surface across it, not radially; a hit's
+    // depth in from the edge, c² / 2κ (c the cosine of the view to the
+    // normal), wholly covered where the surface does not curve away.
+    var coverage = clamp(0.5 - miss * dot(normal, up), 0.0, 1.0);
+    if (hit) {
+        coverage = 1.0;
+        if (bend > 0.0) {
+            coverage = clamp(0.5 + facing * facing / (2.0 * bend * foot), 0.0, 1.0);
+        }
+        if (coverage < 1.0) {
+            // Near an edge: wholly covered if the ray, once out of the
+            // body, meets it again (a nearer part's edge over a farther).
+            // (Looking from the hit on, without leaving first, every edge
+            // pixel a hit's center lies in was taken as covered.)
+            var beyond = at + foot;
+            var left = false;
+            for (var k = 0u; k < SHADOW_STEPS; k++) {
+                let g = shape_above(s, d * beyond + across, level);
+                if (!left) {
+                    left = g > 0.0;
+                } else if (g < 0.0) {
+                    coverage = 1.0;
+                    break;
+                }
+                beyond += max(abs(g) / slope, 0.3 * foot);
+                if (beyond > half) {
+                    break;
+                }
+            }
+        }
+    }
+    if (coverage < 1.0 && bend > 0.0) {
+        // The pixel's covered strip runs `coverage` pixels in from the
+        // edge, the normal turning toward the eye as √(2κx), x in: shaded
+        // at the strip's middle. (At the limb, or the pixel's center, a
+        // backlit crescent thinner than a pixel showed 16 times its light,
+        // one at 125° 1.2% over.)
+        let c = min(sqrt(coverage * foot * bend), 1.0);
+        let outward = normalize(n - (-d) * facing);
+        n = (-d) * c + outward * sqrt(1.0 - c * c);
+    }
+    // Its own shadow: what share of the Sun's disk the surface sees past
+    // the body, from just off it, to the bounding sphere's edge.
+    var sunlit = 0.0;
+    if (dot(n, s.light) > 0.0) {
+        // The Sun's angular radius from here; where the scene gives it no
+        // size (no eclipses), near a point.
+        var sun_angle = 1e-4;
+        if (s.shadows.sun.w > 0.0) {
+            sun_angle = asin(min(s.shadows.sun.w / length(s.shadows.sun.xyz - p), 1.0));
+        }
+        let start = surface_point + n * foot;
+        let along = dot(start, s.light);
+        let exit = -along + sqrt(max(along * along - dot(start, start) + s.radius * s.radius, 0.0));
+        var t = foot;
+        var least = 1e30;
+        for (var k = 0u; k < SHADOW_STEPS; k++) {
+            if (t > exit) {
+                break;
+            }
+            let g = shape_above(s, start + s.light * t, level);
+            least = min(least, g / (t * sun_angle));
+            if (least < -1.0) {
+                break;
+            }
+            // At least a pixel's footprint and a 24th of the bounding
+            // radius: a ray that dips into the body by 0.0003 of that is
+            // still caught, and the march crosses it in 48 steps. (By the
+            // footprint alone, a ray skimming the surface under a low Sun
+            // went ~100 pixels: across a body 500 pixels wide, shadows
+            // from farther were lost.)
+            t += max(abs(g) / slope, max(foot, s.radius / 24.0));
+        }
+        sunlit = clamp(0.5 + 0.5 * least, 0.0, 1.0);
+    }
+    let seen = sun_seen(s.shadows, p) * sunlit;
+    let color = lit(s, n, -d, map_uv(up), ddx, ddy, vec3<f32>(seen), vec3<f32>(0.0));
+    var out: SphereFragment;
+    out.depth = frame.near / max(-p.z, frame.near);
+    out.color = written(s, vec4<f32>(color * coverage, coverage));
     return out;
 }
 

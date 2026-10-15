@@ -244,6 +244,7 @@ mod tests {
             shading: Shading::Lambert,
             air: Some(air),
             rings: None,
+            shape: None,
         });
         let eye = DVec3::new(0.0, 0.0, 1_050.0);
         Scene {

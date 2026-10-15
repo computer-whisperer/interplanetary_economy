@@ -86,6 +86,7 @@ fn render(gpu: &Offscreen, renderer: &mut Renderer, camera: Camera, albedo: f64)
         shading: Shading::Lambert,
         air: Some(Air::new(atmosphere())),
         rings: None,
+        shape: None,
     });
     let scene = Scene {
         camera: Some(camera),
