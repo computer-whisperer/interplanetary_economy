@@ -121,12 +121,15 @@ scrubber under the map spans the plan. Bodies, ships, burns and events
 and station orbits are labeled where there is room. A click on a body
 focuses it; on a ship, a marker, a label or a line, it selects that
 item in the plan's panel (`p` shows or hides it), where a click on an
-item jumps to its start. Exposure follows the focus (its
-sunlit side at a fixed level); `-` and `=` shift it a stop at a time. On
-an HDR output, highlights use the display's headroom. `--focus ID --altitude KM
---azimuth DEG --elevation DEG --date YYYY-MM-DD[THH:MM]` set the starting view
-(the direction about the frame's axes), for screenshots too; with a
-plan, a screenshot waits for it to be designed.
+item jumps to its start. Exposure follows the focus (its sunlit side
+at a fixed level), one for the whole scene: as in a photograph, no
+stars show beside a sunlit body. `-` and `=` shift it a stop at a time
+(from Earth's, +19 brings out the Milky Way's band, +22 shows it
+clearly). On an HDR output, highlights use the display's headroom.
+`--focus ID --altitude KM --azimuth DEG --elevation DEG --date
+YYYY-MM-DD[THH:MM] --exposure STOPS` set the starting view (the
+direction about the frame's axes), for screenshots too; with a plan, a
+screenshot waits for it to be designed.
 `DAMASCENE_COLOR_DEBUG=1` prints the color negotiation with the
 compositor.
 

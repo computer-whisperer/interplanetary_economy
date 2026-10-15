@@ -48,11 +48,10 @@ struct SkyGpu {
     to_view: [[f32; 4]; 3],
     years: f32,
     exposure: f32,
-    sky: f32,
     milky_way: f32,
     faintest: f32,
-    cap: f32,
-    _pad: [f32; 2],
+    viewer: f32,
+    _pad: [f32; 3],
 }
 
 /// The least a pixel shows (after exposure) for a star to be drawn: a
@@ -296,11 +295,10 @@ impl SkyPass {
             ],
             years: sky.years as f32,
             exposure: look.exposure,
-            sky: look.sky,
-            milky_way: sky.milky_way_radiance * look.sky_gain() * look.exposure,
+            milky_way: sky.milky_way_radiance * look.exposure,
             faintest: FAINTEST_SHOWN,
-            cap: crate::scene::POINT_CAP,
-            _pad: [0.0; 2],
+            viewer: look.pixel * look.pixel,
+            _pad: [0.0; 3],
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         true

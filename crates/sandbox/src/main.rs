@@ -41,6 +41,9 @@ struct Cli {
     azimuth: Option<f64>,
     #[arg(long, allow_hyphen_values = true)]
     elevation: Option<f64>,
+    /// Stops of exposure added by hand at the start, as `-` and `=` do.
+    #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+    exposure: i32,
 }
 
 fn size(s: &str) -> Result<(u32, u32), String> {
@@ -94,6 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     app.camera = camera;
     app.follow_focus();
+    app.exposure.bias = cli
+        .exposure
+        .clamp(-sandbox::app::MAX_BIAS, sandbox::app::MAX_BIAS);
     // The view's direction is about this frame's axes.
     app.frame = frame;
     match cli.screenshot {

@@ -16,8 +16,8 @@ cloud_albedo = 0.8000
 water = "water.png"
 night = "night.jpg"
 # The lights' radiance at full value, warm: far above their true one
-# (~1e-5 of daylight), so they show at the day side's exposure, as the
-# stars do (M1c.md, Realism).
+# (~1e-5 of daylight), so they show at the day side's exposure (M1c.md,
+# Realism).
 night_radiance = [0.20, 0.15, 0.08]
 elevation = { file = "elevation.png", metres_per_unit = 1.0, offset_m = 0.0 }
 

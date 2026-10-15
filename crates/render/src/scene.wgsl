@@ -957,18 +957,17 @@ struct Sky {
     to_view: mat3x3<f32>,
     // Julian years since J2000, for proper motion.
     years: f32,
-    // The frame's exposure, and the sky's (`Look` in scene.rs).
+    // The frame's exposure (`Look` in scene.rs).
     exposure: f32,
-    sky: f32,
-    // What a unit of the Milky Way's texture shows at: its radiance at the
-    // sky's exposure, or the frame's where that is the larger.
+    // What a unit of the Milky Way's texture shows at: its radiance,
+    // exposed.
     milky_way: f32,
     // Stars whose brightest pixel would show at less than this are left
     // out.
     faintest: f32,
-    // The brightest a star's brightest pixel shows at through the sky's
-    // exposure (`POINT_CAP`).
-    cap: f32,
+    // The sky a pixel subtends at the viewer's eye, sr (`Look::pixel`
+    // squared); 0: the sky it subtends of the scene.
+    viewer: f32,
 }
 
 // A catalog star: its direction at J2000, its flux (radiance × sr, the
@@ -1019,23 +1018,27 @@ fn sky_fs(in: SkyOut) -> @location(0) vec4<f32> {
     let pixel = 2.0 * frame.tan_half / frame.viewport.y * v.z * v.z;
     let level = max(log2(pixel * size.y / PI), 0.0);
     let c = textureSampleLevel(milky_way, sky_sampler, uv, level).rgb * sky.milky_way;
-    return vec4<f32>(min(c, vec3<f32>(HALF_MAX)), 1.0);
+    return vec4<f32>(min(c, vec3<f32>(SKY_MAX)), 1.0);
 }
+
+// The most the Milky Way shows at: under f16's largest with two
+// saturated stars' brightest pixels (SPOT_PEAK × HALF_MAX each) added
+// over it, which past it would be infinite on some GPUs, and NaN under a
+// sphere blended over them. Reached ~38 stops over Earth's exposure.
+const SKY_MAX: f32 = 16000.0;
 
 // Each instance a star, a spot carrying its flux.
 @vertex
 fn star_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u32) -> DotOut {
     let s = stars[index];
     let d = sky.to_view * normalize(s.direction + s.motion * sky.years);
-    // The sky a pixel there subtends: pixel² cos³θ.
+    // Its flux over the sky a pixel subtends at the viewer's eye, so that
+    // it brings the eye the flux the star would (`Look::point_gain` in
+    // scene.rs, for a point); else of the scene there: pixel² cos³θ.
     let pixel = 2.0 * frame.tan_half / frame.viewport.y;
     let cos = -d.z;
-    let omega = pixel * pixel * cos * cos * cos;
-    // As `Look::point_gain` in scene.rs: at the sky's exposure, up to the
-    // cap, or the frame's where that is brighter; as shown.
-    let physical = s.flux / max(omega, 1e-30);
-    let boosted = min(sky.sky, sky.cap / max(physical * SPOT_PEAK, 1e-30));
-    let shown = physical * max(boosted, sky.exposure);
+    let omega = select(pixel * pixel * cos * cos * cos, sky.viewer, sky.viewer > 0.0);
+    let shown = s.flux / max(omega, 1e-30) * sky.exposure;
     // Behind the eye, near its side, or too faint to see.
     if (cos < 0.01 || shown * SPOT_PEAK < sky.faintest) {
         var out: DotOut;

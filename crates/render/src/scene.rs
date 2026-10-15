@@ -24,9 +24,9 @@ pub const SPOT_SIGMA_PX: f32 = 0.6;
 /// The largest share of a spot's flux one pixel takes (centered on it).
 pub const SPOT_PEAK: f32 = 0.354;
 
-/// The brightest a point of light's brightest pixel shows at through
-/// [`Look::sky`] (1.0 is the SDR white): a saturated star.
-pub const POINT_CAP: f32 = 8.0;
+/// The eye's resolution, radians (1′): a source it sees smaller than this
+/// is a point to it, as bright as its flux (`Look::point_gain`).
+pub const ACUITY: f64 = 2.909e-4;
 
 /// A sphere from one pixel in radius to this fades from its point (a
 /// spot carrying its flux times [`Look::point_gain`]) to its disk: the
@@ -76,27 +76,27 @@ pub struct Look {
     pub bloom: f32,
     /// The output's peak over the SDR white; 1 on SDR, which is dithered.
     pub headroom: f32,
-    /// The exposure points of light (stars, and bodies under a few
-    /// pixels) and the sky are shown at, where it exceeds `exposure`: a
-    /// fixed one, so the sky shows beside a sunlit body ("Realism": a
-    /// camera exposed for the Earth sees no stars). 0 shows them as they
-    /// are.
-    pub sky: f32,
+    /// The angle a pixel of the image subtends at the viewer's eye,
+    /// radians, by which points of light are shown (`point_gain`); 0: the
+    /// angle it subtends of the scene, as a camera records them.
+    pub pixel: f32,
 }
 
 impl Look {
-    /// What a point of light whose brightest pixel has radiance `peak` is
-    /// multiplied by, before `exposure`: so that it shows at `sky` where
-    /// that is the larger, but then no brighter than [`POINT_CAP`] (a
-    /// planet from afar shows as a bright star, not a flare).
-    pub fn point_gain(&self, peak: f32) -> f32 {
-        let boosted = self.sky.min(POINT_CAP / peak.max(1e-30));
-        boosted.max(self.exposure) / self.exposure
-    }
-
-    /// What the sky's diffuse light is multiplied by, before `exposure`.
-    pub fn sky_gain(&self) -> f32 {
-        self.sky.max(self.exposure) / self.exposure
+    /// What a point of light (a spot carrying a source's flux) is
+    /// multiplied by, its source `radius` radians across the sky and
+    /// landing where a pixel subtends `pixel` radians of it (its side):
+    /// so that it brings the viewer's eye, through a pixel of
+    /// [`Look::pixel`], the flux the source would, while the eye could
+    /// not resolve the source ([`ACUITY`]); past that, falling as the
+    /// source's peak would, to 1 where its image could be resolved.
+    pub fn point_gain(&self, radius: f64, pixel: f64) -> f64 {
+        if self.pixel <= 0.0 {
+            return 1.0;
+        }
+        let k = (pixel / f64::from(self.pixel)).powi(2);
+        let gain = k * (ACUITY / radius.max(ACUITY)).powi(2);
+        gain.clamp(k.min(1.0), k.max(1.0))
     }
 }
 
@@ -107,7 +107,7 @@ impl Default for Look {
             exposure: 1.0,
             bloom: 0.0,
             headroom: 1.0,
-            sky: 0.0,
+            pixel: 0.0,
         }
     }
 }
@@ -480,8 +480,7 @@ impl Scene {
                     shape: Shape::Spot as u32,
                 });
             };
-            let peak = radiance.into_iter().fold(0.0, f64::max) * f64::from(SPOT_PEAK);
-            let gain = f64::from(self.look.point_gain(peak as f32));
+            let gain = self.look.point_gain(half_angle, local_pixel);
             let radius_px = half_angle / local_pixel;
             if radius_px < 1.0 {
                 // Under a pixel: a point of light.
@@ -581,6 +580,30 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A point's gain, through a viewer's pixel a third the scene's (k =
+    /// 9): k for a star and for a source under the eye's resolution,
+    /// falling as 1 / radius² past it, to 1 at √k × it and beyond.
+    /// Through a viewer's pixel twice the scene's (k = 1/4), k for any
+    /// source; through a camera's (0), 1.
+    #[test]
+    fn points_bring_the_eye_their_flux() {
+        let look = Look {
+            pixel: 1e-4,
+            ..Default::default()
+        };
+        let near = |a: f64, b: f64| (a / b - 1.0).abs() < 1e-6;
+        let pixel = 3.0 * f64::from(look.pixel);
+        assert!(near(look.point_gain(0.0, pixel), 9.0));
+        assert!(near(look.point_gain(ACUITY, pixel), 9.0));
+        assert!(near(look.point_gain(2.0 * ACUITY, pixel), 9.0 / 4.0));
+        assert!(near(look.point_gain(3.0 * ACUITY, pixel), 1.0));
+        assert_eq!(look.point_gain(10.0 * ACUITY, pixel), 1.0);
+        let pixel = f64::from(look.pixel) / 2.0;
+        assert!(near(look.point_gain(0.0, pixel), 0.25));
+        assert!(near(look.point_gain(10.0 * ACUITY, pixel), 0.25));
+        assert_eq!(Look::default().point_gain(0.0, pixel), 1.0);
+    }
 
     /// `disk_mean` against the laws integrated in f64 over a distant
     /// sphere's disk (2000² samples), at phase angles from 0 to 170°: the

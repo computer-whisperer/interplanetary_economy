@@ -40,8 +40,9 @@ const SCRUBBER_KEY: &str = "scrubber";
 /// The longest step of wall time a frame advances, s.
 const MAX_STEP_S: f64 = 0.25;
 
-/// Stops of exposure set by hand, at most either way.
-const MAX_BIAS: i32 = 12;
+/// Stops of exposure set by hand, at most either way: enough to bring up
+/// the sky with the Sun in focus (~35 stops).
+pub const MAX_BIAS: i32 = 40;
 
 /// Lines' width, and a ship's marker's, logical pixels.
 const LINE_PX: f32 = 1.5;
@@ -291,7 +292,7 @@ impl Shell {
                 exposure: self.exposure.value(self.target_exposure()),
                 bloom: look::BLOOM,
                 headroom: self.stats.headroom(),
-                sky: look::SKY,
+                pixel: (look::PIXEL / f64::from(px)) as f32,
             },
             ..Default::default()
         }

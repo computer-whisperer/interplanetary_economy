@@ -62,16 +62,19 @@ left out); next, step 7 (editing).
 - Step 6: the HDR chain, the sky, the bodies' orbits, rotation models and
   maps, atmospheres, the Sun's limb, eclipses and Saturn's rings. As
   built, see the step 6 plan below; where it differs:
-  - Points of light (stars, the Milky Way, bodies under a few pixels)
-    show at a fixed sky exposure where it exceeds the frame's, capped at
-    a saturated star's brightness (part 2, not 1): uncapped, the Moon
-    as a few pixels flared. A body growing into a disk fades from its
+  - Points of light (stars, bodies under a few pixels) are as bright
+    to the viewer's eye as their sources would be, at the scene's one
+    exposure (Realism; decided 2026-10-15). Until then they and the
+    Milky Way showed at a fixed sky exposure where it exceeded the
+    frame's (7.5e5), capped at a saturated star's brightness, and drawn
+    as a camera records them. A body growing into a disk fades from its
     point over 1–3 px in radius (the point's share falling, the disk's
     opacity rising). Orbit lines leave a gap where their body is, which
     they otherwise hid.
   - The scene's pass writes radiance already exposed, so that f16 holds
-    the range shown (unexposed, a star at the Sun's exposure needed
-    3e5); bloom's levels hold means, not sums, for the same reason. What
+    the range shown (unexposed, the Milky Way's median, 4e-10, lies
+    under f16's smallest step, 6e-8); bloom's levels hold means, not
+    sums, for the same reason. What
     lies past f16 once exposed (the Sun's disk, at exposures over ~1.3:
     every focus from Earth outward) loses its excess before bloom, so
     its glare stops growing there (1.5× under its energy at Earth's
@@ -80,9 +83,11 @@ left out); next, step 7 (editing).
   - The Milky Way: SVS's composite is 0.50 × its background + 1.00 ×
     its bright-star layer (fitted, residual 0.0005), and that layer's
     stars integrate to 2.14e-4 × 10^(−0.4 V) (124 unsaturated stars, V
-    4.5–6.5): one stored unit is 1.48e-7 radiance units, its median
-    ~22.8 mag/arcsec². Tycho-2's stars fainter than Hipparcos are left
-    out (a few percent of the background's light).
+    4.5–6.5): one stored unit is 1.48e-7 radiance units. Over the sky's
+    area its median is 24.6 mag/arcsec², its brightest percent brighter
+    than 21.3, and an eighth of it under the 8-bit map's first step (26.9;
+    corrected 2026-10-15 from 22.8). Tycho-2's stars fainter than
+    Hipparcos are left out (a few percent of the background's light).
   - Orbits are sampled at most 10 days apart (the Sun's reflex motion:
     Neptune's line missed it by 290 km at a 384th of its period), 6
     hours for small bodies (1996 FG3's by 460 m at a day).
@@ -444,8 +449,25 @@ As realistic as we can afford, in stages, while the map stays readable.
 - The scene is rendered in linear HDR. Exposure, bloom and a tonemap fit
   it to the output's headroom: up to the panel's peak on an HDR output (a
   16-bit float scRGB swapchain), and a filmic curve to 1.0 on SDR.
-- One deliberate departure from realism: stars get their own fixed
-  exposure. A real camera exposed for the sunlit Earth sees none.
+- One exposure for the whole scene, the sky's too (decided 2026-10-15:
+  as accurate as we can first; departures where play shows the need).
+  Exposed for a sunlit body, as a camera would be, the sky shows
+  nothing; the exposure keys bring it up (from Earth's, +19 stops shows
+  the Milky Way's band faintly, +22 clearly). Rejected: a fixed exposure for the stars and the Milky
+  Way where it exceeded the frame's, which showed them beside a sunlit
+  body but which the exposure keys did not move.
+- Points of light are as bright to the viewer's eye as their sources
+  would be: a star's flux is spread over the sky a pixel subtends at the
+  viewer, not the sky it shows of the scene. A logical pixel is taken as
+  CSS's reference pixel (0.0213°), so a window 1,080 logical pixels tall
+  fills ~23° of the viewer's sight with the view's 50°: drawn as a
+  camera records them, stars would show ~5× too faint against the Milky
+  Way, whose radiance shows the same either way. A body is such a point
+  while the eye could not resolve it (under 1′ in radius: every planet
+  seen from Earth); past that its point's gain falls as its peak would,
+  to 1 (none) where its image could be resolved.
+- Earth's night lights show at ~20,000× their radiance, so that they
+  show at the day side's exposure: the one departure left.
 
 **Bodies.**
 - Spheroids with the right flattening: Earth 1/298, Mars 1/170, Jupiter

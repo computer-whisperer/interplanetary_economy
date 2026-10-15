@@ -105,7 +105,7 @@ fn stars_land_on_their_places() {
                 ..sky::sky(data, t)
             }),
             look: Look {
-                sky: gain,
+                exposure: gain,
                 ..Default::default()
             },
             ..Default::default()
@@ -138,17 +138,18 @@ fn stars_land_on_their_places() {
             assert!((got - at_j2000).length() > 50.0);
         }
         if place.name == "Sirius" {
-            // Its flux as shown, at this look and at the Sun's (exposure
-            // 2.6e-5, the sandbox's sky): the green channel's pixels × the
-            // sky each subtends. Found in review: at the Sun's, spots were
-            // clipped at f16's largest before exposure, every star
-            // brighter than V ~4 alike.
-            let sun_look = Look {
-                exposure: 2.6e-5,
-                sky: 7.5e5,
-                ..Default::default()
+            // Its flux as shown, as a camera records it and through a
+            // viewer's pixels 3× and a third the scene's (at a tenth the
+            // exposure, its spot under f16's largest): the green channel's
+            // pixels × the sky each subtends.
+            let tan_half = (fov / 2.0).tan();
+            let pixel = 2.0 * tan_half / f64::from(size.1);
+            let viewer = |times: f64| Look {
+                pixel: (pixel * times) as f32,
+                exposure: gain / 10.0,
+                ..scene.look
             };
-            for look in [scene.look, sun_look] {
+            for look in [scene.look, viewer(3.0), viewer(1.0 / 3.0)] {
                 let image = radiance(
                     &gpu,
                     &mut renderer,
@@ -158,8 +159,6 @@ fn stars_land_on_their_places() {
                     },
                     size,
                 );
-                let tan_half = (fov / 2.0).tan();
-                let side = 2.0 * tan_half / f64::from(size.1);
                 let mut flux = 0.0;
                 for y in cy - 6..=cy + 6 {
                     for x in cx - 6..=cx + 6 {
@@ -168,26 +167,104 @@ fn stars_land_on_their_places() {
                             1.0 - (y as f64 + 0.5) / f64::from(size.1) * 2.0,
                         ) * tan_half;
                         let r = DVec3::new(ndc.x, ndc.y, -1.0);
-                        let sky = side * side / r.length().powi(3);
+                        let sky = pixel * pixel / r.length().powi(3);
                         flux += f64::from(image[(y * size.0 as i64 + x) as usize][1]) * sky;
                     }
                 }
-                // Times the gain the look gives a spot this bright (by
-                // its peak pixel where it lands: pixel² cos³θ of sky), and
-                // the exposure.
+                // Times the gain the look gives a point where it lands
+                // (pixel² cos³θ of sky), and the exposure.
                 let star = data.stars[0];
                 let cos = -camera.rotate(d).z;
-                let peak = f64::from(star.flux) / (side * side * cos.powi(3))
-                    * f64::from(render::scene::SPOT_PEAK);
-                let shown = look.point_gain(peak as f32) * look.exposure;
+                let gain = look.point_gain(0.0, pixel * cos.powf(1.5));
                 let want = f64::from(star.flux) * f64::from((star.color >> 8) & 255) / 255.0
-                    * f64::from(shown);
-                println!(
-                    "Sirius at exposure {}: flux {flux:.4e}, wanted {want:.4e}",
-                    look.exposure
-                );
+                    * gain
+                    * f64::from(look.exposure);
+                println!("Sirius, gain {gain:.3}: flux {flux:.4e}, wanted {want:.4e}");
                 assert!((flux / want - 1.0).abs() < 1e-2, "{flux} vs {want}");
             }
+        }
+    }
+}
+
+/// The Milky Way shows its map's radiance at the scene's exposure: a 2°
+/// view toward the Sagittarius star cloud and the north galactic pole,
+/// at exposures 1e5 and 1e7 (the exposure keys reach the sky; at 1e4,
+/// f16 holds the pole's 1.6e-6 to 2%), against
+/// the map sampled on the CPU along each pixel's ray (its texels decoded
+/// from sRGB, bilinear, × its radiance), within 1%.
+#[test]
+fn the_milky_way_takes_the_exposure() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    let data = sky::wait().expect("data/sky reads");
+    let map = &data.milky_way;
+    let (w, h) = (map.width as i64, map.height as i64);
+    let linear = |c: u8| {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    // Mean of r, g and b at a texel, wrapped in right ascension.
+    let texel = |x: i64, y: i64| {
+        let i = ((y.clamp(0, h - 1) * w + x.rem_euclid(w)) * 4) as usize;
+        (0..3).map(|c| linear(map.data[i + c])).sum::<f64>() / 3.0
+    };
+    let size = (200, 200);
+    let fov = 2f64.to_radians();
+    let tan_half = (fov / 2.0).tan();
+    let sky = render::Sky {
+        stars: Default::default(),
+        ..sky::sky(data, Epoch(0.0))
+    };
+    for (name, ra, dec) in [
+        ("Sagittarius star cloud", 270.9f64, -30.0f64),
+        ("north galactic pole", 192.859, 27.128),
+    ] {
+        let (ra, dec) = (ra.to_radians(), dec.to_radians());
+        let d = DVec3::new(dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin());
+        let camera = Camera::looking_at(DVec3::ZERO, sky.orientation * d, DVec3::Z, fov);
+        // The map's mean over the pixels' rays.
+        let mut want = 0.0;
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                let ndc = DVec2::new(
+                    (f64::from(x) + 0.5) / f64::from(size.0) * 2.0 - 1.0,
+                    1.0 - (f64::from(y) + 0.5) / f64::from(size.1) * 2.0,
+                ) * tan_half;
+                let ray = camera.right * ndc.x + camera.up * ndc.y + camera.forward;
+                let r = sky.orientation.transpose() * ray.normalize();
+                let u = 0.5 - r.y.atan2(r.x) / std::f64::consts::TAU;
+                let v = 0.5 - r.z.clamp(-1.0, 1.0).asin() / std::f64::consts::PI;
+                let (fx, fy) = (u * w as f64 - 0.5, v * h as f64 - 0.5);
+                let (x0, y0) = (fx.floor() as i64, fy.floor() as i64);
+                let (a, b) = (fx - fx.floor(), fy - fy.floor());
+                want += (texel(x0, y0) * (1.0 - a) + texel(x0 + 1, y0) * a) * (1.0 - b)
+                    + (texel(x0, y0 + 1) * (1.0 - a) + texel(x0 + 1, y0 + 1) * a) * b;
+            }
+        }
+        want *= f64::from(sky.milky_way_radiance) / f64::from(size.0 * size.1);
+        for exposure in [1e5f32, 1e7] {
+            let scene = Scene {
+                camera: Some(camera),
+                sky: Some(sky.clone()),
+                look: Look {
+                    exposure,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let image = radiance(&gpu, &mut renderer, &scene, size);
+            let got = image
+                .iter()
+                .map(|p| f64::from(p[0] + p[1] + p[2]) / 3.0)
+                .sum::<f64>()
+                / image.len() as f64
+                / f64::from(exposure);
+            println!("{name}, exposure {exposure:e}: radiance {got:.4e}, the map's {want:.4e}");
+            assert!((got / want - 1.0).abs() < 0.01, "{name}: {got} vs {want}");
         }
     }
 }
@@ -217,8 +294,11 @@ fn sky_gpu_time() {
                 50f64.to_radians(),
             )),
             sky,
+            // Earth's exposure + 19 stops: the Milky Way shown, and every
+            // star.
             look: Look {
-                sky: sandbox::look::SKY,
+                exposure: 1e6,
+                pixel: sandbox::look::PIXEL as f32,
                 bloom: sandbox::look::BLOOM,
                 ..Default::default()
             },

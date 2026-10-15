@@ -1,6 +1,7 @@
-//! How the map view's radiance is shown (M1c.md, step 6 plan, item 1):
-//! exposure set by the focus, eased when it changes and shifted by whole
-//! stops by hand, and bloom.
+//! How the map view's radiance is shown (M1c.md, step 6 plan, item 1,
+//! and Realism): one exposure for the whole scene, the sky's too, set by
+//! the focus, eased when it changes and shifted by whole stops by hand;
+//! points of light as bright as at the viewer's eye; and bloom.
 
 use crate::bodies;
 use orbit::ephem::{BodyId, Ephemeris};
@@ -18,10 +19,10 @@ pub const KEY: f64 = 0.6;
 /// gray; at 4 × KEY its limb darkening was lost in the shoulder.
 pub const SUN_KEY: f64 = 2.0 * KEY;
 
-/// The exposure the sky and points of light are shown at (`Look::sky`):
-/// the Milky Way's median at ~0.003 of SDR white, stars to V ~8 visible,
-/// the brightest blooming.
-pub const SKY: f32 = 7.5e5;
+/// The angle a logical pixel subtends at the viewer's eye, radians
+/// (`Look::pixel`): CSS's reference pixel, 1/96 inch at 28 inches
+/// (0.0213°), which hosts' display scales approximate.
+pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
 
 /// Seconds for exposure to close ~63% of the way to a new focus's: most
 /// of it within a refocus's flight.
