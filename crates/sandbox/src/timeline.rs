@@ -51,6 +51,14 @@ const FIT_MARGIN: f64 = 0.02;
 const CURSOR: Color = Color::srgb_u8(230, 230, 230);
 const SELECTED: Color = Color::srgb_u8(255, 255, 255);
 
+/// A leg's bar that a drag moves (the selected leg between planets), and
+/// how far it is dragged, days.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Movable {
+    pub item: (usize, usize),
+    pub shift_days: f64,
+}
+
 /// A bar's key: its ship and item.
 pub fn bar_key(s: usize, k: usize) -> String {
     format!("bar:{s}:{k}")
@@ -395,6 +403,7 @@ fn tooltip(eph: &Ephemeris, item: &orbit::mission::Item) -> String {
 /// out); below it the plan's window lanes, then a lane per ship
 /// (scrolling past [`LANES_SHOWN`]), the item `selected` outlined, the
 /// clock at `t`.
+#[allow(clippy::too_many_arguments)]
 pub fn strip(
     eph: &Ephemeris,
     tl: &Timeline,
@@ -403,6 +412,7 @@ pub fn strip(
     windows: Option<&Windows>,
     t: Epoch,
     selected: Option<(usize, usize)>,
+    movable: Option<Movable>,
 ) -> El {
     let held = |f: f64| f.clamp(-0.01, 1.01);
     let cursor = tl.fraction(t);
@@ -413,7 +423,12 @@ pub fn strip(
         let colors = paths::colors(ship);
         let lane = s as f32 * LANE_PX;
         for (k, item) in ship.items.iter().enumerate() {
-            let (from, to) = (tl.fraction(item.start), tl.fraction(item.end));
+            let moved = movable.filter(|m| m.item == (s, k));
+            let shift = moved.map_or(0.0, |m| m.shift_days);
+            let (from, to) = (
+                tl.fraction(item.start.plus_days(shift)),
+                tl.fraction(item.end.plus_days(shift)),
+            );
             if to < 0.0 || from > 1.0 {
                 continue;
             }
@@ -422,11 +437,20 @@ pub fn strip(
                 ItemKind::Failed(_) => (LEG_PX, paths::FAILURE_COLOR),
                 _ => (LEG_PX, colors[k]),
             };
+            let mut tip = tooltip(eph, item);
+            if moved.is_some() {
+                tip.push_str(
+                    "\nDrag to move its departure: it lands on the cheapest leg leaving then.",
+                );
+            }
             let mut el = spacer()
                 .fill(color(c))
                 .radius(2.0)
                 .key(bar_key(s, k))
-                .tooltip(tooltip(eph, item));
+                .tooltip(tip);
+            if moved.is_some() {
+                el = el.cursor(Cursor::Grab);
+            }
             if selected == Some((s, k)) {
                 el = el.stroke(SELECTED).stroke_width(1.5);
             }

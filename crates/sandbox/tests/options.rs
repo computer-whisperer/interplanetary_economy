@@ -10,7 +10,9 @@ use orbit::mission::{ItemKind, Plan, Step};
 use orbit::places::Places;
 use sandbox::app::Shell;
 use sandbox::frame::{self, Output, View};
-use sandbox::options::{CHART_KEY, SWEEP_KEY, UNPIN_KEY, point_key, swept_key};
+use sandbox::options::{
+    CHART_KEY, FASTEST_KEY, LATER_KEY, RESET_WINDOW_KEY, SWEEP_KEY, UNPIN_KEY, point_key, swept_key,
+};
 use sandbox::plan::Loaded;
 
 /// To Mars in the 2033 window, its date and duration left to the
@@ -303,4 +305,176 @@ fn a_cell_picked_flies_there() {
         (leg.dv - options[i].dv.unwrap()).abs() < 1e-9,
         "flies as swept"
     );
+}
+
+/// Within a budget of 1.1 times the least Δv, "Fly fastest" pins the
+/// shortest leg the porkchop allows, which flies within a few percent of
+/// it; "Later window" moves the leg a synodic period on, and "Default
+/// window" back; each undoes.
+#[test]
+fn goals_and_windows() {
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap());
+    plan.wait();
+    let mut app = Shell::new(plan.start);
+    app.load(plan);
+    let mut h = Harness::new(&app, (1400.0, 1000.0));
+    h.draw(&mut app);
+    let k = app.plan.as_ref().unwrap().ships[0]
+        .items
+        .iter()
+        .position(|i| i.kind == ItemKind::Leg)
+        .unwrap();
+    let flown = app.plan.as_ref().unwrap().ships[0].items[k].clone();
+    app.select(Some((0, k)));
+    h.draw(&mut app);
+    h.draw(&mut app);
+    let p = app_porkchop(&app);
+    // 6.6 km/s: 1.1 times the least of 6.02.
+    let budget = 0.2;
+    app.set_budget(budget);
+    h.draw(&mut app);
+    h.shot(&mut app, "budget");
+    let (c, r) = p.fastest(budget).expect("a leg within the budget");
+    let fastest = p.durations[r];
+    println!(
+        "within {:.2} km/s: fastest {:.1} d leaving {} ({:.2} km/s); flown {:.1} d",
+        p.budget_dv(budget),
+        fastest,
+        p.depart(c),
+        p.at(c, r),
+        flown.end.0 - flown.start.0
+    );
+    assert!(
+        fastest < flown.end.0 - flown.start.0,
+        "faster than the cheapest"
+    );
+    let button = h.ui.rect_of_key(FASTEST_KEY).expect("the fastest's button");
+    h.click(
+        &mut app,
+        (button.x + button.w / 2.0, button.y + button.h / 2.0),
+    );
+    app.plan.as_mut().unwrap().wait();
+    let leg = app.plan.as_ref().unwrap().ships[0]
+        .items
+        .iter()
+        .find(|i| i.kind == ItemKind::Leg)
+        .unwrap()
+        .clone();
+    println!(
+        "flies {:.2} d at {:.3} km/s",
+        leg.end.0 - leg.start.0,
+        leg.dv
+    );
+    assert!((leg.end.0 - leg.start.0 - (fastest * 100.0).round() / 100.0).abs() < 1e-6);
+    assert!(
+        leg.dv < 1.05 * f64::from(p.budget_dv(budget)),
+        "flown near its patched Δv"
+    );
+
+    // The leg's bar dragged on the timeline 60 days later: it lands on
+    // the cheapest leg leaving then.
+    let k = app.plan.as_ref().unwrap().ships[0]
+        .items
+        .iter()
+        .position(|i| i.kind == ItemKind::Leg)
+        .unwrap();
+    let before = app.plan.as_ref().unwrap().ships[0].items[k].clone();
+    app.select(Some((0, k)));
+    h.draw(&mut app);
+    h.draw(&mut app);
+    let bar =
+        h.ui.rect_of_key(&sandbox::timeline::bar_key(0, k))
+            .expect("the leg's bar");
+    let axis = h.ui.rect_of_key(sandbox::timeline::AXIS_KEY).unwrap();
+    let dx = (60.0 / app.timeline.days()) as f32 * axis.w;
+    let (x, y) = (bar.x + bar.w / 2.0, bar.y + bar.h / 2.0);
+    let mut events =
+        h.ui.pointer_down(Pointer::mouse(x, y, PointerButton::Primary));
+    events.extend(h.ui.pointer_moved(Pointer::moving(x + dx, y)).events);
+    events.extend(h.ui.pointer_up(Pointer::mouse(x + dx, y, PointerButton::Primary)));
+    let cx = EventCx::new().with_ui_state(h.ui.ui_state());
+    for e in events {
+        app.on_event(e, &cx);
+    }
+    let go = match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
+        Step::Go(go) => go.clone(),
+        _ => unreachable!(),
+    };
+    let depart = go.depart.expect("pinned by the drag");
+    println!(
+        "dragged from {} by {dx:.1} px: leaves {} for {:?}",
+        before.start, depart, go.days
+    );
+    assert!(
+        (depart.0 - before.start.0 - 60.0).abs() <= 1.5,
+        "a column 60 days on"
+    );
+    let column = (0..p.columns)
+        .min_by(|&a, &b| {
+            (p.depart(a).0 - depart.0)
+                .abs()
+                .total_cmp(&(p.depart(b).0 - depart.0).abs())
+        })
+        .unwrap();
+    let cheapest = (0..p.durations.len())
+        .filter(|&r| !p.at(column, r).is_nan())
+        .min_by(|&a, &b| p.at(column, a).total_cmp(&p.at(column, b)))
+        .unwrap();
+    assert_eq!(go.days, [(p.durations[cheapest] * 100.0).round() / 100.0]);
+    app.plan.as_mut().unwrap().wait();
+    app.undo();
+    app.plan.as_mut().unwrap().wait();
+
+    // A synodic period on, unpinned; then back to the default window.
+    h.draw(&mut app);
+    let later =
+        h.ui.rect_of_key(LATER_KEY)
+            .expect("the later window's button");
+    h.click(&mut app, (later.x + later.w / 2.0, later.y + later.h / 2.0));
+    let go = match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
+        Step::Go(go) => go.clone(),
+        _ => unreachable!(),
+    };
+    assert!(go.depart.is_none());
+    let (open, _) = go.window.expect("a window set");
+    assert!(
+        (open.0 - flown.window.unwrap().0.0 - 780.0).abs() < 30.0,
+        "{open}"
+    );
+    app.plan.as_mut().unwrap().wait();
+    let leg = app.plan.as_ref().unwrap().ships[0]
+        .items
+        .iter()
+        .find(|i| i.kind == ItemKind::Leg)
+        .unwrap()
+        .clone();
+    println!("the later window's leg leaves {}", leg.start);
+    assert!(leg.start.0 > flown.start.0 + 600.0);
+    h.draw(&mut app);
+    h.draw(&mut app);
+    let reset =
+        h.ui.rect_of_key(RESET_WINDOW_KEY)
+            .expect("the default window's button");
+    h.click(&mut app, (reset.x + reset.w / 2.0, reset.y + reset.h / 2.0));
+    app.plan.as_mut().unwrap().wait();
+    let leg = app.plan.as_ref().unwrap().ships[0]
+        .items
+        .iter()
+        .find(|i| i.kind == ItemKind::Leg)
+        .unwrap()
+        .clone();
+    assert!((leg.start.0 - flown.start.0).abs() < 1e-9 && (leg.dv - flown.dv).abs() < 1e-9);
+    // Undone twice: the later window, pinned to the fastest (the drag
+    // was undone above).
+    app.undo();
+    app.undo();
+    match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
+        Step::Go(go) => assert!(go.depart.is_some() && go.window.is_none()),
+        _ => unreachable!(),
+    }
+}
+
+fn app_porkchop(app: &Shell) -> std::sync::Arc<sandbox::options::Porkchop> {
+    app.porkchop().expect("the leg's porkchop")
 }

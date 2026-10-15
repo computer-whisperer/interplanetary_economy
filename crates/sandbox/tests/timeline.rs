@@ -268,6 +268,7 @@ fn timeline_cpu_time() {
             windows,
             t,
             None,
+            None,
         ));
     }
     let build = clock.elapsed().as_secs_f64() * 1e3 / n as f64;

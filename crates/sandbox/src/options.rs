@@ -8,6 +8,7 @@
 use crate::paths;
 use crate::timeline;
 use damascene_core::prelude::*;
+use damascene_core::widgets::slider::slider;
 use orbit::mission::{Crossing, Item};
 use orbit::time::Epoch;
 use rayon::prelude::*;
@@ -19,6 +20,17 @@ pub const CHART_KEY: &str = "options:chart";
 pub const UNPIN_KEY: &str = "options:unpin";
 /// The button that sweeps a leg's durations.
 pub const SWEEP_KEY: &str = "options:sweep";
+/// Between planets: the Δv budget's slider, and the buttons that pin the
+/// fastest leg within it and the one arriving earliest, and that move
+/// the leg's window a synodic period later or back to its default.
+pub const BUDGET_KEY: &str = "options:budget";
+pub const FASTEST_KEY: &str = "options:fastest";
+pub const EARLIEST_KEY: &str = "options:earliest";
+pub const LATER_KEY: &str = "options:later";
+pub const RESET_WINDOW_KEY: &str = "options:reset-window";
+
+/// Cells over the budget are shaded this much as bright.
+const OVER_BUDGET: f32 = 0.35;
 
 /// A sweep designs this many durations, from half the offered ones'
 /// shortest to twice their longest.
@@ -174,8 +186,44 @@ impl Porkchop {
         self.dv[row * self.columns + column]
     }
 
-    /// The chart as an image, the longest duration at the top.
-    fn image(&self) -> Image {
+    /// The Δv a budget's place on its slider (0 to 1) allows: from the
+    /// least to [`CEILING`] times it.
+    pub fn budget_dv(&self, budget: f32) -> f32 {
+        self.least * (1.0 + (CEILING - 1.0) * budget.clamp(0.0, 1.0))
+    }
+
+    /// Of the cells within `budget`, the one `key` puts first (the
+    /// cheaper of equals).
+    fn best_within(
+        &self,
+        budget: f32,
+        key: impl Fn(usize, usize) -> f64,
+    ) -> Option<(usize, usize)> {
+        let most = self.budget_dv(budget);
+        (0..self.durations.len())
+            .flat_map(|r| (0..self.columns).map(move |c| (c, r)))
+            .filter(|&(c, r)| self.at(c, r) <= most)
+            .min_by(|&a, &b| {
+                key(a.0, a.1)
+                    .total_cmp(&key(b.0, b.1))
+                    .then(self.at(a.0, a.1).total_cmp(&self.at(b.0, b.1)))
+            })
+    }
+
+    /// The shortest leg within `budget`.
+    pub fn fastest(&self, budget: f32) -> Option<(usize, usize)> {
+        self.best_within(budget, |_, r| self.durations[r])
+    }
+
+    /// The leg within `budget` that arrives first.
+    pub fn earliest(&self, budget: f32) -> Option<(usize, usize)> {
+        self.best_within(budget, |c, r| self.depart(c).0 + self.durations[r])
+    }
+
+    /// The chart as an image, the longest duration at the top, the cells
+    /// over `budget` dimmed.
+    fn image(&self, budget: f32) -> Image {
+        let most = self.budget_dv(budget);
         let [r, g, b, _] = tokens::MUTED.to_srgb_u8a();
         let dark = [f32::from(r), f32::from(g), f32::from(b)];
         let rows = self.durations.len();
@@ -189,6 +237,7 @@ impl Porkchop {
                 } else {
                     (shade.clamp(0.0, 1.0) * BANDS).ceil() / BANDS
                 };
+                let shade = if v > most { shade * OVER_BUDGET } else { shade };
                 for c in 0..3 {
                     pixels.push((dark[c] + (BRIGHT[c] - dark[c]) * shade).round() as u8);
                 }
@@ -200,12 +249,23 @@ impl Porkchop {
 }
 
 /// What the panel shows for the leg selected: its porkchop, kept while it
-/// is the same leg and window.
-#[derive(Default)]
+/// is the same leg and window, and the Δv budget set on it.
 pub struct Options {
     /// The leg (ship and step) and window the porkchop is for.
     key: Option<(usize, usize, (Epoch, Epoch))>,
     pub porkchop: Option<Arc<Porkchop>>,
+    /// The budget's place on its slider, 0 to 1: all shaded cells at 1.
+    pub budget: f32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            key: None,
+            porkchop: None,
+            budget: 1.0,
+        }
+    }
 }
 
 impl Options {
@@ -219,6 +279,11 @@ impl Options {
         compute: impl FnOnce() -> Option<Porkchop>,
     ) -> Option<Arc<Porkchop>> {
         if self.key != Some((s, step, window)) {
+            // Another leg starts with the whole budget; the same leg in
+            // another window keeps it.
+            if self.key.is_none_or(|k| (k.0, k.1) != (s, step)) {
+                self.budget = 1.0;
+            }
             self.key = Some((s, step, window));
             self.porkchop = compute().map(Arc::new);
         }
@@ -234,6 +299,8 @@ pub struct Leg<'a> {
     pub item: Option<&'a Item>,
     pub color: [f32; 3],
     pub pinned: bool,
+    /// Whether its plan sets its window.
+    pub windowed: bool,
     /// The pointer over the chart, as fractions of it.
     pub hover: Option<(f64, f64)>,
 }
@@ -270,8 +337,10 @@ fn marks(els: Vec<(El, (f64, f64, f32))>) -> El {
 }
 
 /// The section for a leg between planets: its porkchop (`width` px wide
-/// when last laid out), and a line saying what is under the pointer.
-pub fn porkchop_section(p: &Porkchop, leg: &Leg, width: f32) -> El {
+/// when last laid out) with the cells over `budget` dimmed, a line saying
+/// what is under the pointer, the budget's slider, and the goals and
+/// windows' buttons.
+pub fn porkchop_section(p: &Porkchop, leg: &Leg, width: f32, budget: f32) -> El {
     let mut els = Vec::new();
     if let Some(item) = leg.item {
         for c in &item.options {
@@ -298,8 +367,16 @@ pub fn porkchop_section(p: &Porkchop, leg: &Leg, width: f32) -> El {
         let (x, y) = p.place(p.depart(column), p.durations[row]);
         els.push(mark(x, 1.0 - y, None, TRIED, MARK_PX - 2.0));
     }
+    // The fastest within the budget, and the earliest arrival.
+    for (cell, fill) in [(p.fastest(budget), true), (p.earliest(budget), false)] {
+        if let Some((c, r)) = cell {
+            let (x, y) = p.place(p.depart(c), p.durations[r]);
+            let (el, place) = mark(x, 1.0 - y, fill.then_some(TRIED), TRIED, MARK_PX - 1.0);
+            els.push((el.radius(0.0), place));
+        }
+    }
     let chart = stack([
-        image(p.image())
+        image(p.image(budget))
             .image_fit(ImageFit::Fill)
             .width(Size::Fill(1.0))
             .height(Size::Fill(1.0)),
@@ -376,9 +453,42 @@ pub fn porkchop_section(p: &Porkchop, leg: &Leg, width: f32) -> El {
             if leg.pinned { " (pinned)" } else { "" }
         ),
     };
-    column([chart, dates, text(readout).caption().muted().wrap_text()])
-        .gap(tokens::SPACE_1)
-        .width(Size::Fill(1.0))
+    let most = p.budget_dv(budget);
+    let goal = |cell: Option<(usize, usize)>| {
+        cell.map_or("none".to_string(), |(c, r)| {
+            format!("leaves {}, {:.0} d", p.depart(c), p.durations[r])
+        })
+    };
+    let goals = format!(
+        "Within {most:.2} km/s: ■ fastest {}; □ earliest arrival {}.",
+        goal(p.fastest(budget)),
+        goal(p.earliest(budget))
+    );
+    let mut windows = vec![button("Later window").key(LATER_KEY)];
+    if leg.windowed {
+        windows.push(button("Default window").key(RESET_WINDOW_KEY));
+    }
+    column([
+        chart,
+        dates,
+        text(readout).caption().muted().wrap_text(),
+        row([
+            text("Budget").caption().muted(),
+            slider(BUDGET_KEY, budget).width(Size::Fill(1.0)),
+            text(format!("{most:.2} km/s")).caption().tabular_numerals(),
+        ])
+        .gap(tokens::SPACE_2)
+        .align(Align::Center),
+        text(goals).caption().muted().wrap_text(),
+        row([
+            button("Fly fastest").key(FASTEST_KEY),
+            button("Fly earliest arrival").key(EARLIEST_KEY),
+        ])
+        .gap(tokens::SPACE_1),
+        row(windows).gap(tokens::SPACE_1),
+    ])
+    .gap(tokens::SPACE_1)
+    .width(Size::Fill(1.0))
 }
 
 /// The section for a leg within a system: Δv against its offered
@@ -530,5 +640,35 @@ mod tests {
         assert!(d.len() >= SWEPT - 2 && d.windows(2).all(|w| w[1] > w[0]));
         assert!(d.iter().all(|x| ![0.5, 1.0, 2.0].contains(x)));
         assert!(sweep_durations(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod goal_tests {
+    use super::*;
+
+    /// A porkchop of made-up cells: the goals pick within the budget.
+    #[test]
+    fn goals_within_the_budget() {
+        let t0 = Epoch::from_ymd(2033, 1, 1);
+        // Columns a day apart; rows 100, 200 and 300 days.
+        let p = Porkchop {
+            window: (t0, t0.plus_days(2.0)),
+            columns: 3,
+            durations: vec![100.0, 200.0, 300.0],
+            // Rows from the shortest: dear, middling, cheap.
+            dv: vec![9.0, 8.0, 7.5, 6.5, 6.4, 6.6, 6.0, 6.2, f32::NAN],
+            least: 6.0,
+        };
+        // The whole budget (to 9 km/s): fastest is the shortest row's
+        // cheapest; earliest arrival the same (100 d leaving on day 0 or 2).
+        assert_eq!(p.fastest(1.0), Some((2, 0)));
+        assert_eq!(p.earliest(1.0), Some((0, 0)));
+        // To 6.6 km/s: the 200-day row, day 1 the cheapest of the three.
+        assert!((p.budget_dv(0.2) - 6.6).abs() < 1e-6);
+        assert_eq!(p.fastest(0.2), Some((1, 1)));
+        assert_eq!(p.earliest(0.2), Some((0, 1)));
+        // To the least: only the cheapest.
+        assert_eq!(p.fastest(0.0), Some((0, 2)));
     }
 }

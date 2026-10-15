@@ -130,8 +130,10 @@ steps added, moved and removed; "+ Ship" adds one); each change
 designs the ship again from the step it changes, legs that cannot be
 flown say why at once, and Ctrl+Z undoes. Selecting a leg shows its
 options: between planets its porkchop, where a click pins the leg to a
-date and duration; within a system its durations, and a sweep of
-more. The top bar picks the body the camera follows and
+date and duration, a Δv budget with the fastest leg and the earliest
+arrival within it, and the next window; within a system its durations,
+and a sweep of more. The selected leg's bar on the timeline can be
+dragged to move its departure. The top bar picks the body the camera follows and
 the frame paths are drawn in (centered on the focus, or rotating with
 Earth and the Moon, the Sun and Earth, or the Sun and Mars; `--frame`).
 Right drag orbits, the wheel zooms (down to a tenth of the focus's

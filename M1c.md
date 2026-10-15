@@ -6,6 +6,32 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, part 7: beyond picking (asked 2026-10-15). Tried and kept,
+  for legs between planets:
+  - A Δv budget: a slider under the porkchop, from its least Δv to 1.5
+    times it, dims the cells over it. "Fly fastest" pins the shortest
+    leg within it (the cheaper of equals), "Fly earliest arrival" the
+    one that arrives first; both are marked on the chart (■, □) and
+    named under it. Within 1.1 times the least for the 2033 Mars
+    window: 157.7 days against the cheapest's 199.7, flown at 6.549
+    km/s (patched conics: 6.57).
+  - "Later window" moves the leg's window a synodic period of its
+    planets on, unpinned (a pin's duration dropped with it); "Default
+    window" takes the window away.
+  - The selected leg's bar dragged on the timeline moves its departure:
+    it lands on the cheapest leg of its porkchop leaving nearest then
+    (dragged 60 days: 2033-06-30, 385.66 days, a slow transfer). A drag
+    that starts anywhere else pans.
+  - Pins and these moves are undoable like edits.
+  Considered and not built:
+  - Moving a ship's start moving its pinned legs: departures between
+    planets are fixed by the planets, not by the ship, so shifting them
+    with the start is wrong for the legs that can be pinned.
+  - Goals within a system (fastest under a Δv, arrive by): its options
+    are a handful of durations, and designs of several at once land
+    hundreds of m/s apart (part 5), so a goal over them would pick
+    noise; a sweep, then a click, does the job.
+
 - Step 7, part 6: editing. As planned (step 7 plan, item 6); where it
   differs or adds:
   - A click on a ship's row in the panel opens its editor in place of

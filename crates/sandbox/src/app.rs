@@ -24,7 +24,7 @@ use damascene_core::prelude::*;
 use damascene_core::scroll::{ScrollAlignment, ScrollRequest};
 use damascene_core::surface::AppTexture;
 use damascene_core::toast::ToastSpec;
-use damascene_core::widgets::text_input;
+use damascene_core::widgets::{slider, text_input};
 use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
@@ -154,6 +154,9 @@ pub struct Shell {
     selection: Selection,
     /// The plan before each change, for undo.
     undo: Vec<Plan>,
+    /// A drag moving the selected leg's departure: where it pressed, and
+    /// how far it has gone, days.
+    moving: Option<(f32, timeline::Movable)>,
     pub panel_open: bool,
     seen: Option<Seen>,
     /// Labels' sizes by their text.
@@ -205,6 +208,7 @@ impl Shell {
             editor: None,
             selection: Selection::default(),
             undo: Vec::new(),
+            moving: None,
             panel_open: true,
             seen: None,
             sizes: HashMap::new(),
@@ -254,9 +258,9 @@ impl Shell {
 
     /// Pins ship `s`'s leg at `step` to leave at `depart` (none: as its
     /// window allows) taking `days` (none: as the planner picks), and
-    /// designs it again from there.
+    /// designs it again from there; undoable.
     fn pin(&mut self, (s, step): (usize, usize), depart: Option<Epoch>, days: Vec<f64>) {
-        let Some(plan) = self.plan.as_mut() else {
+        let Some(plan) = self.plan.as_ref() else {
             return;
         };
         let mut ship = plan.plan.ships[s].clone();
@@ -265,9 +269,8 @@ impl Shell {
         };
         go.depart = depart;
         go.days = days;
-        plan.edit(s, ship, Some(step));
-        // The items after the edit are gone; the panel keeps the leg.
-        self.selected = None;
+        // The items after the edit go; the panel keeps the leg.
+        self.change(s, ship);
     }
 
     /// A click on the options panel's chart at `at`: the porkchop's cell
@@ -284,11 +287,93 @@ impl Shell {
         if p.at(column, row).is_nan() {
             return;
         }
-        // To the minute and a hundredth of a day, as the plan's file
-        // keeps them.
+        self.pin_cell(leg, &p, column, row);
+    }
+
+    /// The selected item, if it is a leg between planets whose porkchop
+    /// is shown: its bar can be dragged.
+    fn movable(&self) -> Option<(usize, usize)> {
+        let (s, k) = self.selected?;
+        let item = self.plan.as_ref()?.ships.get(s)?.items.get(k)?;
+        (item.kind == ItemKind::Leg
+            && self.leg == Some((s, item.step))
+            && self.options.porkchop.is_some())
+        .then_some((s, k))
+    }
+
+    /// Moves ship `s`'s leg (item `k`) to leave `days` later: pinned to
+    /// the cheapest cell of its porkchop leaving nearest then.
+    fn move_leg(&mut self, (s, k): (usize, usize), days: f64) {
+        let (Some(leg), Some(p)) = (self.leg, self.options.porkchop.clone()) else {
+            return;
+        };
+        let Some(item) = self.plan.as_ref().and_then(|p| p.ships[s].items.get(k)) else {
+            return;
+        };
+        let depart = item.start.plus_days(days);
+        let span = p.window.1.0 - p.window.0.0;
+        let column = match p.columns {
+            1 => 0,
+            n => (((depart.0 - p.window.0.0) / span * (n - 1) as f64)
+                .round()
+                .max(0.0) as usize)
+                .min(n - 1),
+        };
+        let row = (0..p.durations.len())
+            .filter(|&r| !p.at(column, r).is_nan())
+            .min_by(|&a, &b| p.at(column, a).total_cmp(&p.at(column, b)));
+        if let Some(row) = row {
+            self.pin_cell(leg, &p, column, row);
+        }
+    }
+
+    /// The porkchop of the leg whose options are shown, if computed.
+    pub fn porkchop(&self) -> Option<Arc<Porkchop>> {
+        self.options.porkchop.clone()
+    }
+
+    /// Sets the options' Δv budget, as its slider does (0 to 1).
+    pub fn set_budget(&mut self, budget: f32) {
+        self.options.budget = budget.clamp(0.0, 1.0);
+    }
+
+    /// Pins the leg to a porkchop's cell: its departure to the minute
+    /// and its duration to a hundredth of a day, as the plan's file keeps
+    /// them.
+    fn pin_cell(&mut self, leg: (usize, usize), p: &Porkchop, column: usize, row: usize) {
         let depart = Epoch((p.depart(column).0 * 1_440.0).round() / 1_440.0);
         let days = (p.durations[row] * 100.0).round() / 100.0;
         self.pin(leg, Some(depart), vec![days]);
+    }
+
+    /// Moves the leg's window a synodic period of its planets `later`,
+    /// or back to its default (from when the ship is ready); unpinned,
+    /// the pin's duration dropped with it.
+    fn move_window(&mut self, (s, step): (usize, usize), later: bool) {
+        let Some(plan) = self.plan.as_ref() else {
+            return;
+        };
+        let Some(window) = self.leg_item((s, step)).and_then(|(_, i)| i.window) else {
+            return;
+        };
+        let Some((from, to, aero)) = crate::windows::ends(&plan.plan, s, step) else {
+            return;
+        };
+        let Ok(c) = crate::plan::world().crossing(&from.kind, &to.kind, aero) else {
+            return;
+        };
+        let mut ship = plan.plan.ships[s].clone();
+        let Some(Step::Go(go)) = ship.steps.get_mut(step) else {
+            return;
+        };
+        if go.depart.take().is_some() {
+            go.days.clear();
+        }
+        go.window = later.then(|| {
+            let synodic = c.synodic_days(window.0);
+            (window.0.plus_days(synodic), window.1.plus_days(synodic))
+        });
+        self.change(s, ship);
     }
 
     /// The options section for the leg shown, if any.
@@ -297,10 +382,12 @@ impl Shell {
         let plan = self.plan.as_ref()?;
         let (from, to, aero) = crate::windows::ends(&plan.plan, s, step)?;
         let item = self.leg_item((s, step));
-        let pinned = matches!(
-            plan.plan.ships[s].steps.get(step),
-            Some(Step::Go(go)) if go.depart.is_some()
-        );
+        let go = match plan.plan.ships[s].steps.get(step) {
+            Some(Step::Go(go)) => Some(go),
+            _ => None,
+        };
+        let pinned = go.is_some_and(|g| g.depart.is_some());
+        let windowed = go.is_some_and(|g| g.window.is_some());
         let chart = cx.rect_of_key(options::CHART_KEY);
         let hover = match (self.pointer, chart) {
             (Some((x, y)), Some(r)) if r.contains(x, y) => {
@@ -318,11 +405,17 @@ impl Shell {
             item: item.map(|(_, i)| i),
             color: item.map_or([0.5; 3], |(k, _)| options::color(&plan.ships[s], k)),
             pinned,
+            windowed,
             hover,
         };
         let body = if plan.windows.legs.contains_key(&(s, step)) {
             match &self.options.porkchop {
-                Some(p) => options::porkchop_section(p, &leg, chart.map_or(350.0, |r| r.w)),
+                Some(p) => options::porkchop_section(
+                    p,
+                    &leg,
+                    chart.map_or(350.0, |r| r.w),
+                    self.options.budget,
+                ),
                 None => text("computing").caption().muted(),
             }
         } else {
@@ -889,6 +982,29 @@ impl Shell {
             UiEventKind::PointerDown | UiEventKind::Drag if on_axis => {
                 self.clock.seek(self.timeline.at(f.clamp(0.0, 1.0)));
             }
+            // The selected leg's bar, if it can be moved: moving it.
+            UiEventKind::PointerDown if bar.is_some() && self.movable() == bar => {
+                let item = bar.unwrap();
+                self.moving = Some((
+                    x,
+                    timeline::Movable {
+                        item,
+                        shift_days: 0.0,
+                    },
+                ));
+            }
+            UiEventKind::Drag if self.moving.is_some() => {
+                let (x0, m) = self.moving.as_mut().unwrap();
+                m.shift_days = f64::from((x - *x0) / axis.w.max(1.0)) * self.timeline.days();
+            }
+            UiEventKind::PointerUp if self.moving.is_some() => {
+                let (x0, m) = self.moving.take().unwrap();
+                if (x - x0).abs() >= 3.0 {
+                    self.move_leg(m.item, m.shift_days);
+                } else {
+                    self.clock.seek(self.timeline.at(f));
+                }
+            }
             UiEventKind::PointerDown if !on_axis => self.timeline.press((x, y)),
             UiEventKind::Drag => self.timeline.drag((x, y), axis.w),
             UiEventKind::PointerUp if !on_axis => {
@@ -1058,6 +1174,13 @@ impl App for Shell {
                 self.plan.as_ref().map(|p| &p.windows),
                 self.clock.t,
                 self.selected,
+                match self.moving {
+                    Some((_, m)) => Some(m),
+                    None => self.movable().map(|item| timeline::Movable {
+                        item,
+                        shift_days: 0.0,
+                    }),
+                },
             ),
             row([
                 text(self.status()).muted().caption().tabular_numerals(),
@@ -1182,6 +1305,33 @@ impl App for Shell {
             && let Some(leg) = self.leg
         {
             self.pin(leg, None, Vec::new());
+        } else if slider::apply_event(
+            &mut self.options.budget,
+            &event,
+            options::BUDGET_KEY,
+            0.05,
+            0.2,
+        ) {
+            // The budget moved.
+        } else if let Some(goal) = [options::FASTEST_KEY, options::EARLIEST_KEY]
+            .into_iter()
+            .find(|k| event.is_click_or_activate(k))
+            && let (Some(leg), Some(p)) = (self.leg, self.options.porkchop.clone())
+        {
+            let budget = self.options.budget;
+            let cell = match goal {
+                options::FASTEST_KEY => p.fastest(budget),
+                _ => p.earliest(budget),
+            };
+            if let Some((column, row)) = cell {
+                self.pin_cell(leg, &p, column, row);
+            }
+        } else if let Some(key) = [options::LATER_KEY, options::RESET_WINDOW_KEY]
+            .into_iter()
+            .find(|k| event.is_click_or_activate(k))
+            && let Some(leg) = self.leg
+        {
+            self.move_window(leg, key == options::LATER_KEY);
         } else if event.is_click_or_activate(options::SWEEP_KEY)
             && let Some((s, step)) = self.leg
             && let Some(offered) = self

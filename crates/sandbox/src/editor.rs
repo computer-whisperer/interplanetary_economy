@@ -189,7 +189,7 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
                 .parse()
                 .map_err(|_| format!("{text:?} is not a number"))?;
             if !d.is_finite() || d < 0.0 {
-                return Err("a wait is not negative".into());
+                return Err("a wait is a number of days, not negative".into());
             }
             ship.steps[i] = Step::Wait(d);
         }
