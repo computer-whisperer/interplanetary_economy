@@ -111,6 +111,8 @@ pub struct Shell {
     pub camera: MapCamera,
     pub clock: Clock,
     pub timeline: Timeline,
+    /// The clock's time when the timeline last followed it.
+    followed: Epoch,
     pub stats: Stats,
     pub frame: Frame,
     pub plan: Option<Loaded>,
@@ -161,6 +163,7 @@ impl Shell {
             camera: MapCamera::new(eph, earth),
             clock: Clock::new(t, eph.span()),
             timeline: Timeline::new(t, eph.span()),
+            followed: t,
             stats: Stats::default(),
             frame: Frame::Focus,
             plan: None,
@@ -202,7 +205,7 @@ impl Shell {
         self.plan = Some(plan);
         self.selected = None;
         self.built = None;
-        self.timeline.fitted = true;
+        self.timeline.refit();
         self.poll();
     }
 
@@ -253,7 +256,8 @@ impl Shell {
             plan.poll();
             self.timeline.fit(plan.span());
         }
-        self.timeline.follow(self.clock.t);
+        self.timeline.follow(self.followed, self.clock.t);
+        self.followed = self.clock.t;
     }
 
     /// Builds the paths and events, if the frame, its center, the plan or
@@ -511,33 +515,38 @@ impl Shell {
     }
 
     /// Presses, drags and releases on the timeline: on the axis, seeking
-    /// the clock; on the lanes, panning, and a click on a bar selecting
-    /// its item and seeking to where it landed. `false` if the event is
-    /// not the timeline's.
+    /// the clock (held to the span shown); on the lanes, panning, a click
+    /// on a bar selecting its item (on empty space, nothing) and seeking
+    /// to where it landed, and a double click on empty space fitting the
+    /// plan again. `false` if the event is not the timeline's.
     fn timeline_event(&mut self, event: &UiEvent, cx: &EventCx) -> bool {
         let Some(route) = event.route() else {
             return false;
         };
         let bar = timeline::parse_bar_key(route);
-        let on_lanes = route == timeline::LANES_KEY || bar.is_some();
-        if route != timeline::AXIS_KEY && !on_lanes {
+        let on_axis = route == timeline::AXIS_KEY;
+        if !on_axis && route != timeline::LANES_KEY && bar.is_none() {
             return false;
         }
-        let (Some(axis), Some(x)) = (cx.rect_of_key(timeline::AXIS_KEY), event.pointer_x()) else {
+        let (Some(axis), Some((x, y))) = (cx.rect_of_key(timeline::AXIS_KEY), event.pointer) else {
             return true;
         };
-        let at = self.timeline.at(f64::from((x - axis.x) / axis.w.max(1.0)));
+        let f = f64::from((x - axis.x) / axis.w.max(1.0));
         match event.kind {
-            UiEventKind::PointerDown | UiEventKind::Drag if route == timeline::AXIS_KEY => {
-                self.clock.seek(at);
+            UiEventKind::PointerDown | UiEventKind::Drag if on_axis => {
+                self.clock.seek(self.timeline.at(f.clamp(0.0, 1.0)));
             }
-            UiEventKind::PointerDown => self.timeline.press(x),
-            UiEventKind::Drag => self.timeline.drag(x, axis.w),
-            UiEventKind::PointerUp => {
+            UiEventKind::PointerDown if !on_axis => self.timeline.press((x, y)),
+            UiEventKind::Drag => self.timeline.drag((x, y), axis.w),
+            UiEventKind::PointerUp if !on_axis => {
+                // Released within a click's slop of where it pressed.
                 let clicked = self.timeline.release();
                 if clicked {
-                    self.clock.seek(at);
+                    self.clock.seek(self.timeline.at(f));
                     self.select(bar);
+                    if bar.is_none() && event.click_count >= 2 {
+                        self.timeline.refit();
+                    }
                 }
             }
             _ => {}

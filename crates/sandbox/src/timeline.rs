@@ -16,6 +16,8 @@ pub const AXIS_KEY: &str = "timeline:axis";
 /// The lanes, and the gutter of the ships' names beside them.
 pub const LANES_KEY: &str = "timeline:lanes";
 pub const GUTTER_KEY: &str = "timeline:gutter";
+/// The lanes' and gutter's scrolling.
+const SCROLL_KEY: &str = "timeline:scroll";
 
 /// The shortest span shown, days: an hour.
 const SHORTEST_DAYS: f64 = 1.0 / 24.0;
@@ -37,8 +39,8 @@ const LANES_SHOWN: usize = 8;
 const WHEEL_ZOOM: f64 = 1.25;
 /// A press that moves less than this, px, is a click, not a pan.
 const CLICK_PX: f32 = 3.0;
-/// When the clock leaves the span shown, the span pages so that the
-/// clock is this share of it in from the edge it crossed.
+/// When the clock crosses out of the span shown, the span pages so that
+/// the clock is this share of it in from the edge it crossed.
 const PAGE_MARGIN: f64 = 0.05;
 /// A plan is fitted with this share of the span spare at either end.
 const FIT_MARGIN: f64 = 0.02;
@@ -69,10 +71,10 @@ pub struct Timeline {
 }
 
 /// A press on the lanes: where the pointer went down, the span then, and
-/// whether it has moved far enough to pan.
+/// whether it has moved far enough to be no click.
 #[derive(Clone, Copy, Debug)]
 struct Press {
-    x: f32,
+    at: (f32, f32),
     span: (Epoch, Epoch),
     moved: bool,
 }
@@ -144,8 +146,13 @@ impl Timeline {
         );
     }
 
-    /// Pages the span to `t`, where `t` has left it.
-    pub fn follow(&mut self, t: Epoch) {
+    /// Pages the span to the clock, now at `t`, where it has crossed out of
+    /// it since it was at `before`: not where the span was moved off it.
+    pub fn follow(&mut self, before: Epoch, t: Epoch) {
+        let inside = |t: Epoch| t.0 >= self.span.0.0 && t.0 <= self.span.1.0;
+        if inside(t) || !inside(before) {
+            return;
+        }
         let days = self.days();
         if t.0 > self.span.1.0 {
             self.show(t.0 - PAGE_MARGIN * days, days);
@@ -157,26 +164,26 @@ impl Timeline {
         self.fitted = false;
     }
 
-    /// A press on the lanes at `x`.
-    pub fn press(&mut self, x: f32) {
+    /// A press on the lanes at `at`.
+    pub fn press(&mut self, at: (f32, f32)) {
         self.press = Some(Press {
-            x,
+            at,
             span: self.span,
             moved: false,
         });
     }
 
-    /// The pointer pressed on the lanes is at `x`, on lanes `width` px
-    /// wide: past a click's slop, the span pans with it.
-    pub fn drag(&mut self, x: f32, width: f32) {
+    /// The pointer pressed on the lanes is at `at`, on lanes `width` px
+    /// wide: past a click's slop, the span pans with it across.
+    pub fn drag(&mut self, at: (f32, f32), width: f32) {
         let Some(mut p) = self.press else {
             return;
         };
-        p.moved |= (x - p.x).abs() >= CLICK_PX;
+        p.moved |= (at.0 - p.at.0).hypot(at.1 - p.at.1) >= CLICK_PX;
         self.press = Some(p);
         if p.moved && width > 0.0 {
             let days = p.span.1.0 - p.span.0.0;
-            let shift = f64::from(p.x - x) / f64::from(width) * days;
+            let shift = f64::from(p.at.0 - at.0) / f64::from(width) * days;
             self.show(p.span.0.0 + shift, days);
             self.fitted = false;
         }
@@ -185,6 +192,11 @@ impl Timeline {
     /// The press ends: whether it was a click (not a pan).
     pub fn release(&mut self) -> bool {
         self.press.take().is_some_and(|p| !p.moved)
+    }
+
+    /// Follows the plan again.
+    pub fn refit(&mut self) {
+        self.fitted = true;
     }
 }
 
@@ -227,13 +239,16 @@ impl Step {
         }
     }
 
-    /// The room its labels need between ticks, px.
+    /// The room its labels need between ticks, px: their width at the
+    /// caption's size with tabular numerals (`2045-03` 54.5 px,
+    /// `2045-03-05` 77.8), 10 px about them, and for months, room in
+    /// February (0.92 of a mean month).
     fn room(self) -> f32 {
         match self {
-            Step::Years(_) => 44.0,
-            Step::Months(_) => 64.0,
-            Step::Days(_) => 84.0,
-            Step::Hours(_) => 92.0,
+            Step::Years(_) => 46.0,
+            Step::Months(_) => 72.0,
+            Step::Days(_) => 90.0,
+            Step::Hours(_) => 96.0,
         }
     }
 }
@@ -470,7 +485,7 @@ pub fn strip(
     if !ships.is_empty() {
         parts.push(
             scroll([row([names, lanes]).height(Size::Fixed(height))])
-                .key("timeline:scroll")
+                .key(SCROLL_KEY)
                 .height(Size::Fixed(ships.len().min(LANES_SHOWN) as f32 * LANE_PX)),
         );
     }
@@ -621,7 +636,7 @@ mod tests {
             }
         }
         // Five-day steps start each month again at its first.
-        let t = ticks((d(2045, 1, 20), d(2045, 3, 20)), 1000.0);
+        let t = ticks((d(2045, 1, 20), d(2045, 3, 11)), 1000.0);
         let days: Vec<u32> = t.iter().map(|t| t.t.ymd().2 as u32).collect();
         assert!(
             days.windows(2).all(|w| w[1] == w[0] + 5 || w[1] == 1),
@@ -641,10 +656,10 @@ mod tests {
         tl.fit((start, start.plus_days(1.0)));
         assert!((tl.days() - FIT_DAYS * (1.0 + 2.0 * FIT_MARGIN)).abs() < 1e-9);
         let span = tl.span;
-        tl.follow(start.plus_days(2.0));
+        tl.follow(start, start.plus_days(2.0));
         assert_eq!(tl.span, span, "the clock within the span");
         let later = tl.span.1.plus_days(0.1);
-        tl.follow(later);
+        tl.follow(start.plus_days(2.0), later);
         assert!((tl.fraction(later) - PAGE_MARGIN).abs() < 1e-9);
         assert!(!tl.fitted);
         tl.fit((start, start.plus_days(100.0)));
@@ -653,8 +668,20 @@ mod tests {
             "no longer fitted"
         );
         let earlier = tl.span.0.plus_days(-3.0);
-        tl.follow(earlier);
+        tl.follow(later, earlier);
         assert!((tl.fraction(earlier) - (1.0 - PAGE_MARGIN)).abs() < 1e-9);
+        // The span moved off the clock stays where it was put, the clock
+        // still or moving outside it.
+        let clock = tl.at(0.5);
+        tl.zoom(0.95, 0.1);
+        assert!(tl.fraction(clock) < 0.0);
+        let span = tl.span;
+        tl.follow(clock, clock);
+        tl.follow(clock, clock.plus_days(0.01));
+        assert_eq!(tl.span, span);
+        tl.refit();
+        tl.fit((start, start.plus_days(100.0)));
+        assert!((tl.days() - 100.0 * (1.0 + 2.0 * FIT_MARGIN)).abs() < 1e-9);
     }
 
     /// A press that moves less than a click's slop is a click; past it,
@@ -663,14 +690,18 @@ mod tests {
     fn a_press_that_moves_pans() {
         let mut tl = Timeline::new(Epoch::from_ymd(2045, 3, 1), limits());
         let span = tl.span;
-        tl.press(100.0);
-        tl.drag(102.0, 1000.0);
+        tl.press((100.0, 10.0));
+        tl.drag((102.0, 11.0), 1000.0);
         assert_eq!(tl.span, span);
         assert!(tl.release(), "a click");
-        tl.press(100.0);
-        tl.drag(300.0, 1000.0);
+        tl.press((100.0, 10.0));
+        tl.drag((100.0, 200.0), 1000.0);
+        assert_eq!(tl.span, span);
+        assert!(!tl.release(), "moved down: no click, no pan");
+        tl.press((100.0, 10.0));
+        tl.drag((300.0, 10.0), 1000.0);
         assert!((tl.span.0.0 - (span.0.0 - 0.2 * 365.25)).abs() < 1e-9);
-        tl.drag(102.0, 1000.0);
+        tl.drag((102.0, 10.0), 1000.0);
         assert!(
             (tl.span.0.0 - (span.0.0 - 0.002 * 365.25)).abs() < 1e-9,
             "back within the slop, still a pan"

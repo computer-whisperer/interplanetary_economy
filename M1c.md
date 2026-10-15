@@ -44,11 +44,17 @@ at the end).
 
 - Step 7, part 1: the timeline. As planned (step 7 plan, item 1);
   where it differs or adds:
-  - A press on the axis seeks the clock; on the lanes, a press that
-    moves 3 px or more pans, and one that does not seeks the clock to
-    where it landed and selects the bar under it (none on empty
-    space). The wheel over the axis or the lanes zooms by 1.25× a line;
-    over the gutter of names, the lanes scroll.
+  - A press on the axis seeks the clock, held to the span shown; on the
+    lanes, a press that moves 3 px or more (either way) pans across,
+    and one that does not seeks the clock to where it was released and
+    selects the bar it pressed (none on empty space). A double click
+    on empty lanes fits the plan again. The wheel over the axis or the
+    lanes zooms by 1.25× a line; over the gutter of names, the lanes
+    scroll.
+  - The span pages when the clock crosses out of it (playing, or
+    jumping), not when the span is zoomed or panned off the clock.
+  - Eight lanes show before they scroll (the plan's "a third of the
+    window" not built).
   - Ticks on a ladder from an hour to ten years, each labeled with its
     date (years `2045`, months `2045-03`, days `2045-03-05`, hours
     `03-05 12:00`); days restart at each month's first.
@@ -59,9 +65,20 @@ at the end).
     now does, before scrolling.
   - Checks: bars within 0.0000 px of their items' times, in their
     lanes, at 1 and 2 physical pixels to a logical one; a click on a
-    bar selects it and seeks to the click; a press on the axis seeks;
-    the wheel keeps the moment under the pointer. The ladder's steps
-    and labels, the fit, paging and panning are unit-tested.
+    bar selects it and seeks to the click; a press on the axis seeks,
+    and dragged past its end holds the clock at the span's end; the
+    wheel keeps the moment under the pointer, frames after; a press
+    moved off a bar selects nothing; a double click fits the plan; the
+    plan is fitted with the clock set elsewhere. The ladder's steps and
+    labels, the fit, paging and panning are unit-tested.
+  - A review (a sub-agent, with runtime probes) found: paging undoing
+    zooms and pans whenever the clock was off the span, even paused;
+    the axis dragged past its end racing the clock a span a frame; a
+    press left over making a later click on the axis deselect; only
+    horizontal motion breaking a click; the plan never fitted with the
+    clock set before it; month and day labels a few pixels short of
+    room. All fixed; the first, the second and the fifth fail their
+    tests when undone.
   - Cost, published plan (18 ships, 38 items) at 1920×1080: the
     timeline's elements 0.09 ms a frame to build; the whole UI's build
     and layout 0.93 ms median, 1.35 ms at the 95th percentile.

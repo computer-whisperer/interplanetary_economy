@@ -154,19 +154,87 @@ fn bars_at_their_times_and_clicks() {
         assert!((app.clock.t.0 - app.timeline.at(f).0).abs() * 86_400.0 < 1e-3);
         assert_eq!(app.selected, Some((1, k)), "the axis selects nothing");
 
-        // The wheel over the lanes zooms about the pointer.
+        // The wheel over the lanes zooms about the pointer: five lines.
         draw(&mut app, &mut ui);
         let (x, y) = (axis.x + 0.6 * axis.w, lanes.y + 1.0);
         let f = f64::from((x - axis.x) / axis.w);
         let (days, under) = (app.timeline.days(), app.timeline.at(f));
         let e = ui
-            .pointer_wheel_event(x, y, 0.0, -50.0)
+            .pointer_wheel_event(x, y, 0.0, -250.0)
             .expect("a wheel event over the lanes");
         let cx = EventCx::new().with_ui_state(ui.ui_state());
         assert!(app.on_wheel_event(e, &cx), "the timeline takes the wheel");
         assert!(app.timeline.days() < days * 0.9);
+        // A frame later, the clock left outside the span zoomed into.
+        app.tick(0.0);
+        assert!(app.timeline.fraction(app.clock.t) < 0.0);
         assert!((app.timeline.at(f).0 - under.0).abs() * 86_400.0 < 1e-3);
+
+        // Dragging on the axis past its end holds the clock at the span's
+        // end, frame after frame.
+        draw(&mut app, &mut ui);
+        let (x, y) = (axis.x + axis.w - 2.0, axis.y + axis.h / 2.0);
+        let mut events = ui.pointer_down(Pointer::mouse(x, y, PointerButton::Primary));
+        for k in 1..8 {
+            events.extend(
+                ui.pointer_moved(Pointer::moving(x + 10.0 * k as f32, y))
+                    .events,
+            );
+        }
+        let cx = EventCx::new().with_ui_state(ui.ui_state());
+        for e in events {
+            app.on_event(e, &cx);
+            app.tick(0.0);
+        }
+        let up = ui.pointer_up(Pointer::mouse(x + 70.0, y, PointerButton::Primary));
+        let cx = EventCx::new().with_ui_state(ui.ui_state());
+        for e in up {
+            app.on_event(e, &cx);
+        }
+        assert_eq!(app.clock.t, app.timeline.span.1);
+
+        // A double click on empty lanes fits the plan again.
+        assert!(!app.timeline.fitted);
+        draw(&mut app, &mut ui);
+        let lanes = ui.rect_of_key(timeline::LANES_KEY).unwrap();
+        let empty = (lanes.x + 2.0, lanes.y + lanes.h - 2.0);
+        click(&mut app, &mut ui, empty);
+        click(&mut app, &mut ui, empty);
+        app.tick(0.0);
+        assert!(app.timeline.fitted);
+        let span = app.plan.as_ref().unwrap().span();
+        assert!(app.timeline.fraction(span.0) > 0.0 && app.timeline.fraction(span.1) < 1.0);
+        // A press on a bar that moves off it selects nothing.
+        app.select(None);
+        draw(&mut app, &mut ui);
+        let r = ui.rect_of_key(&bar_key(0, 0)).unwrap();
+        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let mut events = ui.pointer_down(Pointer::mouse(x, y, PointerButton::Primary));
+        events.extend(ui.pointer_moved(Pointer::moving(x, y + 200.0)).events);
+        events.extend(ui.pointer_up(Pointer::mouse(x, y + 200.0, PointerButton::Primary)));
+        let cx = EventCx::new().with_ui_state(ui.ui_state());
+        for e in events {
+            app.on_event(e, &cx);
+        }
+        assert_eq!(app.selected, None);
     }
+}
+
+/// With the clock set before the plan, the timeline still opens on the
+/// plan.
+#[test]
+fn the_plan_is_fitted_with_the_clock_elsewhere() {
+    let eph = Ephemeris::standard();
+    let mut app = Shell::new(Epoch::from_ymd(2044, 1, 1));
+    app.plan = Some(Loaded::start(
+        Plan::parse(TWO, eph, Places::standard()).unwrap(),
+    ));
+    app.tick(0.0);
+    app.plan.as_mut().unwrap().wait();
+    app.tick(0.0);
+    let span = app.plan.as_ref().unwrap().span();
+    assert!(app.timeline.fitted);
+    assert!(app.timeline.fraction(span.0) > 0.0 && app.timeline.fraction(span.1) < 1.0);
 }
 
 /// The timeline's CPU time with the published plan (18 ships) at

@@ -332,7 +332,7 @@ strictly dominated, the layer gets cut or reworked.
 
 The **map view** is the center interface: the real solar system in 3D at
 true scale, after KSP's map view, as realistic as we can afford, on HDR
-displays. It has a time scrubber, and frames that follow the camera's
+displays. It has a timeline of the plan's ships, and frames that follow the camera's
 focus or turn with two bodies (Earth–Moon, where Lagrange-point orbits are
 closed loops, or Sun–planet). M1c builds it, with its own wgpu renderer
 and damascene for the panels (M1c.md).
