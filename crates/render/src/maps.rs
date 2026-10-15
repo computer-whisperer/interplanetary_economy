@@ -395,7 +395,7 @@ impl MapsPass {
         let flat = one(wgpu::TextureFormat::Rg16Float, &[0; 4]);
         let none = one(wgpu::TextureFormat::R8Unorm, &[0]);
         let no_table = one(wgpu::TextureFormat::Rgba16Float, &[0; 8]);
-        let no_shape = faces(device, queue, &[(1, vec![0; 24])]);
+        let no_shape = faces(device, queue, &[(1, vec![0; 48])]);
         let plain = group(
             device,
             &layout,
@@ -464,7 +464,7 @@ impl MapsPass {
                 queue,
                 &m.shape
                     .as_ref()
-                    .map_or_else(|| vec![(1, vec![0; 24])], |s| s.levels()),
+                    .map_or_else(|| vec![(1, vec![0; 48])], |s| s.levels()),
             );
             let g = group(
                 device,
@@ -516,7 +516,7 @@ fn single(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::Te
 }
 
 /// A shape's faces (`Shape::levels`: each level's side and its six
-/// layers' `Rg16Float` texels), as a six-layer array with those levels.
+/// layers' `Rgba16Float` texels), as a six-layer array with those levels.
 fn faces(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -533,7 +533,7 @@ fn faces(
         mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rg16Float,
+        format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -548,7 +548,7 @@ fn faces(
             data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * side),
+                bytes_per_row: Some(8 * side),
                 rows_per_image: Some(*side),
             },
             wgpu::Extent3d {

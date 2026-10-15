@@ -28,11 +28,12 @@ const SAMPLES_PER_STEP: i64 = 24;
 /// missed it by 290 km; at 10 days, by 34 m.
 const MAX_SPACING_S: f64 = 10.0 * SECONDS_PER_DAY;
 
-/// A small body's samples, closer: the camera comes within 10 km of a
-/// body a few hundred metres across, where a pixel is ~8 m. At a day
-/// apart, 1996 FG3's line missed it by 460 m in March 2045; at 6 hours,
-/// by 2 m.
-const SMALL_BODY_SPACING_S: f64 = 0.25 * SECONDS_PER_DAY;
+/// A small body's samples, closer: the camera comes within a tenth of a
+/// body's extent of it (`camera::min_altitude`), 70 m from 2009 UY19's
+/// center, where a pixel is 6 cm. At a day apart, 1996 FG3's line missed
+/// it by 460 m in March 2045; at 6 hours, 2009 UY19's by 13 cm (2.6
+/// pixels there); at 3 hours, by 5 mm.
+const SMALL_BODY_SPACING_S: f64 = 0.125 * SECONDS_PER_DAY;
 
 /// Colors (linear, as shown): planets' and moons' orbits, small bodies'
 /// fainter; the focus's brighter.
@@ -243,11 +244,12 @@ mod tests {
 
     /// Each orbit's line passes through its body now: its path, placed by
     /// its parent's pose, at the moment. Within a fifth of a pixel of its
-    /// center seen from the closest the camera comes (10 km over its
-    /// surface, 50° across 1080 pixels).
+    /// center seen from the closest the camera comes (`min_altitude` over
+    /// its extent, 50° across 1080 pixels), the shapes read.
     #[test]
     fn lines_pass_through_their_bodies() {
         let eph = Ephemeris::standard();
+        crate::maps::wait().expect("data/bodies reads");
         let bodies = crate::bodies::drawn(eph);
         let t = Epoch::from_ymd(2045, 3, 1).plus_days(0.37);
         let mut orbits = Orbits::new(eph, &bodies, t);
@@ -265,7 +267,8 @@ mod tests {
             let at = pose.to_world(path.at(t.seconds()).expect("now is in the window"));
             let body = eph.barycentric_position(o.body, t);
             let off = (at - body).length();
-            let closest = eph.body(o.body).radius + crate::camera::MIN_ALTITUDE_KM;
+            let extent = crate::bodies::extent(eph, o.body);
+            let closest = extent + crate::camera::min_altitude(extent);
             let pixel = closest * 2.0 * 25f64.to_radians().tan() / 1080.0;
             println!(
                 "{}: {off:.2e} km off, {:.3} px from {closest:.0} km",

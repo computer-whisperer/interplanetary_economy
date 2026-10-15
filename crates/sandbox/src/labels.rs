@@ -271,7 +271,7 @@ pub fn bodies(
         .map(|b| {
             let ball = Ball {
                 center: eph.barycentric_position(b, t),
-                radius: eph.body(b).radius,
+                radius: crate::bodies::extent(eph, b),
             };
             let radius =
                 (ball.radius / (ball.center - eye).length()).min(1.0).asin() * view.px_per_radian();

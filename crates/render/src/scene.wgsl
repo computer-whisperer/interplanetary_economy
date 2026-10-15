@@ -75,8 +75,9 @@ struct Sphere {
     // Its rings' inner and outer radii, km (0 for none).
     rings: vec4<f32>,
     // A shaped body's least and greatest radius, km (its bounding sphere is
-    // the greatest: `radius` and `altitude` are that's), the bound on its
-    // field's slope, and its volume-equivalent radius (scene.rs).
+    // the greatest: `radius` and `altitude` are that's), the angle a step
+    // of its march may cross with its faces' slope bounds, and its
+    // volume-equivalent radius (scene.rs).
     shape: vec4<f32>,
 }
 
@@ -226,7 +227,9 @@ struct Piece {
 @group(3) @binding(10) var ring_map: texture_2d<f32>;
 // A shaped body's faces (shape.rs): six layers of its radius between its
 // least and greatest, a high half float and the rest over `SHAPE_LOW`,
-// each face bordered by `SHAPE_BORDER` of its side past its edges.
+// and a bound on its field's slope over the directions within a step's
+// reach (`Shape::local_slopes`); each face bordered by `SHAPE_BORDER` of
+// its side past its edges.
 @group(3) @binding(11) var shape_faces: texture_2d_array<f32>;
 @group(1) @binding(0) var<storage, read> vertices: array<PathVertex>;
 @group(1) @binding(1) var<storage, read> paths: array<PathInfo>;
@@ -437,8 +440,9 @@ const SHAPE_STEPS: u32 = 192u;
 const SHADOW_STEPS: u32 = 128u;
 
 // The radius of shaped body `s` toward `l` (any length, the body's
-// frame), km, at its faces' `level`.
-fn shape_radius(s: Sphere, l: vec3<f32>, level: f32) -> f32 {
+// frame), km, at its faces' `level`; and the bound on its field's slope
+// about there.
+fn shape_texel(s: Sphere, l: vec3<f32>, level: f32) -> vec2<f32> {
     let a = abs(l);
     var face = 0;
     var uv: vec2<f32>;
@@ -453,8 +457,23 @@ fn shape_radius(s: Sphere, l: vec3<f32>, level: f32) -> f32 {
         uv = vec2<f32>(select(-l.x, l.x, l.z > 0.0), -l.y) / a.z;
     }
     let t = ((uv + 1.0) * 0.5 + SHAPE_BORDER) / (1.0 + 2.0 * SHAPE_BORDER);
-    let k = textureSampleLevel(shape_faces, table_sampler, t, face, level).rg;
-    return s.shape.x + (s.shape.y - s.shape.x) * (k.x + k.y / SHAPE_LOW);
+    let k = textureSampleLevel(shape_faces, table_sampler, t, face, level).rgb;
+    return vec2<f32>(s.shape.x + (s.shape.y - s.shape.x) * (k.x + k.y / SHAPE_LOW), k.z);
+}
+
+fn shape_radius(s: Sphere, l: vec3<f32>, level: f32) -> f32 {
+    return shape_texel(s, l, level).x;
+}
+
+// A step from `p` (from the center, view space) that does not cross
+// shaped body `s`'s surface, km: its height over the surface (or depth
+// under it) over the slope bound about there, no farther across than the
+// bound's reach; and that height (negative inside).
+fn shape_step(s: Sphere, p: vec3<f32>, level: f32) -> vec2<f32> {
+    let k = shape_texel(s, transpose(s.axes) * p, level);
+    let r = length(p);
+    let g = r - k.x;
+    return vec2<f32>(min(abs(g) / max(k.y, 1.0), s.shape.z * r), g);
 }
 
 // How far the point `p` (from the center, view space) is above shaped
@@ -589,7 +608,6 @@ fn shape_sample(s: Sphere, d: vec3<f32>, pixel: f32, ddx: vec2<f32>, ddy: vec2<f
         return none;
     }
     let across = d * b - s.center;
-    let slope = s.shape.z;
     let size = f32(textureDimensions(shape_faces).x) / (1.0 + 2.0 * SHAPE_BORDER);
     // A texel's mean width, km, on the body's mean sphere (at a face's
     // center, 1.27 times this).
@@ -606,7 +624,8 @@ fn shape_sample(s: Sphere, d: vec3<f32>, pixel: f32, ddx: vec2<f32>, ddy: vec2<f
     for (var i = 0u; i < SHAPE_STEPS; i++) {
         let foot = pixel * max(b + at, frame.near);
         level = clamp(log2(foot / texel), 0.0, top);
-        f = shape_above(s, d * at + across, level);
+        let step = shape_step(s, d * at + across, level);
+        f = step.y;
         if (f < miss * foot) {
             miss = f / foot;
             nearest = at;
@@ -619,13 +638,15 @@ fn shape_sample(s: Sphere, d: vec3<f32>, pixel: f32, ddx: vec2<f32>, ddy: vec2<f
         // Past half the steps, the least step grows: a ray skimming a
         // large body's surface reaches the far side within the rest.
         let crawl = max(f32(i) / f32(SHAPE_STEPS / 2u), 1.0);
-        at += max(f / slope, 0.3 * foot * crawl * crawl);
+        at += max(step.x, 0.3 * foot * crawl * crawl);
         if (at > half) {
             break;
         }
-        if (i + 1u == SHAPE_STEPS) {
-            // Still above the surface with the steps spent: taken as a
-            // hit there (dropped as a miss, such rays left holes).
+        if (i + 1u == SHAPE_STEPS && f < 2.0 * foot) {
+            // Within two pixels over the surface with the steps spent:
+            // taken as a hit there. (Dropped as a miss, such rays left
+            // holes; taken as a hit wherever they were, they drew surface
+            // where there was none.)
             hit = true;
             f = 0.0;
         }
@@ -699,7 +720,8 @@ fn shape_sample(s: Sphere, d: vec3<f32>, pixel: f32, ddx: vec2<f32>, ddy: vec2<f
             var before = beyond;
             var left = false;
             for (var k = 0u; k < SHADOW_STEPS; k++) {
-                let g = shape_above(s, d * beyond + across, level);
+                let step = shape_step(s, d * beyond + across, level);
+                let g = step.y;
                 if (!left) {
                     left = g > 0.0;
                 } else if (g < 0.0) {
@@ -722,7 +744,7 @@ fn shape_sample(s: Sphere, d: vec3<f32>, pixel: f32, ddx: vec2<f32>, ddy: vec2<f
                     break;
                 }
                 before = beyond;
-                beyond += max(abs(g) / slope, 0.3 * foot);
+                beyond += max(step.x, 0.3 * foot);
                 if (beyond > half) {
                     break;
                 }
@@ -776,13 +798,13 @@ fn shape_light(s: Sphere, d: vec3<f32>, point: vec3<f32>, n: vec3<f32>, up: vec3
             if (t > exit) {
                 break;
             }
-            let g = shape_above(s, start + s.light * t, level);
-            least = min(least, g / (t * sun_angle));
+            let step = shape_step(s, start + s.light * t, level);
+            least = min(least, step.y / (t * sun_angle));
             if (least < -1.0) {
                 break;
             }
             let crawl = max(f32(k) / f32(SHADOW_STEPS / 2u), 1.0);
-            t += max(abs(g) / s.shape.z, least_step * crawl * crawl);
+            t += max(step.x, least_step * crawl * crawl);
         }
         sunlit = clamp(0.5 + 0.5 * least, 0.0, 1.0);
     }

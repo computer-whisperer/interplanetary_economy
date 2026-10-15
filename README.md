@@ -67,6 +67,10 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
 - `tools/rings/` — regenerates `data/bodies/saturn/rings.toml` from
   Cassini UVIS's Gamma Crucis occultation (`fetch.sh DIR`, then `python3
   build.py DIR > ../../data/bodies/saturn/rings.toml`; needs numpy).
+- `tools/shapes/` — regenerates the moons' and small bodies' shapes,
+  `data/bodies/ID/shape.bin` and `data/bodies/shapes.toml`, from their
+  published models, two made up (`fetch.sh DIR`, ~25 MB, then `python3
+  -I build.py DIR ../../data/bodies`, ~7 minutes; needs numpy).
 - `tools/atmosphere/` — a Monte Carlo of the renderer's atmospheres, and
   with it the reference radiances `sandbox`'s test `atmospheres` holds
   Mars's air to (`mc.py`, its usage in `crates/sandbox/tests/atmospheres.rs`;
@@ -120,8 +124,8 @@ it is ready, colored by leg, the past dimmer; the clock starts at the
 first ship's start. The top bar picks the body the camera follows and
 the frame paths are drawn in (centered on the focus, or rotating with
 Earth and the Moon, the Sun and Earth, or the Sun and Mars; `--frame`).
-Right drag orbits, the wheel zooms (down to 10 km above the focus's
-surface), space pauses, `,` and `.` step the time warp from 1 s to 1
+Right drag orbits, the wheel zooms (down to a tenth of the focus's
+size above it, at most 10 km), space pauses, `,` and `.` step the time warp from 1 s to 1
 year per second, `[` and `]` jump between burns and events, and the
 scrubber under the map spans the plan. Bodies, ships, burns and events
 and station orbits are labeled where there is room. A click on a body
@@ -186,10 +190,11 @@ license, shall be dual licensed as above, without any additional terms or
 conditions.
 
 The data in `data/` keep their sources' terms, named beside them (in
-`data/bodies/bodies.toml`, `data/sky/sky.toml` and the other files'
-headers) and in the `tools/` that build them: NASA's, JPL's, USGS's and
-the PDS's imagery and data (public domain, or free to use with credit
-requested), the GEBCO Grid (public domain, credit required), and ESA's
-Hipparcos catalog and Gaia DR2 (free to use with credit: ESA, and
-ESA/Gaia/DPAC). None restricts commercial use or requires derived works
+`data/bodies/bodies.toml`, `data/bodies/shapes.toml`, `data/sky/sky.toml`
+and the other files' headers) and in the `tools/` that build them:
+NASA's, JPL's, USGS's and the PDS's imagery and data (public domain, or
+free to use with credit requested), the GEBCO Grid (public domain,
+credit required), ESA's Hipparcos catalog and Gaia DR2 (free to use with
+credit: ESA, and ESA/Gaia/DPAC), and JAXA's Ryugu model (free to use
+with credit: ISAS/JAXA; resampled here). None restricts commercial use or requires derived works
 to share its terms.

@@ -267,8 +267,9 @@ pub struct SphereGpu {
     pub shadows: ShadowsGpu,
     /// The rings' inner and outer radii, km (0 for none).
     pub rings: [f32; 4],
-    /// A shaped body's least and greatest radius, km, its slope bound, and
-    /// its volume-equivalent radius (`Shape`; zeros for a sphere).
+    /// A shaped body's least and greatest radius, km, the angle a march's
+    /// step may cross (`Shape::reach`), and its volume-equivalent radius
+    /// (zeros for a sphere).
     pub shape: [f32; 4],
 }
 
@@ -526,11 +527,26 @@ impl Scene {
                     Surface::Lit(_) => {
                         let (albedo, shading) = s.reflectance().expect("lit");
                         let (albedo, irradiance, _, to_sun) = lit(albedo);
-                        let alpha = to_sun.angle_between(cam.eye - s.center);
-                        let mean = irradiance * disk_mean(shading, alpha);
+                        let to_eye = cam.eye - s.center;
+                        let alpha = to_sun.angle_between(to_eye);
+                        // Its disk's light over unit albedo: a sphere's mean
+                        // over the sky it subtends; a shape's facets' at
+                        // this geometry (its lightcurve), less what its
+                        // self-shadowing takes on the mean at this phase.
+                        let light = irradiance
+                            * match shape {
+                                Some(sh) => {
+                                    let to_body = s.axes.transpose();
+                                    let (l, v) =
+                                        (to_body * to_sun.normalize(), to_body * to_eye / d);
+                                    sh.lit_area(l, v, shading, alpha) * sh.shadow_share(alpha)
+                                        / (d * d)
+                                }
+                                None => disk_mean(shading, alpha) * disk,
+                            };
                         std::array::from_fn(|c| {
                             let carried = f64::from(s.gain[c]) * f64::from(s.point_scale[c]);
-                            f64::from(albedo[c]) * carried * mean * disk / spread
+                            f64::from(albedo[c]) * carried * light / spread
                         })
                     }
                 }
@@ -645,7 +661,7 @@ impl Scene {
                 shadows: self.shadows(s, &cam),
                 rings: rings.map_or([0.0; 4], |r| [r.inner as f32, r.outer as f32, 0.0, 0.0]),
                 shape: shape.map_or([0.0; 4], |sh| {
-                    [sh.least, sh.greatest, sh.slope, s.radius].map(|x| x as f32)
+                    [sh.least, sh.greatest, sh.reach(), s.radius].map(|x| x as f32)
                 }),
             });
             out.maps.push(s.maps.clone());

@@ -1502,6 +1502,32 @@ Order of work, each part committed with its tests:
    - Tests: the disk over random orientations against its curve; point
      and disk at the fade; an ellipsoid's lightcurve at full phase
      against the ratio of its cross-sections.
+   - As built (2026-10-15): the share is taken from 64 random Suns and
+     eyes at each phase over the facets at 16 squares a face, each
+     facet's Sun and eye marched for on the map (Phobos's 0.99 at 0°
+     (its parts hiding others), 0.98 at 90°, 0.89 at 150°, 0.72 at 170°;
+     the smoother Didymos, Nereus and the made-up shapes stay over 0.96
+     to 170°). The facets' light is scaled to the map's full area (their
+     polyhedron's is smaller), so points average to their curves too.
+     A shaped body without maps is shaded lunar-Lambert (Phobos's and
+     Deimos's were Lambert, as maps-less spheres).
+   - Checks: over 32 random orientations at 30°, 90° and 120°, the disks
+     of Phobos, Bennu, Itokawa and Ryugu against their curves with their
+     lightcurves there: within 0.06 mag on the mean (0.03–0.05 under at
+     120°, at 400 and 1,600 px alike: shadows finer than the tables'
+     facets, 1.5% of Bennu's, and pixels at a part's edge over another),
+     each within 0.3. Their lightcurves themselves reach ±0.9 mag at 120°
+     (the crescent's area turning with the body). At one geometry from
+     100 radii, Phobos's and Bennu's disks within 0.08 mag of the same.
+     Itokawa's first showed 0.8–1.5 mag over: one slope bound for the
+     whole body (65, set by the curtain its overhang makes) left its
+     marches spending their steps short, and a ray so spent was taken as
+     a hit where it stood. The bounds are now local: each texel holds the
+     steepest within a border's width of it, its levels the greatest of
+     their texels', and a step goes no farther across (Itokawa's own
+     greatest stays 65 at its overhang; elsewhere 2–6); a spent ray is a
+     hit only within two pixels over the surface. The ellipsoid filling
+     1080p now costs 2.8 ms.
 3. **The shapes' data** (`tools/shapes/`: `fetch.sh`, `build.py`). Each
    model ray-cast from its origin into the cube map (256² a face: 16
    texels a model's quad), checked star-shaped (rays meeting the surface
@@ -1523,6 +1549,29 @@ Order of work, each part committed with its tests:
    - Left out: Phobos's and Deimos's 2023 models (Ernst et al.; terms
      unstated, "All rights reserved": APL could be asked); Dimorphos
      (not among the game's bodies).
+   - As built (2026-10-15), at 128² a face (0.5 MB each, 5.5 MB in all;
+     the build ~7 minutes, most of it the shadow tables):
+     - Thomas's Deimos grid is in west longitude, though its label says
+       only "planetocentric": against Ernst et al.'s model (not imported:
+       used as a check), 364 m rms off read so, 640 m at best read east,
+       over longitude offsets ±30°.
+     - Not star-shaped: Itokawa (181 texels meet it twice: its head's
+       overhang over its neck, the outermost kept, a curtain down to the
+       neck) and Ryugu (15). The volume-equivalent radii against the
+       SBDB's: Ryugu, Apophis, EV5 and Nereus within 1–2%, Bennu 1.2%
+       over, Itokawa 1.9% under, Didymos 0.365 km against 0.39 (DART's).
+       1996 FG3's SBDB diameter, 1.2 km, is the NEOWISE one; radar and
+       lightcurve studies give ~1.7 km (Yu et al. 2014): kept as the
+       game's, the made-up shape scaled to it.
+     - The sandbox reads `shapes.toml` with the maps; a shaped body's
+       radius is its shape's once read, its extent (what the camera keeps
+       out of, labels and picks reach) its greatest radius. The camera
+       stops a tenth of a body's extent over it, at most 10 km (was 10 km
+       for every body; a new focus starts five extents out); small bodies'
+       orbits are sampled every 3 hours (6 left 2009 UY19's line 2.6 px
+       off at the closest the camera now comes); `--altitude` waits for
+       the shapes. Screenshots: Phobos, Itokawa and Bennu look as their
+       spacecraft saw them (untextured, their spins not yet).
 4. **Spins** (`orbit::rotation`, `tools/rotation/`). The small bodies
    have none yet (their axes are the scene's). Bennu (`bennu_v17.tpc`,
    with its YORP term), Ryugu (`ryugu_v10.tpc`), Itokawa (Gaskell's PCK,

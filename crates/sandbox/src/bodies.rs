@@ -1,7 +1,7 @@
 //! How bodies look (M1c.md, step 3 plan, item 3; step 6 plan, item 4):
-//! spheres turned by their rotation models, with their maps once read
-//! (`maps`); without, Lambertian of their Bond albedo, in their color
-//! (`photometry::color`); each held to its published brightness and
+//! spheres turned by their rotation models, with their maps and shapes
+//! once read (`maps`); without, Lambertian of their Bond albedo, in their
+//! color (`photometry::color`); each held to its published brightness and
 //! color where it has a phase curve (`photometry`), which leaves of its
 //! albedo only how its map's parts compare. And the Sun's radiance.
 
@@ -11,6 +11,7 @@ use orbit::ephem::{Body, BodyId, BodyKind, Ephemeris};
 use orbit::rotation::Rotations;
 use orbit::time::Epoch;
 use render::scene::AU_KM;
+use render::shape::Shape;
 use render::{Sphere, Surface};
 
 /// The Bond albedo of the body `id`: for a body with a phase curve, its
@@ -38,6 +39,23 @@ pub fn bond_albedo(id: &str) -> f64 {
 pub fn albedo(body: &Body) -> [f32; 3] {
     let color = photometry::color(body).unwrap_or([1.0; 3]);
     color.map(|c| (bond_albedo(&body.id) * c) as f32)
+}
+
+/// `b`'s shape, once its maps are read, if it is shaped (M1c.md, step 6,
+/// part 9 plan).
+pub fn shape(eph: &Ephemeris, b: BodyId) -> Option<&'static Shape> {
+    crate::maps::loaded(&eph.body(b).id)?.maps.shape.as_ref()
+}
+
+/// `b`'s radius, km: a shaped body's its shape's volume-equivalent one.
+pub fn radius(eph: &Ephemeris, b: BodyId) -> f64 {
+    shape(eph, b).map_or(eph.body(b).radius, Shape::equivalent_radius)
+}
+
+/// How far `b` reaches from its center, km: a shaped body's greatest
+/// radius. What the camera keeps out of, and labels and picks reach.
+pub fn extent(eph: &Ephemeris, b: BodyId) -> f64 {
+    shape(eph, b).map_or(eph.body(b).radius, |s| s.greatest)
 }
 
 /// The bodies drawn, in the order the focus select lists them: the Sun,
@@ -95,7 +113,7 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
     };
     Some(Sphere {
         center: eph.barycentric_position(b, t),
-        radius: eph.body(b).radius,
+        radius: radius(eph, b),
         surface,
         axes: Rotations::standard().axes(id, t).unwrap_or(DMat3::IDENTITY),
         maps: maps.map(|m| m.maps.clone()),

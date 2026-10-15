@@ -32,7 +32,8 @@ struct Cli {
     /// The body the camera starts focused on, by ephemeris id.
     #[arg(long, default_value = "earth")]
     focus: String,
-    /// The camera's starting altitude above the focus, km.
+    /// The camera's starting altitude above the focus (a shaped body's
+    /// greatest radius), km.
     #[arg(long, allow_hyphen_values = true)]
     altitude: Option<f64>,
     /// The camera's starting azimuth and elevation about the focus, about
@@ -97,6 +98,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .lookup(&cli.focus)
         .filter(|&b| sandbox::bodies::drawn(eph).contains(&b) && eph.covers(b, date))
         .ok_or_else(|| format!("no body {:?} drawn on {}", cli.focus, date))?;
+    if cli.altitude.is_some() {
+        // Over the focus's shape, which comes with its maps.
+        sandbox::maps::wait()?;
+    }
     let mut camera = sandbox::camera::MapCamera::new(eph, focus);
     if let Some(a) = cli.altitude {
         camera.set_altitude(eph, a);

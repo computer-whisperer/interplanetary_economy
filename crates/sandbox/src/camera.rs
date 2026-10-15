@@ -1,15 +1,19 @@
 //! The map view's camera (M1c.md, step 3 plan, item 6): focused on a
 //! body and following it, a turntable about the frame's z axis (ecliptic
 //! north in fixed frames; step 4 plan, item 2), zoomed by altitude above
-//! the body from 10 km to 1e10 km, and flown to a new focus in 0.6 s.
+//! the body (`min_altitude`) to 1e10 km, and flown to a new focus in 0.6
+//! s.
 
 use damascene_core::PointerButton;
 use glam::{DMat3, DVec3};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::time::Epoch;
 
-/// The closest the eye comes to a surface, km.
-pub const MIN_ALTITUDE_KM: f64 = 10.0;
+/// The closest the eye comes to a body reaching `extent` km from its
+/// center (`bodies::extent`), km above that: a tenth of it, at most 10.
+pub fn min_altitude(extent: f64) -> f64 {
+    (extent / 10.0).min(10.0)
+}
 
 /// The farthest the eye goes from the focus, km.
 pub const MAX_DISTANCE_KM: f64 = 1e10;
@@ -27,10 +31,8 @@ const REFOCUS_S: f64 = 0.6;
 /// degenerates, radians.
 const MAX_ELEVATION: f64 = 1.55;
 
-/// A new focus starts this many radii away, and at least this high,
-/// km (a small asteroid's five radii are under the 10 km floor).
-const FOCUS_RADII: f64 = 5.0;
-const FOCUS_ALTITUDE_KM: f64 = 50.0;
+/// A new focus starts this many times its extent away.
+const FOCUS_EXTENTS: f64 = 5.0;
 
 #[derive(Clone, Debug)]
 pub struct MapCamera {
@@ -61,8 +63,7 @@ struct Refocus {
 
 /// Where a new focus is first seen from, km from its center.
 fn start_distance(eph: &Ephemeris, b: BodyId) -> f64 {
-    let r = eph.body(b).radius;
-    (r * FOCUS_RADII).max(r + FOCUS_ALTITUDE_KM)
+    crate::bodies::extent(eph, b) * FOCUS_EXTENTS
 }
 
 impl MapCamera {
@@ -96,11 +97,11 @@ impl MapCamera {
         self.distance = to_distance;
     }
 
-    /// Sets the altitude above the focus's surface, km, within the
-    /// camera's limits.
+    /// Sets the altitude above the focus's surface (a shaped body's
+    /// greatest radius), km, within the camera's limits.
     pub fn set_altitude(&mut self, eph: &Ephemeris, km: f64) {
-        let radius = eph.body(self.focus).radius;
-        self.distance = (radius + km.max(MIN_ALTITUDE_KM)).min(MAX_DISTANCE_KM);
+        let extent = crate::bodies::extent(eph, self.focus);
+        self.distance = (extent + km.max(min_altitude(extent))).min(MAX_DISTANCE_KM);
     }
 
     /// Sets the eye's direction from the focus, radians; the elevation
@@ -157,9 +158,9 @@ impl MapCamera {
     /// Wheel lines in (positive) or out: the altitude above the focus's
     /// surface scales, so the approach slows near it.
     pub fn wheel(&mut self, eph: &Ephemeris, lines: f32) {
-        let radius = eph.body(self.focus).radius;
-        let altitude = (self.distance - radius) * ZOOM_PER_LINE.powf(-f64::from(lines));
-        self.distance = (radius + altitude.max(MIN_ALTITUDE_KM)).min(MAX_DISTANCE_KM);
+        let extent = crate::bodies::extent(eph, self.focus);
+        let altitude = (self.distance - extent) * ZOOM_PER_LINE.powf(-f64::from(lines));
+        self.distance = (extent + altitude.max(min_altitude(extent))).min(MAX_DISTANCE_KM);
         // A wheel during a refocus lands where it says.
         if let Some(r) = self.refocus.as_mut() {
             r.to_distance = self.distance;
@@ -202,9 +203,10 @@ impl MapCamera {
         self.set_direction(d.y.atan2(d.x), d.z.clamp(-1.0, 1.0).asin());
     }
 
-    /// The eye's altitude above the focus's surface, km.
+    /// The eye's altitude above the focus's surface (a shaped body's
+    /// greatest radius), km.
     pub fn altitude(&self, eph: &Ephemeris) -> f64 {
-        self.distance - eph.body(self.focus).radius
+        self.distance - crate::bodies::extent(eph, self.focus)
     }
 }
 
@@ -223,7 +225,7 @@ mod tests {
         for _ in 0..200 {
             c.wheel(eph, 1.0);
         }
-        assert!((c.altitude(eph) - MIN_ALTITUDE_KM).abs() < 1e-9);
+        assert!((c.altitude(eph) - 10.0).abs() < 1e-9);
         for _ in 0..400 {
             c.wheel(eph, -1.0);
         }
@@ -271,11 +273,13 @@ mod tests {
     }
 
     /// A new focus picked mid-flight starts from where the view is
-    /// (found in review: it jumped 352,000 km); a small body's starts 50
-    /// km up, above the 10 km floor.
+    /// (found in review: it jumped 352,000 km); a small body's starts five
+    /// of its extents out, and stops a tenth of one over it: Bennu, its
+    /// shape read, 290 m from its center at most.
     #[test]
     fn refocus_mid_flight_and_small_bodies() {
         let eph = Ephemeris::standard();
+        crate::maps::wait().expect("data/bodies reads");
         let t = Epoch::from_ymd(2045, 3, 1);
         let id = |s: &str| eph.lookup(s).unwrap();
         let mut c = MapCamera::new(eph, id("earth"));
@@ -290,11 +294,13 @@ mod tests {
             (after.eye - before.eye).length()
         );
         let mut small = MapCamera::new(eph, id("bennu"));
-        assert!((small.altitude(eph) - FOCUS_ALTITUDE_KM).abs() < 1e-9);
+        let extent = crate::bodies::extent(eph, id("bennu"));
+        assert!((0.28..0.30).contains(&extent), "{extent}");
+        assert!((small.distance - 5.0 * extent).abs() < 1e-12);
         small.set_direction(0.0, 2.0);
         assert_eq!(small.elevation, MAX_ELEVATION);
         small.set_altitude(eph, -5.0);
-        assert_eq!(small.altitude(eph), MIN_ALTITUDE_KM);
+        assert!((small.altitude(eph) - extent / 10.0).abs() < 1e-12);
     }
 
     /// Changing the frame keeps the eye where it is; in a turning frame

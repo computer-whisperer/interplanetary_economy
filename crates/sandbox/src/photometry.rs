@@ -289,11 +289,23 @@ fn true_flux(curve: &Curve, seen: &Seen) -> f64 {
     10f64.powf(-0.4 * (curve.magnitude(seen) - V_SUN))
 }
 
-/// What `sphere`'s shading gives it there, over π.
+/// What `sphere`'s shading gives it there, over π. A shaped one's, on
+/// the mean over orientations: its area's over a sphere's of its radius
+/// (each facet counts alone, whatever its law), less what its
+/// self-shadowing takes (`render::shape::Shape::shadow_share`); its
+/// light at a geometry is its lightcurve's about that.
 fn shaded_flux(sphere: &Sphere, alpha: f64) -> Option<f64> {
     let (albedo, shading) = sphere.reflectance()?;
     let size = (sphere.radius / AU_KM).powi(2);
-    Some(luminance(albedo) * disk_mean(shading, alpha.to_radians()) * size)
+    let shape = sphere
+        .maps
+        .as_ref()
+        .and_then(|m| m.shape.as_ref())
+        .map_or(1.0, |s| {
+            s.area / (4.0 * std::f64::consts::PI * sphere.radius * sphere.radius)
+                * s.shadow_share(alpha.to_radians())
+        });
+    Some(luminance(albedo) * disk_mean(shading, alpha.to_radians()) * size * shape)
 }
 
 /// The factor that brings `sphere`'s shading, seen as `seen`, to

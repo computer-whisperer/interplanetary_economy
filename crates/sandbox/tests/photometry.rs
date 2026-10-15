@@ -260,11 +260,15 @@ fn bodies_show_their_brightness() {
     }
 }
 
-/// Disks without air or maps (Uranus, Neptune, Phobos, Bennu) and
-/// Jupiter's, seen from 100 radii and resolved (~100 px across), from 0°
-/// to 120° of phase: the flux rendered against their curves' at that
-/// geometry, within 0.03 mag. (Nearer, a disk shows less than a
-/// hemisphere: from 12 radii, 0.2 mag under its curve at 120°.)
+/// Disks without air or maps (Uranus, Neptune; Phobos, Bennu, shaped)
+/// and Jupiter's, seen from 100 radii and resolved (~100 px across), from
+/// 0° to 120° of phase: the flux rendered against their curves' at that
+/// geometry, within 0.03 mag; a shaped body's with its lightcurve there
+/// (`lightcurve`), within 0.1 (its self-shadowing there against its mean
+/// at that phase, and 0.03–0.06 under at 120°:
+/// `shaped_disks_average_to_their_curves`). (Nearer, a
+/// disk shows less than a hemisphere: from 12 radii, 0.2 mag under its
+/// curve at 120°.)
 #[test]
 fn disks_show_their_curves() {
     let gpu = Offscreen::new().expect("a GPU");
@@ -289,40 +293,16 @@ fn disks_show_their_curves() {
             let spheres = bodies::spheres(eph, &[b], t, eye);
             let seen = Seen::from(&spheres[0], eye, sun);
             let au = render::scene::AU_KM;
-            let want = curve.magnitude(&seen) + 5.0 * ((sun - c).length() / au * d / au).log10();
+            let want = curve.magnitude(&seen)
+                + 5.0 * ((sun - c).length() / au * d / au).log10()
+                + lightcurve(&spheres[0], to_sun, (eye - c).normalize(), seen.alpha);
             let scene = Scene {
                 camera: Some(Camera::looking_at(eye, c, DVec3::Z, fov)),
                 sun,
                 spheres,
                 ..Default::default()
             };
-            let target = Target::new(&gpu.device, size, size);
-            let mut encoder = gpu.device.create_command_encoder(&Default::default());
-            renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target, &scene, None);
-            gpu.queue.submit(Some(encoder.finish()));
-            let tan_half = (fov / 2.0).tan();
-            let side_px = 2.0 * tan_half / f64::from(size);
-            let flux: f64 = gpu
-                .read_rgba16f(&target.hdr)
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let (x, y) = (
-                        (i as u32 % size) as f64 + 0.5,
-                        (i as u32 / size) as f64 + 0.5,
-                    );
-                    let r = DVec3::new(
-                        (x / f64::from(size) * 2.0 - 1.0) * tan_half,
-                        (1.0 - y / f64::from(size) * 2.0) * tan_half,
-                        -1.0,
-                    );
-                    let lum = 0.2126 * f64::from(p[0])
-                        + 0.7152 * f64::from(p[1])
-                        + 0.0722 * f64::from(p[2]);
-                    lum * side_px * side_px / r.length().powi(3)
-                })
-                .sum();
-            let v = V_SUN - 2.5 * (flux / std::f64::consts::PI).log10();
+            let v = shown_magnitude(&gpu, &mut renderer, &scene, fov, size);
             report.push((alpha, v - want));
         }
         let shown: Vec<String> = report
@@ -331,7 +311,141 @@ fn disks_show_their_curves() {
             .collect();
         println!("{id}: {}", shown.join(", "));
         let worst = report.iter().map(|(_, d)| d.abs()).fold(0f64, f64::max);
-        assert!(worst < 0.03, "{id}: {worst} mag");
+        let tolerance = if bodies::shape(eph, b).is_some() {
+            0.1
+        } else {
+            0.03
+        };
+        assert!(worst < tolerance, "{id}: {worst} mag");
+    }
+}
+
+/// The V magnitude the renderer shows for `scene`, `fov` high on `size`²
+/// pixels: its pixels' luminance, each times the sky it subtends.
+fn shown_magnitude(
+    gpu: &Offscreen,
+    renderer: &mut Renderer,
+    scene: &Scene,
+    fov: f64,
+    size: u32,
+) -> f64 {
+    let target = Target::new(&gpu.device, size, size);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target, scene, None);
+    gpu.queue.submit(Some(encoder.finish()));
+    let tan_half = (fov / 2.0).tan();
+    let side = 2.0 * tan_half / f64::from(size);
+    let flux: f64 = gpu
+        .read_rgba16f(&target.hdr)
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let (x, y) = (
+                (i as u32 % size) as f64 + 0.5,
+                (i as u32 / size) as f64 + 0.5,
+            );
+            let r = DVec3::new(
+                (x / f64::from(size) * 2.0 - 1.0) * tan_half,
+                (1.0 - y / f64::from(size) * 2.0) * tan_half,
+                -1.0,
+            );
+            let lum =
+                0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]);
+            lum * side * side / r.length().powi(3)
+        })
+        .sum();
+    V_SUN - 2.5 * (flux / std::f64::consts::PI).log10()
+}
+
+/// A shaped sphere's lightcurve, mag, the Sun toward `to_sun` and the eye
+/// toward `to_eye` (unit), `alpha` degrees apart: its facets' light there
+/// over their mean over orientations (a quarter of its area times its
+/// disk's mean). 0 for a sphere.
+fn lightcurve(sphere: &render::Sphere, to_sun: DVec3, to_eye: DVec3, alpha: f64) -> f64 {
+    let Some(shape) = sphere.maps.as_ref().and_then(|m| m.shape.as_ref()) else {
+        return 0.0;
+    };
+    let (_, shading) = sphere.reflectance().expect("lit");
+    let to_body = sphere.axes.transpose();
+    let a = alpha.to_radians();
+    let lit = shape.lit_area(to_body * to_sun, to_body * to_eye, shading, a);
+    -2.5 * (4.0 * lit / (shape.area * render::scene::disk_mean(shading, a))).log10()
+}
+
+/// Shaped bodies' disks over 32 random orientations each, from 100 radii
+/// at 30°, 90° and 120° of phase, against their curves with their
+/// lightcurves there (`lightcurve`: their facets' light, less their mean
+/// self-shadowing at that phase): on the mean within 0.08 mag, each within
+/// 0.3 (its self-shadowing then against its mean). At 120°, 0.03–0.06 mag
+/// under on the mean, the same at 400 and 1,600 px across: shadows finer
+/// than the facets the shadow tables are taken over (1.5% of Bennu's),
+/// and pixels at a part's edge over another. (Against the curve alone, the
+/// lightcurves, up to ±0.9 mag at 120°, leave the mean of 32 good to only
+/// ~0.1: printed.) Itokawa's showed 0.8–1.5 mag over: one slope bound for
+/// the whole body, set by the curtain its overhang makes, left its
+/// marches spending their steps short of the surface (found here; the
+/// bounds are now local).
+#[test]
+fn shaped_disks_average_to_their_curves() {
+    let gpu = Offscreen::new().expect("a GPU");
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
+    sandbox::maps::wait().expect("data/bodies reads");
+    let eph = Ephemeris::standard();
+    let t = Epoch::from_ymd(2045, 3, 1);
+    let sun = eph.barycentric_position(eph.sun(), t);
+    let mut state = 11u64;
+    let mut f = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
+    for id in ["phobos", "bennu", "itokawa", "ryugu"] {
+        let b = eph.lookup(id).unwrap();
+        let curve = Curve::of(eph.body(b)).unwrap();
+        let c = eph.barycentric_position(b, t);
+        let radius = bodies::radius(eph, b);
+        let to_sun = (sun - c).normalize();
+        let side = to_sun.cross(DVec3::Z).normalize();
+        let mut shown = Vec::new();
+        for alpha in [30.0f64, 90.0, 120.0] {
+            let a = alpha.to_radians();
+            let d = radius * 100.0;
+            let eye = c + (to_sun * a.cos() + side * a.sin()) * d;
+            let fov = (radius / d).asin() * 8.0;
+            let (mut mean, mut worst, mut bias) = (0.0, 0.0f64, 0.0);
+            for _ in 0..32 {
+                let axis = DVec3::new(f(), f(), f()).normalize();
+                let turn = glam::DMat3::from_axis_angle(axis, f() * std::f64::consts::PI);
+                let mut spheres = bodies::spheres(eph, &[b], t, eye);
+                spheres[0].axes = turn * spheres[0].axes;
+                photometry::calibrate(eph.body(b), &mut spheres[0], eye, sun);
+                let seen = Seen::from(&spheres[0], eye, sun);
+                let au = render::scene::AU_KM;
+                let want =
+                    curve.magnitude(&seen) + 5.0 * ((sun - c).length() / au * d / au).log10();
+                let shape = lightcurve(&spheres[0], to_sun, (eye - c).normalize(), seen.alpha);
+                let scene = Scene {
+                    camera: Some(Camera::looking_at(eye, c, DVec3::Z, fov)),
+                    sun,
+                    spheres,
+                    ..Default::default()
+                };
+                let v = shown_magnitude(&gpu, &mut renderer, &scene, fov, 400);
+                mean += 10f64.powf(-0.4 * (v - want)) / 32.0;
+                worst = worst.max((v - want - shape).abs());
+                bias += (v - want - shape) / 32.0;
+            }
+            let mean = -2.5 * mean.log10();
+            shown.push(format!(
+                "{alpha}° {bias:+.3} (each within {worst:.3}; against the curve alone, {mean:+.3})"
+            ));
+            assert!(
+                bias.abs() < 0.08 && worst < 0.3,
+                "{id} at {alpha}°: {bias} {worst}"
+            );
+        }
+        println!("{id}: {}", shown.join(", "));
     }
 }
 

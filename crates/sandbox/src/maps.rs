@@ -2,9 +2,10 @@
 //! (built by `tools/textures/`) and the atmospheres (`atmospheres`), read
 //! and tabulated once per process on a thread of its own, the bodies in
 //! parallel, with rings where a body has a `rings.toml` (Saturn, built by
-//! `tools/rings/`). Spheres show them once they arrive. A body with an
-//! atmosphere or rings and no maps (Venus, Saturn), or whose maps do not
-//! read, gets a plain one.
+//! `tools/rings/`) and shapes where `shapes.toml` lists one (built by
+//! `tools/shapes/`; step 6, part 9 plan). Spheres show them once they
+//! arrive. A body with an atmosphere, rings or a shape and no maps (Venus,
+//! Saturn, the small bodies), or whose maps do not read, gets a plain one.
 
 use crate::data_dir;
 use orbit::ephem::{Body, Ephemeris};
@@ -33,6 +34,33 @@ struct Entry {
     night: Option<String>,
     night_radiance: Option<[f32; 3]>,
     elevation: Option<Elevation>,
+}
+
+/// `shapes.toml`: see `tools/shapes/build.py`.
+#[derive(Deserialize)]
+struct ShapeFile {
+    body: HashMap<String, ShapeEntry>,
+}
+
+#[derive(Deserialize)]
+struct ShapeEntry {
+    file: String,
+    size: u32,
+    shadowed: Option<Vec<f64>>,
+}
+
+/// The shape in `path`, `size` texels a face within its edges.
+fn shape(path: &Path, size: u32) -> Result<render::shape::Shape, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let radii: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    let side = (size + 2 * size / render::shape::BORDER_SHARE) as usize;
+    if radii.len() != 6 * side * side || !size.is_power_of_two() || size < 16 {
+        return Err(format!("{}: not {size} texels a face", path.display()));
+    }
+    Ok(render::shape::Shape::new(size, radii))
 }
 
 /// `rings.toml`: see `tools/rings/build.py`.
@@ -152,9 +180,9 @@ fn body(dir: &Path, id: &str, entry: &Entry, radius: f64) -> Result<BodyMaps, St
     })
 }
 
-/// A plain white map, for a body with an atmosphere and no maps; its
-/// albedo carries its color.
-fn plain(body: &Body) -> BodyMaps {
+/// A plain white map, for a body with an atmosphere, rings or a shape
+/// and no maps, shaded by `shading`; its albedo carries its color.
+fn plain(body: &Body, shading: Shading) -> BodyMaps {
     BodyMaps {
         maps: Arc::new(Maps {
             color: Image::srgba(1, 1, vec![255; 4]),
@@ -166,7 +194,7 @@ fn plain(body: &Body) -> BodyMaps {
             night: None,
             night_radiance: [0.0; 3],
             water: None,
-            shading: Shading::Lambert,
+            shading,
             air: None,
             rings: None,
             shape: None,
@@ -175,10 +203,10 @@ fn plain(body: &Body) -> BodyMaps {
     }
 }
 
-/// Reads `dir`'s maps (`bodies.toml` and each body's directory), for the
-/// bodies `eph` has; and what kept any body's maps or rings from reading
-/// (a body whose maps do not read is plain, its atmosphere kept). Only
-/// `bodies.toml` not reading fails it.
+/// Reads `dir`'s maps (`bodies.toml`, `shapes.toml` and each body's
+/// directory), for the bodies `eph` has; and what kept any body's maps,
+/// rings or shape from reading (a body whose maps do not read is plain,
+/// its atmosphere kept). Only `bodies.toml` not reading fails it.
 pub fn read(
     dir: &Path,
     eph: &Ephemeris,
@@ -187,10 +215,20 @@ pub fn read(
     let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let file: File = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
     let ringed = |id: &str| dir.join(id).join("rings.toml").exists();
+    let shapes = match std::fs::read_to_string(dir.join("shapes.toml")) {
+        Ok(src) => {
+            toml::from_str::<ShapeFile>(&src)
+                .map_err(|e| format!("{}: {e}", dir.join("shapes.toml").display()))?
+                .body
+        }
+        Err(_) => HashMap::new(),
+    };
     let mut ids: Vec<&str> = file.body.keys().map(String::as_str).collect();
     for b in eph.ids() {
         let id = eph.body(b).id.as_str();
-        if !ids.contains(&id) && (crate::atmospheres::of(id, 1.0).is_some() || ringed(id)) {
+        if !ids.contains(&id)
+            && (crate::atmospheres::of(id, 1.0).is_some() || ringed(id) || shapes.contains_key(id))
+        {
             ids.push(id);
         }
     }
@@ -202,6 +240,12 @@ pub fn read(
             };
             let radius = eph.body(b).radius;
             let mut problems = Vec::new();
+            // Without maps, an airless body is shaded as regolith.
+            let bare = match crate::atmospheres::of(id, 1.0) {
+                Some(_) => Shading::Lambert,
+                None if ringed(id) => Shading::Lambert,
+                None => Shading::LunarLambert,
+            };
             let mut maps = match file
                 .body
                 .get(id)
@@ -210,9 +254,9 @@ pub fn read(
                 Some(Ok(maps)) => maps,
                 Some(Err(why)) => {
                     problems.push(format!("{id}: {why}"));
-                    plain(eph.body(b))
+                    plain(eph.body(b), bare)
                 }
-                None => plain(eph.body(b)),
+                None => plain(eph.body(b), bare),
             };
             let made = Arc::get_mut(&mut maps.maps).expect("just made");
             if let Some(a) = crate::atmospheres::of(id, radius) {
@@ -221,6 +265,21 @@ pub fn read(
             if ringed(id) {
                 match rings(&dir.join(id).join("rings.toml")) {
                     Ok(r) => made.rings = Some(r),
+                    Err(why) => problems.push(format!("{id}: {why}")),
+                }
+            }
+            if let Some(entry) = shapes.get(id) {
+                match shape(&dir.join(id).join(&entry.file), entry.size) {
+                    Ok(mut s) => {
+                        match &entry.shadowed {
+                            Some(t) if t.len() != 19 => problems.push(format!(
+                                "{id}: shadowed: {} values, not 19; drawn without",
+                                t.len()
+                            )),
+                            t => s.shadowed = t.clone(),
+                        }
+                        made.shape = Some(s);
+                    }
                     Err(why) => problems.push(format!("{id}: {why}")),
                 }
             }

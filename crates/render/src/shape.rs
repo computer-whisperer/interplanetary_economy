@@ -32,9 +32,6 @@ pub struct Shape {
     /// triangulated between its texels' corners.
     pub area: f64,
     pub volume: f64,
-    /// A bound on the gradient of |p| − r(p̂) at and above the surface:
-    /// a step of |p| − r(p̂) over it never crosses the surface.
-    pub slope: f64,
     /// The share of its light its self-shadowing and the parts of it
     /// hiding others leave, averaged over orientations, by phase angle from
     /// 0° every 10° to 180° (`tools/shapes/build.py`); none, all of it.
@@ -56,7 +53,6 @@ impl std::fmt::Debug for Shape {
             .field("greatest", &self.greatest)
             .field("area", &self.area)
             .field("volume", &self.volume)
-            .field("slope", &self.slope)
             .field("shadowed", &self.shadowed)
             .finish()
     }
@@ -124,12 +120,10 @@ impl Shape {
             greatest,
             area: 0.0,
             volume: 0.0,
-            slope: 1.0,
             shadowed: None,
             facets: Vec::new(),
         };
         (shape.area, shape.volume) = shape.measure();
-        shape.slope = shape.slope_bound();
         shape.facets = shape.facets_of(FACET_CELLS);
         shape
     }
@@ -166,25 +160,30 @@ impl Shape {
     /// Its facets' light, lit from `light` and seen from `view` (unit, its
     /// frame), `alpha` apart (radians), each under `shading`'s law as
     /// scene.wgsl's `lit` reflects: Σ area × cos e × the law's reflectance,
-    /// km². A sphere's is its disk's mean (`disk_mean`) times πr²; any
-    /// shape's, averaged over orientations, `area` / 4 times that mean.
-    /// Its self-shadowing is left to [`Shape::shadow_share`].
+    /// km², scaled to its full area (the facets' polyhedron is smaller). A
+    /// sphere's is its disk's mean (`disk_mean`) times πr²; any shape's,
+    /// averaged over orientations, `area` / 4 times that mean (each facet
+    /// counts alone, whatever the law). Its self-shadowing is left to
+    /// [`Shape::shadow_share`].
     pub fn lit_area(&self, light: DVec3, view: DVec3, shading: Shading, alpha: f64) -> f64 {
         let l = match shading {
             Shading::Lambert => 0.0,
             Shading::LunarLambert => crate::scene::lunar_lambert_share(alpha),
         };
-        self.facets
-            .iter()
-            .map(|n| {
-                let area = n.length();
-                let (cos_i, cos_e) = (n.dot(light) / area, n.dot(view) / area);
-                if cos_i <= 0.0 || cos_e <= 0.0 {
-                    return 0.0;
-                }
-                area * cos_e * (2.0 * l * cos_i / (cos_i + cos_e) + (1.0 - l) * cos_i)
-            })
-            .sum()
+        let facets: f64 = self.facets.iter().map(|n| n.length()).sum();
+        self.area / facets
+            * self
+                .facets
+                .iter()
+                .map(|n| {
+                    let area = n.length();
+                    let (cos_i, cos_e) = (n.dot(light) / area, n.dot(view) / area);
+                    if cos_i <= 0.0 || cos_e <= 0.0 {
+                        return 0.0;
+                    }
+                    area * cos_e * (2.0 * l * cos_i / (cos_i + cos_e) + (1.0 - l) * cos_i)
+                })
+                .sum::<f64>()
     }
 
     /// The share of its light its self-shadowing leaves at phase angle
@@ -286,17 +285,23 @@ impl Shape {
         (area, volume)
     }
 
-    /// The gradient of |p| − r(p̂) is p̂ − ∇r / |p|, ∇r the radius's
-    /// change across directions (per radian): at most √(1 + (|∇r| / r)²)
-    /// at and above the surface. Taken over each texel square from the
-    /// larger difference along each pair of its sides over the angle
-    /// between those texels' centers, and its least radius; with a margin
-    /// for the GPU's half floats. (Over a face corner's texel angle for
-    /// all, it was 2.7–3.8 times too loose, and marches ran out of steps
-    /// short of the surface: found in review.)
-    fn slope_bound(&self) -> f64 {
+    /// Each texel's bound on the gradient of |p| − r(p̂) at and above the
+    /// surface, over the directions within [`Shape::reach`] of it: a step
+    /// from there of |p| − r(p̂) over it, going no farther across, never
+    /// crosses the surface. The gradient is p̂ − ∇r / |p|, ∇r the radius's
+    /// change across directions (per radian): at most √(1 + (|∇r| / r)²).
+    /// Over each texel square, the larger difference along each pair of
+    /// its sides over the angle between those texels' centers, and its
+    /// least radius; each texel takes its four squares' greatest, then the
+    /// greatest within a border's width of it (the border holding the next
+    /// faces'); with a margin for the GPU's half floats. (One bound for the
+    /// whole body was Itokawa's 65, set by the curtain its overhang makes:
+    /// every step was tiny, and marches spent their steps far short.)
+    pub fn local_slopes(&self) -> Vec<f64> {
         let side = Self::side_of(self.size);
-        let mut most = 0.0f64;
+        let reach = self.border();
+        let at = |face: usize, i: usize, j: usize| (face * side + j) * side + i;
+        let mut squares = vec![0.0f64; 6 * side * side];
         for face in 0..6 {
             for j in 0..side - 1 {
                 for i in 0..side - 1 {
@@ -307,34 +312,86 @@ impl Shape {
                     let (c, e) = (self.texel(face, i, j + 1), self.texel(face, i + 1, j + 1));
                     let du = (b - a).abs().max((e - c).abs()) / across;
                     let dv = (c - a).abs().max((e - b).abs()) / down;
-                    most = most.max(du.hypot(dv) / a.min(b).min(c).min(e));
+                    squares[at(face, i, j)] = du.hypot(dv) / a.min(b).min(c).min(e);
                 }
             }
         }
-        (1.0 + most * most).sqrt() * 1.1
+        // Each texel, its squares' greatest; then the greatest within
+        // `reach` along rows, then along columns.
+        let mut texels = vec![0.0f64; 6 * side * side];
+        for face in 0..6 {
+            for j in 0..side {
+                for i in 0..side {
+                    let mut most = 0.0f64;
+                    for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        if i >= di && j >= dj {
+                            most = most.max(squares[at(face, i - di, j - dj)]);
+                        }
+                    }
+                    texels[at(face, i, j)] = most;
+                }
+            }
+        }
+        let spread = |values: &[f64], along: bool| {
+            let mut out = vec![0.0f64; values.len()];
+            for face in 0..6 {
+                for j in 0..side {
+                    for i in 0..side {
+                        let k = if along { i } else { j };
+                        let (lo, hi) = (k.saturating_sub(reach), (k + reach).min(side - 1));
+                        out[at(face, i, j)] = (lo..=hi)
+                            .map(|m| {
+                                values[if along {
+                                    at(face, m, j)
+                                } else {
+                                    at(face, i, m)
+                                }]
+                            })
+                            .fold(0.0, f64::max);
+                    }
+                }
+            }
+            out
+        };
+        spread(&spread(&texels, true), false)
+            .into_iter()
+            .map(|g| (1.0 + g * g).sqrt() * 1.1)
+            .collect()
     }
 
-    /// The texture's levels for the GPU (`Rg16Float`, six layers): the
+    /// The angle a march's step may cross with [`Shape::local_slopes`]'
+    /// bound, radians: a border's width of the smallest texels (a padded
+    /// face's corners', 0.28 times its center's).
+    pub fn reach(&self) -> f64 {
+        self.border() as f64 * 2.0 / f64::from(self.size) * 0.28
+    }
+
+    /// The texture's levels for the GPU (`Rgba16Float`, six layers): the
     /// radius between the least and the greatest, as a high half float and
-    /// the rest × [`LOW_SCALE`]; each level the mean of the one below,
-    /// while its border is a texel or more.
+    /// the rest × [`LOW_SCALE`], then [`Shape::local_slopes`]; each level
+    /// the mean of the one below (the slopes, the greatest, so that a
+    /// coarser level bounds them too), while its border is a texel or more.
     pub fn levels(&self) -> Vec<(u32, Vec<u8>)> {
         let span = self.greatest - self.least;
-        let mut level: Vec<f64> = self
+        let mut radii: Vec<f64> = self
             .radii
             .iter()
             .map(|&r| (f64::from(r) - self.least) / span.max(1e-30))
             .collect();
+        let mut slopes = self.local_slopes();
         let mut side = Self::side_of(self.size);
         let mut border = self.border();
         let mut out = Vec::new();
         loop {
-            let data = level
+            let data = radii
                 .iter()
-                .flat_map(|&x| {
+                .zip(&slopes)
+                .flat_map(|(&x, &g)| {
                     let high = f32_to_f16(x as f32);
                     let rest = x - f64::from(crate::offscreen::f16_to_f32(high));
-                    [high, f32_to_f16((rest * f64::from(LOW_SCALE)) as f32)]
+                    // Rounded up: a bound.
+                    let g = f32_to_f16((g * 1.001) as f32);
+                    [high, f32_to_f16((rest * f64::from(LOW_SCALE)) as f32), g, 0]
                 })
                 .flat_map(u16::to_le_bytes)
                 .collect();
@@ -343,16 +400,21 @@ impl Shape {
                 return out;
             }
             let half = side / 2;
-            level = (0..6 * half * half)
-                .map(|k| {
-                    let (face, i, j) = (k / (half * half), k % half, k / half % half);
-                    let at = |x: usize, y: usize| level[(face * side + y) * side + x];
-                    (at(2 * i, 2 * j)
-                        + at(2 * i + 1, 2 * j)
-                        + at(2 * i, 2 * j + 1)
-                        + at(2 * i + 1, 2 * j + 1))
-                        / 4.0
-                })
+            let children = |values: &[f64], k: usize| {
+                let (face, i, j) = (k / (half * half), k % half, k / half % half);
+                let at = |x: usize, y: usize| values[(face * side + y) * side + x];
+                [
+                    at(2 * i, 2 * j),
+                    at(2 * i + 1, 2 * j),
+                    at(2 * i, 2 * j + 1),
+                    at(2 * i + 1, 2 * j + 1),
+                ]
+            };
+            radii = (0..6 * half * half)
+                .map(|k| children(&radii, k).iter().sum::<f64>() / 4.0)
+                .collect();
+            slopes = (0..6 * half * half)
+                .map(|k| children(&slopes, k).into_iter().fold(0.0, f64::max))
                 .collect();
             side = half;
             border /= 2;
@@ -419,7 +481,7 @@ mod tests {
         );
         assert!((sphere.volume / (4.0 * pi * 8.0 / 3.0) - 1.0).abs() < 5e-4);
         assert!((sphere.equivalent_radius() - 2.0).abs() < 5e-4);
-        assert!(sphere.slope < 1.2, "{}", sphere.slope);
+        assert!(sphere.local_slopes().iter().all(|&g| g < 1.2));
         let shape = Shape::from_fn(128, ellipsoid(3.0, 2.0, 1.0));
         let want = 4.0 * pi * 6.0 / 3.0;
         assert!((shape.volume / want - 1.0).abs() < 5e-4, "{}", shape.volume);
@@ -452,7 +514,7 @@ mod tests {
 
     /// A sphere's facets' light is its disk's (`disk_mean` × πr²) within
     /// 0.5% at phase angles 0° to 120°, Lambert and lunar-Lambert, and
-    /// 1.5% at 150° (the crescent five facets across); an
+    /// 2% at 150° (the crescent five facets across); an
     /// ellipsoid's at full phase under lunar-Lambert (as bright as the
     /// disk's area seen) is its cross-section across each axis, πbc, πac
     /// and πab, within 1.5% (the facets an inscribed polyhedron's, 0.9%
@@ -468,7 +530,7 @@ mod tests {
             for shading in [Shading::Lambert, Shading::LunarLambert] {
                 let got = sphere.lit_area(light, view, shading, alpha);
                 let want = disk_mean(shading, alpha) * pi * 4.0;
-                let tolerance = if degrees > 120.0 { 0.015 } else { 5e-3 };
+                let tolerance = if degrees > 120.0 { 0.02 } else { 5e-3 };
                 assert!(
                     (got / want - 1.0).abs() < tolerance,
                     "{shading:?} at {degrees}°: {got} vs {want}"
@@ -496,6 +558,7 @@ mod tests {
         let levels = shape.levels();
         assert_eq!(levels.iter().map(|l| l.0).collect::<Vec<_>>(), [72, 36, 18]);
         let half = |bytes: &[u8], k: usize| {
+            let k = k / 2 * 4 + k % 2;
             f64::from(crate::offscreen::f16_to_f32(u16::from_le_bytes([
                 bytes[2 * k],
                 bytes[2 * k + 1],

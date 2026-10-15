@@ -485,7 +485,11 @@ impl Shell {
 
     fn camera_text(&self) -> String {
         let altitude = self.camera.altitude(self.eph);
-        let distance = if altitude < 1e6 {
+        let distance = if altitude < 1.0 {
+            format!("{:.0} m", altitude * 1000.0)
+        } else if altitude < 10.0 {
+            format!("{altitude:.1} km")
+        } else if altitude < 1e6 {
             format!("{altitude:.0} km")
         } else if altitude < 3e7 {
             format!("{:.2} million km", altitude / 1e6)
