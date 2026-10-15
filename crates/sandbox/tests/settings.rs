@@ -1,6 +1,7 @@
 //! The settings menu, through damascene as the window delivers input, in
 //! the window's first size: the gear opens it, its sliders set the
-//! departures from realism by whole stops, its switches the lines drawn,
+//! departures from realism by whole stops, its switches the labels and
+//! lines shown,
 //! and a click outside it or Escape closes it. Each lift reaches what it
 //! names alone; each class of lines hidden is left out alone.
 
@@ -118,10 +119,10 @@ fn the_menu_sets_the_lifts() {
             let switch = ui.rect_of_key(t.key).expect("the switch is laid out");
             assert!(switch.y + switch.h < h, "{}'s switch is in the window", t.name);
             for on in [false, true] {
-                let mut others = app.settings.lines;
+                let mut others = app.settings;
                 *(t.field)(&mut others) = on;
                 click(&mut app, &mut ui, center(switch));
-                assert_eq!(app.settings.lines, others, "scale {scale}, {}", t.name);
+                assert_eq!(app.settings, others, "scale {scale}, {}", t.name);
                 assert!(app.settings_open, "the switch leaves the menu open");
                 draw(&mut app, &mut ui);
             }

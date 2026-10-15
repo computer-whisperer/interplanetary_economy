@@ -133,9 +133,9 @@ STOPS`, `--body-lift STOPS`), and Earth's night lights' over their
 radiance, 15 (`--night-lights STOPS`). At 0, as in a photograph, no
 stars or planets show beside a sunlit body; with the sky's exposure +20
 stops over Earth's, the Milky Way's band shows faintly; at +23,
-clearly. The settings also show or hide each class of line: the ships'
-paths and events, the station orbits, and the planets', moons' and small
-bodies' orbits. On an HDR output, highlights use the display's headroom.
+clearly. The settings also show or hide the labels (what is drawn can
+still be clicked), and each class of line: the ships' paths and events,
+the station orbits, and the planets', moons' and small bodies' orbits. On an HDR output, highlights use the display's headroom.
 `--focus ID --altitude KM --azimuth DEG --elevation DEG --date
 YYYY-MM-DD[THH:MM] --exposure STOPS` set the starting view (the
 direction about the frame's axes), for screenshots too; with a plan, a

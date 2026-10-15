@@ -336,7 +336,8 @@ impl Shell {
 
     /// Projects what the map view shows in `scene` onto its target of
     /// `size` pixels, `scale` to a logical one, and places their labels
-    /// (none without a target yet).
+    /// (none without a target yet, or with labels hidden: what is drawn
+    /// can still be picked).
     pub fn place_labels(&mut self, scene: &render::Scene, size: Option<(u32, u32)>, scale: f32) {
         let (Some(camera), Some(size)) = (scene.camera, size) else {
             self.seen = None;
@@ -379,11 +380,14 @@ impl Shell {
             }
         }
         let sizes = &mut self.sizes;
-        let placed = labels::declutter(&anchors, view.extent(), |text| {
-            *sizes
-                .entry(text.to_string())
-                .or_insert_with(|| labels::measure(text))
-        });
+        let placed = match self.settings.labels {
+            true => labels::declutter(&anchors, view.extent(), |text| {
+                *sizes
+                    .entry(text.to_string())
+                    .or_insert_with(|| labels::measure(text))
+            }),
+            false => Vec::new(),
+        };
         self.seen = Some(Seen {
             view,
             poses: scene.poses.clone(),

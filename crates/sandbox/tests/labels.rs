@@ -182,7 +182,8 @@ fn a_ship_at_a_point_is_shown() {
 /// With a ship on its way to low lunar orbit, clicks pick: the Moon at its
 /// center; the ship beside its marker; a marker's item at its label; the
 /// leg on its line; nothing on empty space. Picking the ship selects the item it is in,
-/// and empty space clears the selection.
+/// and empty space clears the selection. With labels hidden, none is
+/// placed, and the rest picks as before.
 #[test]
 fn clicks_pick_what_they_land_on() {
     let gpu = render::offscreen::Offscreen::new().expect("a GPU");
@@ -265,6 +266,15 @@ fn clicks_pick_what_they_land_on() {
     assert_eq!(app.selected, Some((0, panel::current(&ship, t).unwrap())));
     app.clicked_map(empty);
     assert_eq!(app.selected, None);
+
+    // Labels hidden: none placed, and what is drawn still picks.
+    app.settings.labels = false;
+    shot(&gpu, &mut app, None, 1000, 700, 1.0);
+    assert!(app.placed().is_empty());
+    assert_eq!(app.anchors(), &anchors[..]);
+    assert_eq!(app.pick(center), Some(Pick::Body(moon)));
+    assert_eq!(app.pick(marker + Vec2::new(3.0, 0.0)), Some(Pick::Ship(0)));
+    assert_eq!(app.pick(on_line), Some(Pick::Item(0, k)));
 }
 
 /// From 6,000 km over the Moon, with a ship then waiting in low lunar

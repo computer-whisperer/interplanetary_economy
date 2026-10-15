@@ -1,6 +1,7 @@
 //! The settings menu: a popover under the top bar's gear, with the
 //! departures from realism (M1c.md, Realism), each in stops, 0 being
-//! true to life; and the classes of lines drawn.
+//! true to life; whether labels are shown, and the classes of lines
+//! drawn.
 
 use crate::look;
 use damascene_core::prelude::*;
@@ -11,8 +12,8 @@ pub const KEY: &str = "settings";
 /// The sliders' width, logical pixels.
 const SLIDER_PX: f32 = 240.0;
 
-/// What the settings menu sets: stops over the truth, and the lines
-/// drawn.
+/// What the settings menu sets: stops over the truth, and what is
+/// shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// The sky's (the stars' and the Milky Way's) over the scene's
@@ -22,6 +23,9 @@ pub struct Settings {
     pub body_lift: i32,
     /// Earth's night lights', over their radiance.
     pub night_lights: i32,
+    /// Labels on the map view (bodies', ships', markers', station
+    /// orbits').
+    pub labels: bool,
     pub lines: Lines,
 }
 
@@ -31,6 +35,7 @@ impl Default for Settings {
             background_lift: look::BACKGROUND_LIFT,
             body_lift: look::BODY_LIFT,
             night_lights: look::NIGHT_LIGHTS,
+            labels: true,
             lines: Lines::default(),
         }
     }
@@ -62,39 +67,44 @@ impl Default for Lines {
     }
 }
 
-/// A class of lines' switch: its key, its name, and its field.
+/// A switch: its key, its name, and its field.
 pub struct Toggle {
     pub key: &'static str,
     pub name: &'static str,
-    pub field: fn(&mut Lines) -> &mut bool,
+    pub field: fn(&mut Settings) -> &mut bool,
 }
 
-/// The menu's classes of lines, in its order.
-pub const TOGGLES: [Toggle; 5] = [
+/// The menu's switches, in its order: labels, then the classes of lines.
+pub const TOGGLES: [Toggle; 6] = [
+    Toggle {
+        key: "settings:labels",
+        name: "Labels",
+        field: |s| &mut s.labels,
+    },
     Toggle {
         key: "settings:lines:ships",
         name: "Ships' paths and events",
-        field: |l| &mut l.ships,
+        field: |s| &mut s.lines.ships,
     },
     Toggle {
         key: "settings:lines:stations",
         name: "Station orbits",
-        field: |l| &mut l.stations,
+        field: |s| &mut s.lines.stations,
     },
     Toggle {
         key: "settings:lines:planets",
         name: "Planets' orbits",
-        field: |l| &mut l.planets,
+        field: |s| &mut s.lines.planets,
     },
     Toggle {
         key: "settings:lines:moons",
         name: "Moons' orbits",
-        field: |l| &mut l.moons,
+        field: |s| &mut s.lines.moons,
     },
     Toggle {
         key: "settings:lines:small-bodies",
         name: "Small bodies' orbits",
-        field: |l| &mut l.small_bodies,
+        field: |s| &mut s.lines.small_bodies,
     },
 ];
 
@@ -164,7 +174,7 @@ impl Settings {
         }
         TOGGLES
             .iter()
-            .any(|t| switch::apply_event((t.field)(&mut self.lines), event, t.key))
+            .any(|t| switch::apply_event((t.field)(self), event, t.key))
     }
 }
 
@@ -199,9 +209,9 @@ pub fn menu(settings: &Settings) -> El {
     }
     rows.push(text("Each at 0 is true to life.").muted().caption());
     rows.push(separator());
-    rows.push(text("Lines").bold());
+    rows.push(text("Shown").bold());
     for t in &TOGGLES {
-        let on = *(t.field)(&mut settings.lines);
+        let on = *(t.field)(&mut settings);
         rows.push(
             row([text(t.name), spacer(), switch(t.key, on)])
                 .align(Align::Center)
