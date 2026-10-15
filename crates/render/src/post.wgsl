@@ -105,3 +105,10 @@ fn tonemap_fs(in: FullOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(c, 1.0);
 }
+
+// A texture's next mip level: the 2×2 texels under the pixel, averaged
+// (in linear light, for an sRGB texture).
+@fragment
+fn blit_fs(in: FullOut) -> @location(0) vec4<f32> {
+    return textureSample(source, linear_clamp, in.uv);
+}

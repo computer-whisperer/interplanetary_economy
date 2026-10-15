@@ -37,8 +37,9 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   the candidate asteroids, Phobos and Deimos (`moons.toml`), the Earth–Moon
   periodic-orbit families (`orbits.toml`), the places ships go
   (`places.toml`), mission plans (`missions/`), the route graph the
-  autopilot measured (`routes.toml`, written by `orbit routes`), and the
-  economy (`economy.toml`, with sources).
+  autopilot measured (`routes.toml`, written by `orbit routes`), the
+  economy (`economy.toml`, with sources), and the sky (`sky/`: the
+  Hipparcos stars and NASA SVS's Milky Way, with their terms).
 - `tools/ephem/` — regenerates `data/de440.bin` from JPL (`fetch.sh DIR`,
   then `python3 build.py DIR ../../data/de440.bin`; needs numpy), and the
   Horizons fixtures the tests check it against (`fixtures.sh`).
@@ -49,6 +50,10 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   precessing ellipses fitted to JPL Horizons; `fetch.sh DIR`, then
   `python3 build.py DIR > ../../data/moons.toml`; needs numpy and scipy),
   and the Horizons fixtures the tests check them against (`fixtures.sh`).
+- `tools/sky/` — regenerates `data/sky/` (`fetch.sh DIR`, ~250 MB, then
+  `python3 build.py DIR ../../data/sky`; needs numpy, scipy, Pillow and
+  OpenEXR): the star list, the Milky Way map, and its calibration against
+  the stars' fluxes.
 - `tools/neas/` — regenerates `data/neas.toml` (each asteroid's physical
   data and Horizons state at 2040-01-01) from JPL Horizons and SBDB
   (`fetch.sh DIR`, then `python3 build.py DIR > ../../data/neas.toml`), and

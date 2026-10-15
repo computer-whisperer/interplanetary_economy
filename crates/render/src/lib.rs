@@ -14,6 +14,7 @@ pub mod offscreen;
 pub mod paths;
 mod post;
 pub mod scene;
+mod sky;
 pub mod timer;
 
 use std::sync::Arc;
@@ -22,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub use camera::Camera;
 pub use paths::{Path, Paths, Pose, Sample};
 pub use scene::{Look, Marker, Scene, Shape, Sphere, Surface};
+pub use sky::{Image, Sky, Star};
 pub use timer::{GpuTimer, Timings};
 
 /// The scene's and the shown image's color format.
@@ -104,13 +106,13 @@ impl Target {
 }
 
 /// A storage buffer that grows to fit what is written to it.
-struct Storage {
-    buffer: wgpu::Buffer,
+pub(crate) struct Storage {
+    pub(crate) buffer: wgpu::Buffer,
     label: &'static str,
 }
 
 impl Storage {
-    fn new(device: &wgpu::Device, label: &'static str) -> Storage {
+    pub(crate) fn new(device: &wgpu::Device, label: &'static str) -> Storage {
         Storage {
             buffer: Self::create(device, label, 4096),
             label,
@@ -127,7 +129,7 @@ impl Storage {
     }
 
     /// Writes `data`; `true` if the buffer was replaced to fit it.
-    fn write<T: bytemuck::Pod>(
+    pub(crate) fn write<T: bytemuck::Pod>(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -146,8 +148,8 @@ impl Storage {
     }
 }
 
-/// Draws scenes (scene.wgsl): the scene's pass (ray-cast spheres, then
-/// points, additive) into its radiance; bloom and the tonemap into the
+/// Draws scenes (scene.wgsl): the scene's pass (the sky, then ray-cast
+/// spheres, then points, additive) into its radiance; bloom and the tonemap into the
 /// shown image (post.wgsl); and over that, depth-tested against the
 /// scene, the overlay (paths' lines, then markers), which exposure does
 /// not touch.
@@ -174,10 +176,11 @@ pub struct Renderer {
     line_pipeline: wgpu::RenderPipeline,
     piece_pipeline: wgpu::RenderPipeline,
     post: post::Post,
+    sky: sky::SkyPass,
 }
 
 impl Renderer {
-    pub fn new(device: &wgpu::Device) -> Renderer {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Renderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene"),
             source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
@@ -309,6 +312,7 @@ impl Renderer {
             line_pipeline: pipeline("lines", &line_layout, "line_vs", "line_fs", over, false),
             piece_pipeline: pipeline("pieces", &line_layout, "piece_vs", "line_fs", over, false),
             post: post::Post::new(device),
+            sky: sky::SkyPass::new(device, queue, &shader, &layout),
             layout,
             path_layout,
         }
@@ -412,6 +416,7 @@ impl Renderer {
             ),
             None => (None, None),
         };
+        let sky = self.sky.prepare(device, queue, encoder, &self.post, scene);
         let [r, g, b] = scene.background.map(f64::from);
         let [with_points, with_markers] = self.groups.as_ref().expect("bind groups");
         {
@@ -440,6 +445,9 @@ impl Renderer {
                 multiview_mask: None,
             });
             if inst.frame.is_some() {
+                if sky {
+                    self.sky.draw(&mut pass, with_points);
+                }
                 for (pipeline, count) in [
                     (&self.sphere_pipeline, inst.spheres.len()),
                     (&self.point_pipeline, inst.points.len()),

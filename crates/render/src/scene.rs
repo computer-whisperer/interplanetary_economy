@@ -6,6 +6,7 @@
 
 use crate::camera::{Camera, NEAR_KM};
 use crate::paths::{MAX_POSES, Paths, Pose, split};
+use crate::sky::Sky;
 use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use std::sync::Arc;
@@ -17,6 +18,14 @@ pub const AU_KM: f64 = 149_597_870.7;
 /// a pixel across at half its peak.
 pub const SPOT_SIGMA_PX: f32 = 0.6;
 
+/// Where a sphere is drawn as a disk under this radius, pixels, a spot
+/// over it carries what [`Look::point_gain`] adds to its flux, fading to
+/// none here.
+const FADE_PX: f64 = 3.0;
+
+/// The most a spot's radiance per share reaches: under f16's largest.
+const SPOT_MAX: f64 = 60_000.0;
+
 /// A sphere's quad is the whole screen when the cone of rays that hit it
 /// is wider than this, or reaches behind the eye.
 const BILLBOARD_MAX_HALF_ANGLE: f64 = 1.2;
@@ -26,6 +35,7 @@ pub struct Scene {
     pub camera: Option<Camera>,
     /// Radiance where nothing is drawn.
     pub background: [f32; 3],
+    pub sky: Option<Sky>,
     pub look: Look,
     /// Where the Sun's light comes from.
     pub sun: DVec3,
@@ -50,6 +60,20 @@ pub struct Look {
     pub bloom: f32,
     /// The output's peak over the SDR white; 1 on SDR, which is dithered.
     pub headroom: f32,
+    /// The exposure points of light (stars, and bodies under a few
+    /// pixels) and the sky are shown at, where it exceeds `exposure`: a
+    /// fixed one, so the sky shows beside a sunlit body ("Realism": a
+    /// camera exposed for the Earth sees no stars). 0 shows them as they
+    /// are.
+    pub sky: f32,
+}
+
+impl Look {
+    /// What points of light and the sky are multiplied by, before
+    /// `exposure`: so that they show at `sky` where it is the larger.
+    pub fn point_gain(&self) -> f32 {
+        self.sky.max(self.exposure) / self.exposure
+    }
 }
 
 impl Default for Look {
@@ -59,6 +83,7 @@ impl Default for Look {
             exposure: 1.0,
             bloom: 0.0,
             headroom: 1.0,
+            sky: 0.0,
         }
     }
 }
@@ -268,12 +293,9 @@ impl Scene {
                 let irradiance = (AU_KM / to_sun.length()).powi(2);
                 (albedo, irradiance, to_sun.normalize(), to_sun)
             };
-            if half_angle < local_pixel {
-                // Under a pixel: a point with the sphere's flux, as the
-                // radiance of the pixel it is spread over.
-                if v.z >= -NEAR_KM {
-                    continue;
-                }
+            // The sphere's flux as a spot, times `k`: as the radiance of
+            // the pixel it is spread over.
+            let mut spot = |k: f64| {
                 let disk = std::f64::consts::PI * half_angle * half_angle;
                 let spread = local_pixel * local_pixel;
                 let radiance = match s.surface {
@@ -288,10 +310,23 @@ impl Scene {
                 out.points.push(DotGpu {
                     center: f32x3(v),
                     size: SPOT_SIGMA_PX,
-                    color: radiance.map(|x| x as f32),
+                    color: radiance.map(|x| (x * k).min(SPOT_MAX) as f32),
                     shape: Shape::Spot as u32,
                 });
+            };
+            let gain = f64::from(self.look.point_gain());
+            let radius_px = half_angle / local_pixel;
+            if radius_px < 1.0 {
+                // Under a pixel: a point of light.
+                if v.z < -NEAR_KM {
+                    spot(gain);
+                }
                 continue;
+            }
+            if radius_px < FADE_PX && gain > 1.0 {
+                // A disk now, carrying the flux as it is; a spot over it
+                // carries what the gain adds, fading out.
+                spot((gain - 1.0) * (FADE_PX - radius_px) / (FADE_PX - 1.0));
             }
             // The quad: across the cone of rays that hit the sphere, in the
             // plane through its center facing the eye; the whole screen

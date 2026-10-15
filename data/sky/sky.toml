@@ -1,0 +1,21 @@
+# The sky (M1c.md, step 6 plan, item 2), built by tools/sky/build.py.
+#
+# stars.bin: the Hipparcos main catalog (ESA 1997, SP-1200; CDS I/239),
+# 118217 stars: V, positions and proper motions (ICRS), B-V. ESA's
+# Hipparcos data are free to use with acknowledgement.
+#
+# milkyway.jpg: "Deep Star Maps 2020", the Milky Way background (Gaia DR2
+# with Hipparcos and Tycho-2 stars removed), NASA/Goddard Space Flight
+# Center Scientific Visualization Studio (svs.gsfc.nasa.gov/4851). Gaia
+# DR2: ESA/Gaia/DPAC. NASA's media guidelines: free to use, credit
+# requested. Stars of Tycho-2 fainter than Hipparcos (V ~9-11.5) are in
+# neither: a few percent of the background's light.
+#
+# Calibration: the bright-star layer integrates to k x 10^(-0.4 V) per
+# star, k = 2.1357e-04 (interquartile 1.676e-04-2.599e-04, 124
+# isolated, unsaturated stars of V 4.5-6.5); the composite map is
+# 0.5013 x the background + 0.9972 x the bright-star layer.
+
+# Radiance units (a white Lambertian surface's under the Sun at 1 au) of
+# one unit of milkyway.jpg, linear after sRGB decoding.
+milky_way_radiance = 1.484862e-07

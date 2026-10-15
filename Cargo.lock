@@ -1727,6 +1727,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -3270,16 +3272,20 @@ dependencies = [
 name = "sandbox"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "clap",
  "damascene-core",
  "damascene-wgpu",
  "damascene-winit-wgpu",
  "glam 0.34.1",
+ "image",
  "orbit",
  "png",
  "pollster",
  "rayon",
  "render",
+ "serde",
+ "toml",
  "wgpu",
  "winit",
 ]

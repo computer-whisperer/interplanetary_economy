@@ -49,7 +49,7 @@ fn green_centroid(pixels: &[[f32; 4]], size: (u32, u32)) -> Option<DVec2> {
 #[test]
 fn marker_in_low_lunar_orbit_lands_within_a_pixel() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (800, 600);
     let ship = MOON + DVec3::new(0.31, -0.72, 0.62).normalize() * (MOON_RADIUS + 100.0);
     let fov = 50f64.to_radians();
@@ -87,7 +87,7 @@ fn marker_in_low_lunar_orbit_lands_within_a_pixel() {
 #[test]
 fn moon_limb_from_low_orbit() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (400, 600);
     let up = DVec3::new(0.2, -0.4, 0.9).normalize();
     let ahead = up.cross(DVec3::X).normalize();
@@ -123,7 +123,7 @@ fn moon_limb_from_low_orbit() {
 #[test]
 fn radiance_has_its_units() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (300, 300);
     let center = DVec3::new(AU_KM, 0.0, 0.0);
     let eye = center + DVec3::new(0.0, -10_000.0, 0.0);
@@ -181,7 +181,7 @@ fn radiance_has_its_units() {
 #[test]
 fn points_carry_their_spheres_flux() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (400, 300);
     let fov = 60f64.to_radians();
     let radius = 1_000.0;

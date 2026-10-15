@@ -102,6 +102,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 plan.wait();
                 eprintln!("{}", plan.progress());
             }
+            if let Err(why) = sandbox::sky::wait() {
+                eprintln!("no sky: {why}");
+            }
             let gpu = render::offscreen::Offscreen::new()?;
             let (w, h) = cli.size;
             let shot = sandbox::frame::shot(&gpu, &mut app, None, w, h);

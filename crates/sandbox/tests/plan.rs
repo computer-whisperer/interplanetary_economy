@@ -180,7 +180,7 @@ fn published_plan_gpu_time() {
     plan.wait();
     println!("{}", plan.progress());
     let gpu = render::offscreen::Offscreen::new().expect("a GPU");
-    let mut renderer = render::Renderer::new(&gpu.device);
+    let mut renderer = render::Renderer::new(&gpu.device, &gpu.queue);
     let mut app = Shell::new(Epoch::from_ymd(2045, 3, 14));
     app.plan = Some(plan);
     let id = |s: &str| eph.lookup(s).unwrap();

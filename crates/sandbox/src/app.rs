@@ -10,6 +10,7 @@ use crate::frames::{self, Frame};
 use crate::look::{self, Exposure};
 use crate::paths::{self, Event, PAST_DIM};
 use crate::plan::{Loaded, on_track, position};
+use crate::sky;
 use damascene_core::prelude::*;
 use damascene_core::surface::AppTexture;
 use damascene_core::widgets::slider;
@@ -106,6 +107,7 @@ impl Shell {
     pub fn new(t: Epoch) -> Shell {
         let eph = Ephemeris::standard();
         let earth = eph.lookup("earth").expect("Earth is in the ephemeris");
+        sky::start();
         Shell {
             eph,
             viewport: None,
@@ -238,6 +240,7 @@ impl Shell {
                 .filter_map(|&b| bodies::sphere(eph, b, t))
                 .collect(),
             markers,
+            sky: sky::loaded().map(|d| sky::sky(d, t)),
             paths: Some(self.paths.clone()),
             poses,
             now: paths::seconds(t),
@@ -246,6 +249,7 @@ impl Shell {
                 exposure: self.exposure.value(self.target_exposure()),
                 bloom: look::BLOOM,
                 headroom: self.stats.headroom(),
+                sky: look::SKY,
             },
             ..Default::default()
         }

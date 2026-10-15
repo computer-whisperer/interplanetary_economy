@@ -1,6 +1,7 @@
 //! From the scene's radiance to what the app shows (M1c.md, step 6 plan,
 //! item 1; post.wgsl): bloom down and up a chain of half-size levels,
-//! then exposure, the tonemap and the dither.
+//! then exposure, the tonemap and the dither. And, on the same machinery,
+//! images' mipmaps.
 
 use crate::{COLOR_FORMAT, Target};
 use bytemuck::{Pod, Zeroable};
@@ -31,6 +32,9 @@ pub fn levels(size: (u32, u32)) -> usize {
     n.max(1)
 }
 
+/// Images' format on the GPU.
+pub const IMAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
 pub(crate) struct Post {
     chain_layout: wgpu::BindGroupLayout,
     tonemap_layout: wgpu::BindGroupLayout,
@@ -39,6 +43,8 @@ pub(crate) struct Post {
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
     tonemap: wgpu::RenderPipeline,
+    /// An sRGB image's next mip level from the last.
+    blit: wgpu::RenderPipeline,
     /// The target the groups below were made for, by its id.
     groups: Option<(u64, Groups)>,
 }
@@ -95,7 +101,7 @@ impl Post {
                 },
             ],
         });
-        let pipeline = |label, layout: &wgpu::BindGroupLayout, fs, blend| {
+        let pipeline = |label, layout: &wgpu::BindGroupLayout, fs, format, blend| {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &[Some(layout)],
@@ -118,7 +124,7 @@ impl Post {
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: COLOR_FORMAT,
+                        format,
                         blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -136,9 +142,10 @@ impl Post {
             alpha: wgpu::BlendComponent::REPLACE,
         };
         Post {
-            down: pipeline("bloom down", &chain_layout, "down_fs", None),
-            up: pipeline("bloom up", &chain_layout, "up_fs", Some(add)),
-            tonemap: pipeline("tonemap", &tonemap_layout, "tonemap_fs", None),
+            down: pipeline("bloom down", &chain_layout, "down_fs", COLOR_FORMAT, None),
+            up: pipeline("bloom up", &chain_layout, "up_fs", COLOR_FORMAT, Some(add)),
+            tonemap: pipeline("tonemap", &tonemap_layout, "tonemap_fs", COLOR_FORMAT, None),
+            blit: pipeline("mip", &chain_layout, "blit_fs", IMAGE_FORMAT, None),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("post"),
                 mag_filter: wgpu::FilterMode::Linear,
@@ -274,5 +281,92 @@ impl Post {
             );
         }
         pass(encoder, &target.color_view, tonemap, &groups.tonemap, clear);
+    }
+
+    /// `image` on the GPU with its full chain of mip levels, each made from
+    /// the last in `encoder`.
+    pub(crate) fn upload_with_mips(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        image: &crate::sky::Image,
+    ) -> wgpu::TextureView {
+        let levels = 32 - image.width.max(image.height).max(1).leading_zeros();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("image"),
+            size: wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: IMAGE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            texture.as_image_copy(),
+            &image.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * image.width),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let level = |k: u32| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                base_mip_level: k,
+                mip_level_count: Some(1),
+                ..Default::default()
+            })
+        };
+        for k in 1..levels {
+            let source = level(k - 1);
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mip"),
+                layout: &self.chain_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            let target = level(k);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mip"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.blit);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        texture.create_view(&Default::default())
     }
 }

@@ -166,7 +166,7 @@ mod tests {
     fn empty_scene_reads_back_its_background() {
         let gpu = Offscreen::new().expect("a GPU");
         let target = Target::new(&gpu.device, 64, 32);
-        let mut renderer = Renderer::new(&gpu.device);
+        let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
         let mut timer = crate::GpuTimer::new(&gpu.device, &gpu.queue);
         let scene = Scene {
             background: [0.25, 1.5, 7.0],
@@ -223,7 +223,7 @@ mod tests {
             println!("no timestamps on {}", gpu.adapter.get_info().name);
             return;
         };
-        let mut renderer = Renderer::new(&gpu.device);
+        let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
         let (small, large) = (
             Target::new(&gpu.device, 1, 1),
             Target::new(&gpu.device, 4096, 4096),

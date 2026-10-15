@@ -4,15 +4,19 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+bytemuck = "1"
 clap = { version = "4.6.7", features = ["derive"] }
 damascene-core = "0.8"
 damascene-wgpu = "0.8"
 damascene-winit-wgpu = "0.8"
 glam = "0.34.1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 orbit = { path = "../orbit" }
 png = "0.18.1"
 pollster = "1.0"
 rayon = "1.12.0"
 render = { path = "../render" }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
 wgpu = "30"
 winit = "0.30"

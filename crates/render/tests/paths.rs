@@ -159,7 +159,7 @@ fn scene(camera: Camera, pose: Pose, samples: Vec<Sample>, now: f64) -> Scene {
 #[test]
 fn line_about_the_moon_from_100_km_to_5_au() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (800, 600);
     let pose = Pose {
         origin: DVec3::new(2.1e5, -4.4e5, 3.0e3),
@@ -212,7 +212,7 @@ fn line_about_the_moon_from_100_km_to_5_au() {
 #[test]
 fn line_follows_the_curve_up_close() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (800, 600);
     let pose = Pose {
         origin: DVec3::new(-2.6e7, 1.45e8, 1.0e4),
@@ -262,7 +262,7 @@ fn line_follows_the_curve_up_close() {
 #[test]
 fn segment_behind_the_eye_is_clipped() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (400, 300);
     let camera = Camera::looking_at(DVec3::ZERO, DVec3::X, DVec3::Z, 60f64.to_radians());
     // Through (0, 0.4 m, 0.2 m), in the eye's plane.
@@ -369,7 +369,7 @@ fn assert_meets((past_end, future_start): (f64, f64)) {
 #[test]
 fn past_meets_future_at_the_moment() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (400, 300);
     let camera = Camera::looking_at(
         DVec3::new(0.0, -300.0, 0.0),
@@ -415,7 +415,7 @@ fn past_meets_future_at_the_moment() {
 #[test]
 fn past_meets_future_on_a_receding_segment() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (400, 300);
     let camera = Camera::looking_at(DVec3::ZERO, DVec3::X, DVec3::Z, 60f64.to_radians());
     let (p0, p1) = (
@@ -461,7 +461,7 @@ fn past_meets_future_on_a_receding_segment() {
 #[test]
 fn past_meets_future_100_days_in() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (400, 300);
     let pose = Pose {
         origin: DVec3::new(-2.6e7, 1.45e8, 1.0e4),
@@ -524,7 +524,7 @@ fn past_meets_future_100_days_in() {
 #[test]
 fn long_segments_up_close() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (800, 600);
     let pose = Pose::default();
     for (name, radius, chord, eye_km) in [
@@ -580,7 +580,7 @@ fn long_segments_up_close() {
 #[test]
 fn line_cut_on_the_gpu_from_300_km() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (800, 600);
     let pose = Pose {
         origin: DVec3::new(-2.6e7, 1.45e8, 1.0e4),
@@ -635,7 +635,7 @@ fn line_cut_on_the_gpu_from_300_km() {
 #[ignore]
 fn two_million_segments_gpu_time() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let center = DVec3::new(-2.6e7, 1.45e8, 1.0e4);
     let (r, w) = (6_778.0, 2.0 * std::f64::consts::PI / 5_550.0);
     let paths: Vec<Path> = (0..20)

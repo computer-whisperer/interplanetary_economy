@@ -17,6 +17,11 @@ pub const KEY: f64 = 0.6;
 /// [`KEY`] it read as gray.
 pub const SUN_KEY: f64 = 4.0 * KEY;
 
+/// The exposure the sky and points of light are shown at (`Look::sky`):
+/// the Milky Way's median at ~0.003 of SDR white, stars to V ~8 visible,
+/// the brightest blooming.
+pub const SKY: f32 = 7.5e5;
+
 /// Seconds for exposure to close ~63% of the way to a new focus's: most
 /// of it within a refocus's flight.
 const EASE_S: f64 = 0.2;

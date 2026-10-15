@@ -17,7 +17,7 @@ pub struct View {
 impl View {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> View {
         View {
-            renderer: render::Renderer::new(device),
+            renderer: render::Renderer::new(device, queue),
             target: None,
             timer: render::GpuTimer::new(device, queue),
         }

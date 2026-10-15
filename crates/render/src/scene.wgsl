@@ -195,20 +195,24 @@ const DOT_MARGIN: f32 = 1.5;
 @vertex
 fn dot_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u32) -> DotOut {
     let p = dots[index];
-    let k = corner_index(vertex);
+    return dot_corner(p.center, p.size, p.color, p.shape, corner_index(vertex));
+}
+
+// Corner `k` of a dot's quad at `center` (view space).
+fn dot_corner(center: vec3<f32>, size: f32, color: vec3<f32>, shape: u32, k: u32) -> DotOut {
     let uv = vec2<f32>(f32(k & 1u) * 2.0 - 1.0, f32(k >> 1u) * 2.0 - 1.0);
     // A spot reaches 3.5 σ past the pixel its center is in.
-    let half = select(p.size * 0.5 + DOT_MARGIN, 3.5 * p.size + 0.5, p.shape == 0u);
-    var clip = clip_of(p.center);
+    let half = select(size * 0.5 + DOT_MARGIN, 3.5 * size + 0.5, shape == 0u);
+    var clip = clip_of(center);
     // A fixed size in pixels: an offset in NDC, scaled by w.
     clip = vec4<f32>(clip.xy + uv * 2.0 * half / frame.viewport * clip.w, clip.zw);
     var out: DotOut;
     out.position = clip;
     // NDC's y is up, pixels' down.
     out.offset = vec2<f32>(uv.x, -uv.y) * half;
-    out.color = p.color;
-    out.shape = p.shape;
-    out.size = p.size;
+    out.color = color;
+    out.shape = shape;
+    out.size = size;
     return out;
 }
 
@@ -426,3 +430,98 @@ fn line_fs(in: LineOut) -> @location(0) vec4<f32> {
     let color = select(info.future.rgb, info.past.rgb, past);
     return vec4<f32>(color * coverage, coverage);
 }
+
+// The sky (M1c.md, step 6 plan, item 2), behind everything: the Milky Way
+// and the catalog's stars, in the sky's coordinates (equatorial, ICRS).
+
+struct Sky {
+    // From the sky's coordinates to view space.
+    to_view: mat3x3<f32>,
+    // Julian years since J2000, for proper motion.
+    years: f32,
+    // Radiance written per radiance of the sky: the sky's gain over the
+    // exposure, at least 1.
+    gain: f32,
+    // Radiance of a unit of the Milky Way's texture, times the gain.
+    milky_way: f32,
+    // Stars whose brightest pixel would write less than this are left
+    // out: invisible once exposed.
+    faintest: f32,
+}
+
+// A catalog star: its direction at J2000, its flux (radiance × sr, the
+// largest channel's), its proper motion (radians a year), and its color
+// (linear rgb in the low three bytes, the largest 255).
+struct Star {
+    direction: vec3<f32>,
+    flux: f32,
+    motion: vec3<f32>,
+    color: u32,
+}
+
+@group(2) @binding(0) var<uniform> sky: Sky;
+@group(2) @binding(1) var<storage, read> stars: array<Star>;
+@group(2) @binding(2) var milky_way: texture_2d<f32>;
+@group(2) @binding(3) var sky_sampler: sampler;
+
+struct SkyOut {
+    @builtin(position) position: vec4<f32>,
+    // Unnormalized, view space.
+    @location(0) ray: vec3<f32>,
+}
+
+// One triangle over the screen, at infinity.
+@vertex
+fn sky_vs(@builtin(vertex_index) vertex: u32) -> SkyOut {
+    let ndc = vec2<f32>(f32((vertex << 1u) & 2u) * 2.0 - 1.0, f32(vertex & 2u) * 2.0 - 1.0);
+    var out: SkyOut;
+    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.ray = vec3<f32>(ndc.x * frame.tan_half * frame.aspect, ndc.y * frame.tan_half, -1.0);
+    return out;
+}
+
+const PI: f32 = 3.14159265;
+
+// The Milky Way's map is equirectangular: right ascension 0h at its
+// center, increasing to the left; north up. Its level is picked from the
+// pixel's size on the sky, so the seam at 12h does not show.
+@fragment
+fn sky_fs(in: SkyOut) -> @location(0) vec4<f32> {
+    let v = normalize(in.ray);
+    let d = transpose(sky.to_view) * v;
+    let ra = atan2(d.y, d.x);
+    let dec = asin(clamp(d.z, -1.0, 1.0));
+    let uv = vec2<f32>(0.5 - ra / (2.0 * PI), 0.5 - dec / PI);
+    let size = vec2<f32>(textureDimensions(milky_way));
+    // A pixel's angle here: smaller off the axis, as cos² of the angle.
+    let pixel = 2.0 * frame.tan_half / frame.viewport.y * v.z * v.z;
+    let level = max(log2(pixel * size.y / PI), 0.0);
+    let c = textureSampleLevel(milky_way, sky_sampler, uv, level).rgb * sky.milky_way;
+    return vec4<f32>(min(c, vec3<f32>(60000.0)), 1.0);
+}
+
+// Each instance a star, a spot carrying its flux.
+@vertex
+fn star_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u32) -> DotOut {
+    let s = stars[index];
+    let d = sky.to_view * normalize(s.direction + s.motion * sky.years);
+    // The sky a pixel there subtends: pixel² cos³θ.
+    let pixel = 2.0 * frame.tan_half / frame.viewport.y;
+    let cos = -d.z;
+    let omega = pixel * pixel * cos * cos * cos;
+    let radiance = s.flux * sky.gain / max(omega, 1e-30);
+    // Behind the eye, near its side, or too faint to see.
+    if (cos < 0.01 || radiance * SPOT_PEAK < sky.faintest) {
+        var out: DotOut;
+        out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+        return out;
+    }
+    let rgb = vec3<f32>(f32(s.color & 255u), f32((s.color >> 8u) & 255u), f32((s.color >> 16u) & 255u)) / 255.0;
+    let color = min(rgb * radiance, vec3<f32>(60000.0));
+    return dot_corner(d, SPOT_SIGMA, color, 0u, corner_index(vertex));
+}
+
+// A spot's σ, pixels (`SPOT_SIGMA_PX` in scene.rs), and the largest share
+// of its flux a pixel can take (centered on it).
+const SPOT_SIGMA: f32 = 0.6;
+const SPOT_PEAK: f32 = 0.354;

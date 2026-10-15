@@ -40,7 +40,7 @@ fn srgb_encode(c: f64) -> f64 {
 #[test]
 fn tonemap_is_linear_to_its_knee_and_under_the_headroom() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     for headroom in [1.97_f32, 4.0] {
         let exposure = 3.0;
         let mut last = -1.0;
@@ -53,6 +53,7 @@ fn tonemap_is_linear_to_its_knee_and_under_the_headroom() {
                     exposure,
                     bloom: 0.0,
                     headroom,
+                    ..Default::default()
                 },
                 ..Default::default()
             };
@@ -87,7 +88,7 @@ fn tonemap_is_linear_to_its_knee_and_under_the_headroom() {
 #[test]
 fn sdr_dither_follows_a_slow_gradient() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (512, 64);
     let moon = DVec3::new(AU_KM, 0.0, 0.0);
     let radius = 1_737.4;
@@ -109,6 +110,7 @@ fn sdr_dither_follows_a_slow_gradient() {
                 exposure: 1.0,
                 bloom: 0.0,
                 headroom,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -152,7 +154,7 @@ fn sdr_dither_follows_a_slow_gradient() {
 #[test]
 fn bloom_spreads_energy_and_keeps_it() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (512, 512);
     let center = DVec3::new(AU_KM, 0.0, 0.0);
     let camera = Camera::looking_at(DVec3::ZERO, center, DVec3::Z, 30f64.to_radians());
@@ -170,6 +172,7 @@ fn bloom_spreads_energy_and_keeps_it() {
                 bloom,
                 // Linear far past the spot's radiance.
                 headroom: 1e5,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -192,7 +195,7 @@ fn bloom_spreads_energy_and_keeps_it() {
 #[test]
 fn exposure_leaves_the_overlay_alone() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let size = (200, 200);
     let center = DVec3::new(AU_KM, 0.0, 0.0);
     let eye = center - DVec3::X * 20_000.0;
@@ -218,6 +221,7 @@ fn exposure_leaves_the_overlay_alone() {
                 exposure,
                 bloom: 0.0,
                 headroom: 2.0,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -240,7 +244,7 @@ fn exposure_leaves_the_overlay_alone() {
 #[ignore = "a measurement: run with --ignored --nocapture"]
 fn post_chain_gpu_time() {
     let gpu = Offscreen::new().expect("a GPU");
-    let mut renderer = Renderer::new(&gpu.device);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue);
     let scene = Scene {
         camera: Some(Camera::looking_at(
             DVec3::ZERO,
@@ -252,6 +256,7 @@ fn post_chain_gpu_time() {
             exposure: 1.0,
             bloom: 0.01,
             headroom: 1.0,
+            ..Default::default()
         },
         ..Default::default()
     };
