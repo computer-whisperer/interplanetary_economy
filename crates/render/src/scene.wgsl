@@ -53,7 +53,9 @@ struct Sphere {
     // Unit, toward the Sun; for a glowing sphere, its limb darkening's
     // coefficients.
     light: vec3<f32>,
-    _pad1: f32,
+    // What a lit sphere's surface reflects is multiplied by (`Sphere::gain`
+    // in scene.rs).
+    gain: f32,
     // The quad, view space (unused when full-screen).
     corners: array<vec4<f32>, 4>,
     // The body's x (prime meridian), y (90° east) and z (north) axes, in
@@ -654,6 +656,7 @@ fn lit(s: Sphere, up: vec3<f32>, view: vec3<f32>, uv: vec2<f32>, ddx: vec2<f32>,
         albedo = mix(albedo, vec3<f32>(s.cloud_albedo), clouds);
         n = normalize(mix(n, up, clouds));
     }
+    albedo *= s.gain;
     let cos_i = max(dot(n, s.light), 0.0);
     let cos_e = max(dot(n, view), 0.0);
     // Relief tilted toward the Sun past the terminator stays dark, but

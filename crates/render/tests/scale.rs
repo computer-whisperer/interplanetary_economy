@@ -488,7 +488,8 @@ fn clouds_count_in_the_point() {
     let side = 2.0 * (fov / 2.0).tan() / f64::from(size.1);
     let clouded = |cover: u8| {
         let clouds = Image::gray(1, 1, vec![cover]);
-        let (mean, cover) = render::maps::means(&Image::srgba(1, 1, vec![255; 4]), Some(&clouds));
+        let (mean, cover) =
+            render::maps::means(&Image::srgba(1, 1, vec![255; 4]), Some(&clouds), render::maps::Weight::Area);
         Arc::new(Maps {
             mean,
             cover,

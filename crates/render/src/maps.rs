@@ -120,11 +120,43 @@ pub fn relief(width: u32, height: u32, heights: &[f32], radius: f64) -> Image {
     Image::new(width, height, wgpu::TextureFormat::Rg16Float, data)
 }
 
-/// An sRGB equirectangular color map's mean over the sphere, linear,
-/// where `clouds` (cover, one channel, at any size) leave it clear; and
-/// the clouds' mean cover. Each row is weighed by the cosine of its
-/// latitude.
-pub fn means(color: &Image, clouds: Option<&Image>) -> ([f32; 3], f32) {
+/// How a map's texels count toward its mean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Weight {
+    /// By the area each covers.
+    Area,
+    /// As its disk shows them from its equator at full phase, by how much
+    /// light each sends the eye under `shading`'s law (Lambert: cos³ of
+    /// latitude, over all longitudes; lunar-Lambert's, Lommel–Seeliger's
+    /// there: cos²): over all longitudes, or (`near`) the face toward
+    /// longitude 0 alone (also × cos² or cos of longitude).
+    Disk { shading: Shading, near: bool },
+}
+
+impl Weight {
+    fn of(self, lat: f64, lon: f64) -> f64 {
+        let (n, m) = match self {
+            Weight::Area => return lat.cos(),
+            Weight::Disk {
+                shading: Shading::Lambert,
+                ..
+            } => (3, 2),
+            Weight::Disk {
+                shading: Shading::LunarLambert,
+                ..
+            } => (2, 1),
+        };
+        let near = matches!(self, Weight::Disk { near: true, .. });
+        let along = if near { lon.cos().max(0.0).powi(m) } else { 1.0 };
+        lat.cos().powi(n) * along
+    }
+}
+
+/// An sRGB equirectangular color map's mean, linear, where `clouds`
+/// (cover, one channel, at any size) leave it clear; and the clouds'
+/// mean cover; each texel weighed by `weight`. Longitude 0 is at the
+/// map's center.
+pub fn means(color: &Image, clouds: Option<&Image>, weight: Weight) -> ([f32; 3], f32) {
     assert_eq!(color.format, wgpu::TextureFormat::Rgba8UnormSrgb);
     let decode: Vec<f64> = (0..=255)
         .map(|v| {
@@ -155,27 +187,24 @@ pub fn means(color: &Image, clouds: Option<&Image>) -> ([f32; 3], f32) {
             f64::from(sum) / 255.0 / count
         })
     };
-    let (mut sum, mut clear, mut weight) = ([0.0f64; 3], 0.0, 0.0);
+    let (mut sum, mut clear, mut total) = ([0.0f64; 3], 0.0, 0.0);
     for y in 0..h {
         let lat = std::f64::consts::FRAC_PI_2 - (y as f64 + 0.5) / h as f64 * std::f64::consts::PI;
         let row = &color.data[y * w * 4..(y + 1) * w * 4];
-        let (mut r, mut open) = ([0.0f64; 3], 0.0);
         for (x, p) in row.chunks_exact(4).enumerate() {
-            let k = 1.0 - cover(x, y);
+            let lon = ((x as f64 + 0.5) / w as f64 - 0.5) * std::f64::consts::TAU;
+            let k = weight.of(lat, lon);
+            let open = (1.0 - cover(x, y)) * k;
             for c in 0..3 {
-                r[c] += decode[p[c] as usize] * k;
+                sum[c] += decode[p[c] as usize] * open;
             }
-            open += k;
+            clear += open;
+            total += k;
         }
-        for c in 0..3 {
-            sum[c] += r[c] * lat.cos();
-        }
-        clear += open * lat.cos();
-        weight += w as f64 * lat.cos();
     }
     (
         sum.map(|s| (s / clear.max(1e-30)) as f32),
-        (1.0 - clear / weight) as f32,
+        (1.0 - clear / total) as f32,
     )
 }
 
@@ -193,9 +222,9 @@ pub enum Shading {
 #[derive(Clone, Debug)]
 pub struct Maps {
     pub color: Image,
-    /// `color`'s mean over the sphere where clouds leave it clear, linear,
-    /// and the clouds' mean cover (from [`means`]): with `cloud_albedo`,
-    /// what a point standing in for the sphere reflects.
+    /// `color`'s mean where clouds leave it clear, linear, and the clouds'
+    /// mean cover, as its disk shows them (from [`means`]): with
+    /// `cloud_albedo`, what a point standing in for the sphere reflects.
     pub mean: [f32; 3],
     pub cover: f32,
     /// From [`relief`].
@@ -541,6 +570,7 @@ mod tests {
         let (mean, cover) = means(
             &color,
             Some(&Image::gray(4, 2, vec![255, 255, 0, 0, 9, 9, 9, 9])),
+            Weight::Area,
         );
         let clear = [1.0 - 528.0 / 4.0 / 255.0, 1.0 - 18.0 / 4.0 / 255.0];
         let want = clear[1] / (clear[0] + clear[1]);
@@ -549,12 +579,48 @@ mod tests {
                 && (f64::from(cover) - 546.0 / 8.0 / 255.0).abs() < 1e-6,
             "{mean:?} {cover}"
         );
-        let (mean, cover) = means(&color, Some(&Image::gray(1, 1, vec![51])));
+        let (mean, cover) = means(&color, Some(&Image::gray(1, 1, vec![51])), Weight::Area);
         assert!(
             (mean[0] - 0.5).abs() < 1e-6 && (cover - 0.2).abs() < 1e-6,
             "{mean:?} {cover}"
         );
-        assert_eq!(means(&color, None), ([0.5; 3], 0.0));
+        assert_eq!(means(&color, None, Weight::Area), ([0.5; 3], 0.0));
+    }
+
+    /// Weighed as the disk shows them, from the equator at full phase: a
+    /// map white within 30° of the equator and black beyond takes the
+    /// share of the light that band sends (each row by cos³ of its
+    /// latitude for Lambert, cos² for lunar-Lambert), not of its area
+    /// (half); its near side alone, a map black on the far side, is
+    /// white.
+    #[test]
+    fn means_weigh_as_the_disk_shows() {
+        // Six rows of 30° each: white in the middle two (|lat| < 30°).
+        let rows: Vec<u8> = (0..6)
+            .flat_map(|y| {
+                let v = if y == 2 || y == 3 { 255 } else { 0 };
+                (0..4).flat_map(move |_| [v, v, v, 255])
+            })
+            .collect();
+        let color = Image::srgba(4, 6, rows);
+        let lat = |y: usize| std::f64::consts::FRAC_PI_2 - (y as f64 + 0.5) / 6.0 * std::f64::consts::PI;
+        for (n, shading) in [(3, Shading::Lambert), (2, Shading::LunarLambert)] {
+            let w: Vec<f64> = (0..6).map(|y| lat(y).cos().powi(n)).collect();
+            let want = (w[2] + w[3]) / w.iter().sum::<f64>();
+            let (mean, _) = means(&color, None, Weight::Disk { shading, near: false });
+            assert!((f64::from(mean[0]) - want).abs() < 1e-6, "{mean:?} vs {want}");
+        }
+        let (area, _) = means(&color, None, Weight::Area);
+        assert!((f64::from(area[0]) - 0.5).abs() < 1e-6, "{area:?}");
+        // White on the near half (the middle two columns), black beyond.
+        let halves: Vec<u8> = (0..2)
+            .flat_map(|_| (0..4).flat_map(|x| if x == 1 || x == 2 { [255; 4] } else { [0, 0, 0, 255] }))
+            .collect();
+        let color = Image::srgba(4, 2, halves);
+        for shading in [Shading::Lambert, Shading::LunarLambert] {
+            let (mean, _) = means(&color, None, Weight::Disk { shading, near: true });
+            assert!((mean[0] - 1.0).abs() < 1e-6, "{mean:?}");
+        }
     }
 
     /// Maps stay uploaded while anyone else holds them, through frames

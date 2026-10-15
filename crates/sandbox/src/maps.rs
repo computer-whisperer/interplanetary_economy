@@ -9,6 +9,7 @@
 use crate::data_dir;
 use orbit::ephem::Ephemeris;
 use rayon::prelude::*;
+use render::maps::Weight;
 use render::{Image, Maps, Shading};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -99,8 +100,8 @@ fn gray(path: &Path) -> Result<Image, String> {
     Ok(Image::gray(luma.width(), luma.height(), luma.into_raw()))
 }
 
-/// `entry`'s maps, from `dir`, on a body of `radius` km.
-fn body(dir: &Path, entry: &Entry, radius: f64) -> Result<BodyMaps, String> {
+/// `entry`'s maps, from `dir`, on the body `id` of `radius` km.
+fn body(dir: &Path, id: &str, entry: &Entry, radius: f64) -> Result<BodyMaps, String> {
     let optional = |name: &Option<String>| name.as_ref().map(|n| gray(&dir.join(n))).transpose();
     let relief = match &entry.elevation {
         Some(e) => {
@@ -123,7 +124,14 @@ fn body(dir: &Path, entry: &Entry, radius: f64) -> Result<BodyMaps, String> {
     };
     let color = color(&dir.join(&entry.color))?;
     let clouds = optional(&entry.clouds)?;
-    let (mean, cover) = render::maps::means(&color, clouds.as_ref());
+    // Its mean as its disk shows it from its equator: the published
+    // brightness it is held to (`photometry`) is that; the Moon's is its
+    // near side's.
+    let weight = Weight::Disk {
+        shading,
+        near: id == "moon",
+    };
+    let (mean, cover) = render::maps::means(&color, clouds.as_ref(), weight);
     Ok(BodyMaps {
         maps: Arc::new(Maps {
             mean,
@@ -192,7 +200,7 @@ pub fn read(
             };
             let radius = eph.body(b).radius;
             let mut problems = Vec::new();
-            let mut maps = match file.body.get(id).map(|e| body(&dir.join(id), e, radius)) {
+            let mut maps = match file.body.get(id).map(|e| body(&dir.join(id), id, e, radius)) {
                 Some(Ok(maps)) => maps,
                 Some(Err(why)) => {
                     problems.push(format!("{id}: {why}"));

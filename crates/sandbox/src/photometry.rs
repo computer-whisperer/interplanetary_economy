@@ -1,0 +1,254 @@
+//! The bodies' brightness (M1c.md, Realism): each body's magnitude at 1
+//! au from the Sun and the observer by its phase angle, from published
+//! phase curves, and the gain that brings a sphere's shading to it
+//! (`render::Sphere::gain`).
+//!
+//! The planets' curves are Mallama and Hilton 2018 ("Computing apparent
+//! planetary magnitudes for The Astronomical Almanac", Astronomy and
+//! Computing 25, 10-24; arXiv 1808.01973), as JPL Horizons computes them;
+//! the Moon's is Allen's, as Horizons'. Phobos, Deimos and the small
+//! bodies take the IAU's H, G system (Bowell et al. 1989) with G = 0.15:
+//! Horizons applies no phase law to Phobos and Deimos.
+
+use glam::DVec3;
+use orbit::ephem::{Body, BodyKind};
+use render::Sphere;
+use render::scene::{AU_KM, disk_mean};
+
+/// The Sun's V magnitude at 1 au, as the stars' fluxes take it.
+pub const V_SUN: f64 = -26.74;
+
+/// Uranus's flattening, for its planetographic latitudes.
+const URANUS_FLATTENING: f64 = 0.0022927;
+
+/// The slope parameter the small bodies take, the IAU's default.
+const SLOPE: f64 = 0.15;
+
+/// Where a body is seen from, as its curve needs it.
+#[derive(Clone, Copy, Debug)]
+pub struct Seen {
+    /// The phase angle, degrees.
+    pub alpha: f64,
+    /// The observer's and the Sun's planetocentric latitudes over its
+    /// equator, degrees.
+    pub observer_lat: f64,
+    pub sun_lat: f64,
+}
+
+impl Seen {
+    /// `sphere` seen from `eye` with the Sun at `sun` (km, the scene's
+    /// coordinates).
+    pub fn from(sphere: &Sphere, eye: DVec3, sun: DVec3) -> Seen {
+        let (to_eye, to_sun) = (eye - sphere.center, sun - sphere.center);
+        let pole = sphere.axes.z_axis;
+        let lat = |d: DVec3| d.normalize().dot(pole).clamp(-1.0, 1.0).asin().to_degrees();
+        Seen {
+            alpha: to_eye.angle_between(to_sun).to_degrees(),
+            observer_lat: lat(to_eye),
+            sun_lat: lat(to_sun),
+        }
+    }
+}
+
+/// A body's phase curve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Curve {
+    Mercury,
+    Venus,
+    Earth,
+    Mars,
+    Jupiter,
+    /// The globe alone: the rings are drawn with their own photometry
+    /// ([`saturn_with_rings`] checks them).
+    Saturn,
+    Uranus,
+    Neptune,
+    Moon,
+    /// The H, G system: its absolute magnitude H.
+    Small { h: f64 },
+}
+
+fn poly(x: f64, c: &[f64]) -> f64 {
+    c.iter().rev().fold(0.0, |acc, &k| acc * x + k)
+}
+
+impl Curve {
+    /// `body`'s curve, if it has one.
+    pub fn of(body: &Body) -> Option<Curve> {
+        Some(match body.id.as_str() {
+            "mercury" => Curve::Mercury,
+            "venus" => Curve::Venus,
+            "earth" => Curve::Earth,
+            "mars" => Curve::Mars,
+            "jupiter" => Curve::Jupiter,
+            "saturn" => Curve::Saturn,
+            "uranus" => Curve::Uranus,
+            "neptune" => Curve::Neptune,
+            "moon" => Curve::Moon,
+            // Horizons' V(1,0).
+            "phobos" => Curve::Small { h: 11.8 },
+            "deimos" => Curve::Small { h: 12.89 },
+            _ => match body.kind {
+                BodyKind::SmallBody { h_mag: Some(h), .. } => Curve::Small { h },
+                _ => return None,
+            },
+        })
+    }
+
+    /// The phase angles the curve holds for, degrees: the observations'
+    /// (Mallama and Hilton's), and none past 170°, where a thin crescent's
+    /// shading carries too little light to scale. Earth's model's is taken
+    /// as to 170°; the Moon's to 170°.
+    pub fn range(&self) -> (f64, f64) {
+        match self {
+            Curve::Mercury => (2.1, 169.5),
+            Curve::Venus | Curve::Earth | Curve::Moon => (0.0, 170.0),
+            Curve::Mars => (0.0, 120.0),
+            Curve::Jupiter => (0.0, 130.0),
+            Curve::Saturn => (0.0, 150.0),
+            Curve::Uranus => (0.0, 154.0),
+            Curve::Neptune => (0.0, 133.0),
+            Curve::Small { .. } => (0.0, 120.0),
+        }
+    }
+
+    /// V(1, α): the magnitude at 1 au from the Sun and the observer.
+    pub fn magnitude(&self, seen: &Seen) -> f64 {
+        let a = seen.alpha;
+        match *self {
+            // Eq. 2.
+            Curve::Mercury => poly(
+                a,
+                &[-0.613, 6.3280e-2, -1.6336e-3, 3.3644e-5, -3.4265e-7, 1.6893e-9, -3.0334e-12],
+            ),
+            // Eqs. 3 and 4: a glory near 0°, forward scattering past 163.7°.
+            Curve::Venus if a <= 163.7 => {
+                poly(a, &[-4.384, -1.044e-3, 3.687e-4, -2.814e-6, 8.938e-9])
+            }
+            Curve::Venus => poly(a, &[236.05828, -2.81914, 8.39034e-3]),
+            // Eq. 5.
+            Curve::Earth => poly(a, &[-3.99, -1.060e-3, 2.054e-4]),
+            // Eqs. 6 and 7, without the terms for the longitude seen and
+            // the season (under 0.06 mag; the map carries its longitudes).
+            Curve::Mars if a <= 50.0 => poly(a, &[-1.601, 0.02267, -0.0001302]),
+            Curve::Mars => poly(a, &[-0.367, -0.02573, 0.0003445]),
+            // Eqs. 8 and 9 (Cassini's, past 12°).
+            Curve::Jupiter if a <= 12.0 => poly(a, &[-9.395, -3.7e-4, 6.16e-4]),
+            Curve::Jupiter => {
+                -9.428 - 2.5 * poly(a / 180.0, &[1.0, -1.507, -0.363, -0.062, 2.809, -1.876]).log10()
+            }
+            // Eqs. 11 and 12 (Pioneer's, past 6°).
+            Curve::Saturn if a <= 6.0 => poly(a, &[-8.95, -3.7e-4, 6.16e-4]),
+            Curve::Saturn => poly(a, &[-8.94, 2.446e-4, 2.672e-4, -1.505e-6, 4.767e-9]),
+            // Eqs. 14 and 15: the poles brighter; Voyager's phase curve
+            // past what Earth sees (3.2°), as Horizons takes them.
+            Curve::Uranus => {
+                let graphic = |lat: f64| {
+                    (lat.to_radians().tan() / (1.0 - URANUS_FLATTENING).powi(2))
+                        .atan()
+                        .to_degrees()
+                        .abs()
+                };
+                let phi = (graphic(seen.observer_lat) + graphic(seen.sun_lat)) / 2.0;
+                let phase = if a <= 3.2 { 0.0 } else { poly(a, &[0.0, 6.587e-3, 1.045e-4]) };
+                -7.110 - 8.4e-4 * phi + phase
+            }
+            // Eqs. 16 (after 2000) and 17: Voyager's past what Earth sees
+            // (1.9°), as Horizons takes them.
+            Curve::Neptune if a <= 1.9 => -7.00,
+            Curve::Neptune => poly(a, &[-7.00, 7.944e-3, 9.617e-5]),
+            Curve::Moon => 0.23 + 0.026 * a + 4e-9 * a.powi(4),
+            Curve::Small { h } => {
+                let t = (a.to_radians() / 2.0).tan();
+                let phi1 = (-3.33 * t.powf(0.63)).exp();
+                let phi2 = (-1.87 * t.powf(1.22)).exp();
+                h - 2.5 * ((1.0 - SLOPE) * phi1 + SLOPE * phi2).log10()
+            }
+        }
+    }
+}
+
+/// Saturn's magnitude with its rings (Eq. 10), where it holds: under 6.5°
+/// of phase, the rings opened under 27°. The opening is the geometric
+/// mean of the observer's and the Sun's latitudes; 0 (the rings' unlit
+/// side seen) where they differ in sign.
+pub fn saturn_with_rings(seen: &Seen) -> Option<f64> {
+    let (e, s) = (seen.observer_lat, seen.sun_lat);
+    let beta = if e * s > 0.0 { (e * s).sqrt() } else { 0.0 };
+    if seen.alpha >= 6.5 || beta >= 27.0 {
+        return None;
+    }
+    let sin = beta.to_radians().sin();
+    Some(-8.914 - 1.825 * sin + 0.026 * seen.alpha - 0.378 * sin * (-2.25 * seen.alpha).exp())
+}
+
+/// What Saturn's rings add to its globe's light, as a share of it, where
+/// Eq. 10 holds; else none known (0). 0 for other bodies.
+pub fn rings_share(curve: &Curve, seen: &Seen) -> f64 {
+    match (curve, saturn_with_rings(seen)) {
+        (Curve::Saturn, Some(both)) => 10f64.powf(-0.4 * (both - curve.magnitude(seen))) - 1.0,
+        _ => 0.0,
+    }
+}
+
+/// Linear values' luminance.
+fn luminance(c: [f32; 3]) -> f64 {
+    0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2])
+}
+
+/// The flux of a curve's body at 1 au from the Sun and the observer, over
+/// π (the stars' units: radiance units × sr / π).
+fn true_flux(curve: &Curve, seen: &Seen) -> f64 {
+    10f64.powf(-0.4 * (curve.magnitude(seen) - V_SUN))
+}
+
+/// What `sphere`'s shading gives it there, over π.
+fn shaded_flux(sphere: &Sphere, alpha: f64) -> Option<f64> {
+    let (albedo, shading) = sphere.reflectance()?;
+    let size = (sphere.radius / AU_KM).powi(2);
+    Some(luminance(albedo) * disk_mean(shading, alpha.to_radians()) * size)
+}
+
+/// The gain that brings `sphere`'s shading, seen as `seen`, to `curve`'s
+/// brightness: past the curve's range, held at its edge (the shading's
+/// phase law beyond). 1 for a glowing sphere.
+pub fn gain(curve: &Curve, sphere: &Sphere, seen: &Seen) -> f32 {
+    let (lo, hi) = curve.range();
+    let seen = Seen {
+        alpha: seen.alpha.clamp(lo, hi),
+        ..*seen
+    };
+    match shaded_flux(sphere, seen.alpha) {
+        Some(shaded) if shaded > 0.0 => (true_flux(curve, &seen) / shaded) as f32,
+        _ => 1.0,
+    }
+}
+
+/// The albedo of a white, Lambertian surface that would show as `sphere`'s
+/// sunlit side does at full phase, its mean (by its curve, else its
+/// shading's): what the exposure is set by.
+pub fn normal_albedo(curve: Option<&Curve>, sphere: &Sphere, seen: &Seen) -> Option<f64> {
+    let (albedo, _) = sphere.reflectance()?;
+    let full = Seen { alpha: 0.0, ..*seen };
+    let gain = curve.map_or(1.0, |c| f64::from(gain(c, sphere, &full)));
+    Some(luminance(albedo) * gain)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The H, G system at 0° is H; at 30°, ~1.2 mag fainter for G = 0.15.
+    #[test]
+    fn small_bodies_dim_with_phase() {
+        let seen = |alpha| Seen {
+            alpha,
+            observer_lat: 0.0,
+            sun_lat: 0.0,
+        };
+        let c = Curve::Small { h: 18.0 };
+        assert!((c.magnitude(&seen(0.0)) - 18.0).abs() < 1e-12);
+        let d = c.magnitude(&seen(30.0)) - 18.0;
+        assert!(d > 1.0 && d < 1.4, "{d}");
+    }
+}

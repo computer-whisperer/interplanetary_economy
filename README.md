@@ -29,8 +29,9 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   UI on [damascene](https://github.com/computer-whisperer/damascene)
   0.8, HDR output where the compositor offers it; the bodies turned by
   their rotation models, with their orbits drawn; mission plans designed
-  in the background and played back, in fixed or rotating frames; labels,
-  picking by click, the plan's panel, and settings.
+  in the background and played back, in fixed or rotating frames; their
+  brightness held to published phase curves; labels, picking by click,
+  the plan's panel, and settings.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
   parameters, and a sweep that classifies the plans' development paths.
@@ -70,6 +71,8 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   with it the reference radiances `sandbox`'s test `atmospheres` holds
   Mars's air to (`mc.py`, its usage in `crates/sandbox/tests/atmospheres.rs`;
   `mc.py --check` runs its own two checks; needs numpy).
+- `tools/photometry/` — downloads the Horizons magnitudes the bodies'
+  brightness is checked against (`fixtures.sh`).
 - `tools/sky/` — regenerates `data/sky/` (`fetch.sh DIR`, ~250 MB, then
   `python3 build.py DIR ../../data/sky`; needs numpy, scipy, Pillow and
   OpenEXR): the star list, the Milky Way map, and its calibration against

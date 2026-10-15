@@ -5,6 +5,7 @@
 //! bloom.
 
 use crate::bodies;
+use crate::photometry::{self, Curve, Seen};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::time::Epoch;
 use render::scene::AU_KM;
@@ -60,16 +61,25 @@ const EASE_S: f64 = 0.2;
 /// and bright limbs glare.
 pub const BLOOM: f32 = 0.01;
 
-/// The exposure that shows `focus`'s sunlit side at [`KEY`] at `t`: KEY
-/// / (Bond albedo × irradiance in units of 1 au's). The Sun's shows its
-/// disk at [`SUN_KEY`].
+/// The exposure that shows `focus`'s sunlit side at [`KEY`] at `t`, as
+/// it shows at full phase (its mean, at normal incidence): KEY / (its
+/// normal albedo, by its measured brightness (`photometry`), × irradiance
+/// in units of 1 au's). The Sun's shows its disk at [`SUN_KEY`].
 pub fn exposure_for(eph: &Ephemeris, focus: BodyId, t: Epoch) -> f64 {
     if focus == eph.sun() {
         return SUN_KEY / bodies::sun_radiance(eph);
     }
-    let to_sun = eph.barycentric_position(eph.sun(), t) - eph.barycentric_position(focus, t);
+    let sun = eph.barycentric_position(eph.sun(), t);
+    let to_sun = sun - eph.barycentric_position(focus, t);
     let irradiance = (AU_KM / to_sun.length()).powi(2);
-    KEY / (bodies::bond_albedo(&eph.body(focus).id) * irradiance)
+    let albedo = bodies::sphere(eph, focus, t)
+        .and_then(|s| {
+            // Seen from the Sun.
+            let seen = Seen::from(&s, sun, sun);
+            photometry::normal_albedo(Curve::of(eph.body(focus)).as_ref(), &s, &seen)
+        })
+        .unwrap_or_else(|| bodies::bond_albedo(&eph.body(focus).id));
+    KEY / (albedo * irradiance)
 }
 
 /// Exposure as shown: eased toward the focus's, in stops.
@@ -123,19 +133,24 @@ mod tests {
         assert!((e.value(64.0) - 16.0).abs() < 1e-3);
     }
 
+    /// The focus's sunlit side at full phase (its mean, at normal
+    /// incidence) shows at KEY: the exposure × its normal albedo (a
+    /// Lambertian surface's that shows as it does at full phase: 1.5 × its
+    /// geometric albedo p, from its published V(1,0)) × the irradiance.
     #[test]
     fn the_focus_shows_at_the_key() {
         let eph = Ephemeris::standard();
         let t = Epoch::from_ymd(2045, 3, 1);
-        let earth = eph.lookup("earth").unwrap();
-        let jupiter = eph.lookup("jupiter").unwrap();
-        // Earth near 1 au: ~KEY / 0.306.
-        let e = exposure_for(eph, earth, t);
-        assert!((e * 0.306 / KEY - 1.0).abs() < 0.04, "{e}");
-        // Jupiter at ~5.2 au and albedo 0.343: ~27 × brighter exposure
-        // than Earth's, with its albedo's ratio.
-        let ratio = exposure_for(eph, jupiter, t) / e * 0.343 / 0.306;
-        assert!(ratio > 24.0 && ratio < 31.0, "{ratio}");
+        let sun = eph.barycentric_position(eph.sun(), t);
+        for (id, v0) in [("earth", -3.99), ("jupiter", -9.395)] {
+            let b = eph.lookup(id).unwrap();
+            let e = exposure_for(eph, b, t);
+            let p = 10f64.powf(-0.4 * (v0 - photometry::V_SUN)) * (AU_KM / eph.body(b).radius).powi(2);
+            let irradiance = (AU_KM / (sun - eph.barycentric_position(b, t)).length()).powi(2);
+            let shown = e * 1.5 * p * irradiance;
+            println!("{id}: p {p:.3}, shown at {shown:.4}");
+            assert!((shown / KEY - 1.0).abs() < 1e-3, "{id}: {shown}");
+        }
         assert_eq!(
             exposure_for(eph, eph.sun(), t) * bodies::sun_radiance(eph),
             SUN_KEY

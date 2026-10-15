@@ -135,6 +135,13 @@ pub struct Sphere {
     pub axes: DMat3,
     /// With them, a lit sphere's albedo multiplies its color map.
     pub maps: Option<Arc<Maps>>,
+    /// What a lit sphere's surface reflects (and its point carries) is
+    /// multiplied by: what brings its shading to its measured brightness.
+    /// Not its air, rings, night lights or glint.
+    pub gain: f32,
+    /// What its rings add to its point, over its globe's light: they are
+    /// drawn only on its disk.
+    pub rings_share: f32,
 }
 
 impl Sphere {
@@ -146,7 +153,27 @@ impl Sphere {
             surface,
             axes: DMat3::IDENTITY,
             maps: None,
+            gain: 1.0,
+            rings_share: 0.0,
         }
+    }
+
+    /// A lit sphere's albedo as a whole (with maps, their mean and their
+    /// clouds'), before its gain, and how it is shaded: what its point
+    /// stands in for. None for a glowing one.
+    pub fn reflectance(&self) -> Option<([f32; 3], Shading)> {
+        let Surface::Lit(albedo) = self.surface else {
+            return None;
+        };
+        Some(match &self.maps {
+            Some(m) => (
+                std::array::from_fn(|c| {
+                    (1.0 - m.cover) * albedo[c] * m.mean[c] + m.cover * m.cloud_albedo
+                }),
+                m.shading,
+            ),
+            None => (albedo, Shading::Lambert),
+        })
     }
 }
 
@@ -226,7 +253,7 @@ pub struct SphereGpu {
     pub color: [f32; 3],
     pub opacity: f32,
     pub light: [f32; 3],
-    pub _pad1: f32,
+    pub gain: f32,
     pub corners: [[f32; 4]; 4],
     pub surface: SurfaceGpu,
     pub atmosphere: AtmosphereGpu,
@@ -458,22 +485,14 @@ impl Scene {
                     Surface::Emissive { radiance, .. } => {
                         radiance.map(|c| f64::from(c) * disk / spread)
                     }
-                    Surface::Lit(albedo) => {
-                        // With maps, their mean (and their clouds') is the
-                        // sphere's color, shaded as they are.
-                        let (albedo, shading) = match &s.maps {
-                            Some(m) => (
-                                std::array::from_fn(|c| {
-                                    (1.0 - m.cover) * albedo[c] * m.mean[c]
-                                        + m.cover * m.cloud_albedo
-                                }),
-                                m.shading,
-                            ),
-                            None => (albedo, Shading::Lambert),
-                        };
+                    Surface::Lit(_) => {
+                        let (albedo, shading) = s.reflectance().expect("lit");
                         let (albedo, irradiance, _, to_sun) = lit(albedo);
                         let alpha = to_sun.angle_between(cam.eye - s.center);
-                        let mean = irradiance * disk_mean(shading, alpha);
+                        let mean = irradiance
+                            * disk_mean(shading, alpha)
+                            * f64::from(s.gain)
+                            * (1.0 + f64::from(s.rings_share));
                         albedo.map(|a| f64::from(a) * mean * disk / spread)
                     }
                 }
@@ -549,7 +568,7 @@ impl Scene {
                 color,
                 opacity: (1.0 - fade) as f32,
                 light,
-                _pad1: 0.0,
+                gain: s.gain,
                 corners: billboard.unwrap_or_default(),
                 surface: {
                     let column = |c: DVec3| {

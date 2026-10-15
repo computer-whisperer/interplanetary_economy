@@ -289,15 +289,12 @@ impl Shell {
             }));
         }
         let [sky_lift, body_lift, night_lift] = self.settings.lifts();
+        let camera = self.camera.camera(eph, t, view.axes);
         render::Scene {
-            camera: Some(self.camera.camera(eph, t, view.axes)),
+            camera: Some(camera),
             sun: eph.barycentric_position(eph.sun(), t),
             sun_radius: eph.body(eph.sun()).radius,
-            spheres: self
-                .bodies
-                .iter()
-                .filter_map(|&b| bodies::sphere(eph, b, t))
-                .collect(),
+            spheres: bodies::spheres(eph, &self.bodies, t, camera.eye),
             markers,
             sky: sky::loaded().map(|d| sky::sky(d, t)),
             // By `paths::PLAN_SET` and `ORBIT_SET`.

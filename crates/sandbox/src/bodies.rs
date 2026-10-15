@@ -3,7 +3,8 @@
 //! (`maps`); without, Lambertian of their Bond albedo, tinted. And the
 //! Sun's radiance.
 
-use glam::DMat3;
+use crate::photometry::{self, Curve, Seen};
+use glam::{DMat3, DVec3};
 use orbit::ephem::{BodyId, BodyKind, Ephemeris};
 use orbit::rotation::Rotations;
 use orbit::time::Epoch;
@@ -64,7 +65,26 @@ pub fn sun_radiance(eph: &Ephemeris) -> f64 {
     (AU_KM / eph.body(eph.sun()).radius).powi(2)
 }
 
-/// `b` as a sphere at `t`, if the ephemeris covers it then.
+/// `bodies` as spheres at `t` (those the ephemeris covers then), each
+/// brought to its measured brightness as seen from `eye`
+/// (`photometry`).
+pub fn spheres(eph: &Ephemeris, bodies: &[BodyId], t: Epoch, eye: DVec3) -> Vec<Sphere> {
+    let sun = eph.barycentric_position(eph.sun(), t);
+    bodies
+        .iter()
+        .filter_map(|&b| {
+            let mut s = sphere(eph, b, t)?;
+            if let Some(curve) = Curve::of(eph.body(b)) {
+                let seen = Seen::from(&s, eye, sun);
+                s.gain = photometry::gain(&curve, &s, &seen);
+                s.rings_share = photometry::rings_share(&curve, &seen) as f32;
+            }
+            Some(s)
+        })
+        .collect()
+}
+
+/// `b` as a sphere at `t`, if the ephemeris covers it then, with no gain.
 pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
     if !eph.covers(b, t) {
         return None;
@@ -88,6 +108,8 @@ pub fn sphere(eph: &Ephemeris, b: BodyId, t: Epoch) -> Option<Sphere> {
         surface,
         axes: Rotations::standard().axes(id, t).unwrap_or(DMat3::IDENTITY),
         maps: maps.map(|m| m.maps.clone()),
+        gain: 1.0,
+        rings_share: 0.0,
     })
 }
 

@@ -498,14 +498,32 @@ night lights, below.
   (LOLA for the Moon, MOLA for Mars, ETOPO for Earth).
 - Bodies smaller than a pixel are drawn as points with their true
   brightness, from distance, phase and albedo.
-- Measured against Horizons' magnitudes (2026-10-15; from Earth's
-  center on three dates, the flux the renderer shows): the giants show
-  ~1 magnitude faint (Jupiter 0.9, Uranus and Neptune 1.0, Saturn with
-  its rings 1.5–1.6), Venus 0.1–0.35; Lambert shading of the Bond
-  albedo gives a geometric albedo of 2/3 of it, and theirs is 1.4–2.5×
-  that. Mercury, Mars and the Moon show too bright, the more at larger
-  phase angles (Mercury 1.4 at 79°, the Moon 1.6 at 137°): their phase
-  curves fall faster than the shading laws'. Open.
+- Each body's brightness is held to its published phase curve (decided
+  2026-10-15): Mallama and Hilton 2018 for the planets, as JPL Horizons
+  computes them; Allen's for the Moon, as Horizons'; the H, G system for
+  Phobos, Deimos and the small bodies. A sphere's shading spreads its
+  light over its disk, and a gain brings the total to the curve at the
+  camera's phase angle (held at the curve's range's edge beyond it);
+  Saturn's point carries its rings' light. A map's mean is weighed as
+  its disk shows it from its equator (the Moon's, its near side's). The
+  exposure shows the focus's sunlit side at full phase, its mean, at
+  `KEY`.
+  - Checked against Horizons over 2025–2080, from Earth and from bodies
+    farther out (to 176° of phase): the curves within 0.002 mag (Mars
+    0.12, the terms for its longitude seen and its season left out);
+    the planets' points from Earth within 0.005.
+  - Disks, against their curves: bodies without air or maps within 0.03
+    to 120° of phase, Jupiter 0.02; Earth ±0.2 by the face lit; the Moon
+    from Earth within 0.16 to 150°. Open: its thinner crescents show
+    limb highlands brighter than its near side's mean, which the curve
+    counts already (0.5 mag over at 166°); and bodies with air show
+    their air's forward scattering, which their curves count already,
+    over them at large phase angles (Venus 0.47 at 160°, Mars 0.34 at
+    90°).
+  - Before: Lambert shading of the Bond albedo, which left the giants
+    ~1 mag faint (a geometric albedo of 2/3 of it; theirs is 1.4–2.5×
+    that), and Mercury, Mars and the Moon too bright at large phase
+    angles, to 1.4–1.6 mag.
 
 **Earth and Mars.**
 - Atmospheres by precomputed scattering (Bruneton 2017 or Hillaire

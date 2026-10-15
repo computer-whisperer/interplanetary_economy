@@ -15,6 +15,7 @@ pub mod maps;
 pub mod orbits;
 pub mod panel;
 pub mod paths;
+pub mod photometry;
 pub mod pick;
 pub mod plan;
 pub mod settings;
