@@ -190,12 +190,14 @@ impl ApplicationHandler for Host {
             WindowEvent::CursorMoved { position, .. } => {
                 let at = (position.x as f32 / scale, position.y as f32 / scale);
                 self.pointer = Some(at);
+                app.pointer = Some(at);
                 app.camera.moved(at);
                 let moved = gfx.renderer.pointer_moved(Pointer::moving(at.0, at.1));
                 dispatch(app, gfx, moved.events);
             }
             WindowEvent::CursorLeft { .. } => {
                 self.pointer = None;
+                app.pointer = None;
                 let events = gfx.renderer.pointer_left();
                 dispatch(app, gfx, events);
             }

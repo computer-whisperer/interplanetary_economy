@@ -543,6 +543,8 @@ pub struct Item {
     /// The leg's options: its offered durations (or dates tried, between
     /// planets) and what each cost, km/s.
     pub options: Vec<Choice>,
+    /// A leg's departure window as its search had it, without a pin.
+    pub window: Option<(Epoch, Epoch)>,
     /// Designing it, s.
     pub seconds: f64,
     pub note: Option<String>,
@@ -765,6 +767,7 @@ impl<'w> Planner<'w> {
                                 track: None,
                                 markers: Vec::new(),
                                 options: Vec::new(),
+                                window: None,
                                 seconds: clock.elapsed().as_secs_f64(),
                                 note: go.note.clone(),
                             }]
@@ -789,6 +792,11 @@ impl<'w> Planner<'w> {
             }
             return Ok((depart, depart));
         }
+        self.unpinned(go, default_days)
+    }
+
+    /// The departure window for `go` without its pin.
+    fn unpinned(&self, go: &Go, default_days: f64) -> Result<(Epoch, Epoch), String> {
         match go.window {
             Some((open, close)) => {
                 if close.0 < self.ready.0 {
@@ -892,6 +900,7 @@ impl<'w> Planner<'w> {
                 pass: None,
             }],
             options: Vec::new(),
+            window: None,
             seconds: 0.0,
             note: go.note.clone(),
         });
@@ -1024,7 +1033,9 @@ impl<'w> Planner<'w> {
                 .flatten()
                 .collect::<Vec<_>>();
             let note = (!note.is_empty()).then(|| note.join("; "));
-            return self.flown(go, &leg, design, options, arriving.clone(), note);
+            let mut items = self.flown(go, &leg, design, options, arriving.clone(), note)?;
+            set_window(&mut items, (open, close));
+            return Ok(items);
         }
         Err(format!(
             "no design converged in {} windows from {}",
@@ -1048,10 +1059,9 @@ impl<'w> Planner<'w> {
         };
         let world = self.world;
         let crossing = world.crossing(&from_kind, &go.to.kind, go.aero)?;
-        let (open, close) = self.window(
-            go,
-            crossing.synodic_days(self.ready).min(LONGEST_WINDOW_DAYS),
-        )?;
+        let default_days = crossing.synodic_days(self.ready).min(LONGEST_WINDOW_DAYS);
+        let (open, close) = self.window(go, default_days)?;
+        let searched = self.unpinned(go, default_days)?;
         let here = self.here.clone();
         let from = end_from(&here);
         let to = crossing.to;
@@ -1118,7 +1128,9 @@ impl<'w> Planner<'w> {
             duration: None,
             window: None,
         };
-        self.flown(go, &leg, design, tried, None, go.note.clone())
+        let mut items = self.flown(go, &leg, design, tried, None, go.note.clone())?;
+        set_window(&mut items, searched);
+        Ok(items)
     }
 
     /// A station's member's period, days.
@@ -1263,6 +1275,7 @@ impl<'w> Planner<'w> {
             track: Some(track),
             markers,
             options,
+            window: None,
             seconds: 0.0,
             note,
         });
@@ -1384,6 +1397,7 @@ impl<'w> Planner<'w> {
                     pass: None,
                 }],
                 options: Vec::new(),
+                window: None,
                 seconds: 0.0,
                 note: Some(format!(
                     "circularizing takes {:.1} m/s here; the leg counts the rule's {:.1}",
@@ -1427,6 +1441,7 @@ impl<'w> Planner<'w> {
             track: None,
             markers: Vec::new(),
             options: Vec::new(),
+            window: None,
             seconds: 0.0,
             note: None,
         };
@@ -1487,6 +1502,13 @@ impl<'w> Planner<'w> {
         }
         let items = if span > 0.0 { vec![item] } else { Vec::new() };
         Ok((items, jumped))
+    }
+}
+
+/// Records a leg's window, as its search had it, on its item.
+fn set_window(items: &mut [Item], window: (Epoch, Epoch)) {
+    if let Some(leg) = items.iter_mut().find(|i| i.kind == ItemKind::Leg) {
+        leg.window = Some(window);
     }
 }
 

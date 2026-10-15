@@ -6,6 +6,43 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, part 5: the options panel. As planned (step 7 plan, item
+  5); where it differs or adds:
+  - The panel shows the options of the leg of the item selected (a
+    stay's, the leg after it), under the plan's list, and keeps that
+    leg (by ship and step) while it is designed again.
+  - Between planets: the porkchop is computed when the leg is selected
+    (Δv by patched conics, a column a day up to 360 and the date
+    search's durations up to 180 rows: ~65k cells, a few ms), not kept
+    in the item; the item keeps its window as searched, without a pin
+    (`Item::window`). Shaded as the lanes are, in ten bands (no drawn
+    contours); departure dates under it at their places, the
+    durations' range at its corners; the dates tried as rings, the
+    flown departure filled in its leg's color; the cell under the
+    pointer ringed, with its date, duration and Δv in a line below. A
+    click pins the leg to the cell, its departure to the minute and its
+    duration to a hundredth of a day; Unpin clears `depart` and `days`.
+  - Within a system: the offered durations' designs as points, the
+    flown one filled; a click pins that duration. "Sweep durations"
+    designs twelve durations from half the shortest offered to twice
+    the longest, evenly in ratio, in the background, each alone (as a
+    pin would design it), from the checkpoint before the leg, the
+    plan left as it is; they show as smaller rings, clickable alike.
+  - Found: the autopilot's design of a duration depends on which
+    others are designed with it. From the NRHO to low lunar orbit,
+    designed one at a time, 1.65–4 days cost 675–692 m/s; designed
+    together in one call, 983–1,259 m/s (and 0.5 days 682 against 962
+    alone). So a leg's offered durations are not its frontier, and
+    pinning one can fly it hundreds of m/s from where it was shown.
+    Sweeps design each duration alone for that reason. Not fixed in
+    `legs::plan` (M1a's autopilot); raised.
+  - Checks: the Mars leg's porkchop drawn; a cell clicked three
+    quarters across pins it and the leg flies at its date (to the
+    minute) and duration; unpinned, it flies as before; a duration
+    clicked within Earth's system pins it and flies it; a sweep leaves
+    the plan as it was, converges 12 of 12, and its longest clicked
+    flies at the swept Δv (to 1e-9 km/s).
+
 - Step 7, part 4: window lanes. As planned (step 7 plan, item 4);
   where it differs or adds:
   - Measured first: `interplanetary::patched` takes 0.5 µs; from LEO

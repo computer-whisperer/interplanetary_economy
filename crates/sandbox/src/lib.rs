@@ -12,6 +12,7 @@ pub mod host;
 pub mod labels;
 pub mod look;
 pub mod maps;
+pub mod options;
 pub mod orbits;
 pub mod panel;
 pub mod paths;

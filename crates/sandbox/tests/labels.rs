@@ -410,6 +410,7 @@ fn item(kind: ItemKind, dv: f64) -> Item {
         track: None,
         markers: Vec::new(),
         options: Vec::new(),
+        window: None,
         seconds: 0.0,
         note: None,
     }

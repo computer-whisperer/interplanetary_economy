@@ -10,6 +10,7 @@ use crate::clock::Clock;
 use crate::frames::{self, Frame};
 use crate::labels::{self, Anchor, Placed};
 use crate::look::{self, Exposure};
+use crate::options::{self, Options, Porkchop};
 use crate::orbits::Orbits;
 use crate::panel;
 use crate::paths::{self, Event, PAST_DIM};
@@ -25,6 +26,7 @@ use damascene_core::toast::ToastSpec;
 use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
+use orbit::mission::{Item, ItemKind, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use render::Timings;
@@ -139,6 +141,12 @@ pub struct Shell {
     /// The item selected, by its ship and place: in the panel, its
     /// markers' labels first.
     pub selected: Option<(usize, usize)>,
+    /// The leg (ship and step) whose options the panel shows: that of the
+    /// item selected, kept while it is designed again.
+    pub leg: Option<(usize, usize)>,
+    options: Options,
+    /// Where the pointer is, logical px, if over the window.
+    pub pointer: Option<(f32, f32)>,
     pub panel_open: bool,
     seen: Option<Seen>,
     /// Labels' sizes by their text.
@@ -184,11 +192,133 @@ impl Shell {
             toasts: Vec::new(),
             settings_open: false,
             selected: None,
+            leg: None,
+            options: Options::default(),
+            pointer: None,
             panel_open: true,
             seen: None,
             sizes: HashMap::new(),
             scrolls: Vec::new(),
         }
+    }
+
+    /// The leg's item, if designed: ship `s`'s leg made by `step`.
+    fn leg_item(&self, (s, step): (usize, usize)) -> Option<(usize, &Item)> {
+        self.plan
+            .as_ref()?
+            .ships
+            .get(s)?
+            .items
+            .iter()
+            .enumerate()
+            .find(|(_, i)| i.step == step && i.kind == ItemKind::Leg)
+    }
+
+    /// Computes the porkchop of the leg whose options are shown, if it is
+    /// one between planets and is not kept.
+    fn update_options(&mut self) {
+        let (Some(plan), Some((s, step))) = (&self.plan, self.leg) else {
+            return;
+        };
+        if !plan.windows.legs.contains_key(&(s, step)) {
+            return;
+        }
+        let Some(window) = plan.ships[s]
+            .items
+            .iter()
+            .find(|i| i.step == step && i.kind == ItemKind::Leg)
+            .and_then(|i| i.window)
+        else {
+            return;
+        };
+        let Some((from, to, aero)) = crate::windows::ends(&plan.plan, s, step) else {
+            return;
+        };
+        self.options.porkchop(s, step, window, || {
+            let c = crate::plan::world()
+                .crossing(&from.kind, &to.kind, aero)
+                .ok()?;
+            Some(Porkchop::compute(&c, window))
+        });
+    }
+
+    /// Pins ship `s`'s leg at `step` to leave at `depart` (none: as its
+    /// window allows) taking `days` (none: as the planner picks), and
+    /// designs it again from there.
+    fn pin(&mut self, (s, step): (usize, usize), depart: Option<Epoch>, days: Vec<f64>) {
+        let Some(plan) = self.plan.as_mut() else {
+            return;
+        };
+        let mut ship = plan.plan.ships[s].clone();
+        let Some(Step::Go(go)) = ship.steps.get_mut(step) else {
+            return;
+        };
+        go.depart = depart;
+        go.days = days;
+        plan.edit(s, ship, Some(step));
+        // The items after the edit are gone; the panel keeps the leg.
+        self.selected = None;
+    }
+
+    /// A click on the options panel's chart at `at`: the porkchop's cell
+    /// there pinned.
+    fn clicked_chart(&mut self, at: (f32, f32), chart: Rect) {
+        let (Some(leg), Some(p)) = (self.leg, self.options.porkchop.clone()) else {
+            return;
+        };
+        let f = (
+            f64::from((at.0 - chart.x) / chart.w),
+            f64::from((at.1 - chart.y) / chart.h),
+        );
+        let (column, row) = p.cell(f);
+        if p.at(column, row).is_nan() {
+            return;
+        }
+        // To the minute and a hundredth of a day, as the plan's file
+        // keeps them.
+        let depart = Epoch((p.depart(column).0 * 1_440.0).round() / 1_440.0);
+        let days = (p.durations[row] * 100.0).round() / 100.0;
+        self.pin(leg, Some(depart), vec![days]);
+    }
+
+    /// The options section for the leg shown, if any.
+    fn options_section(&self, cx: &BuildCx) -> Option<El> {
+        let (s, step) = self.leg?;
+        let plan = self.plan.as_ref()?;
+        let (from, to, aero) = crate::windows::ends(&plan.plan, s, step)?;
+        let item = self.leg_item((s, step));
+        let pinned = matches!(
+            plan.plan.ships[s].steps.get(step),
+            Some(Step::Go(go)) if go.depart.is_some()
+        );
+        let chart = cx.rect_of_key(options::CHART_KEY);
+        let hover = match (self.pointer, chart) {
+            (Some((x, y)), Some(r)) if r.contains(x, y) => {
+                Some((f64::from((x - r.x) / r.w), f64::from((y - r.y) / r.h)))
+            }
+            _ => None,
+        };
+        let leg = options::Leg {
+            label: format!(
+                "{} → {}{}",
+                from.label,
+                to.label,
+                if aero { " (aero)" } else { "" }
+            ),
+            item: item.map(|(_, i)| i),
+            color: item.map_or([0.5; 3], |(k, _)| options::color(&plan.ships[s], k)),
+            pinned,
+            hover,
+        };
+        let body = if plan.windows.legs.contains_key(&(s, step)) {
+            match &self.options.porkchop {
+                Some(p) => options::porkchop_section(p, &leg, chart.map_or(350.0, |r| r.w)),
+                None => text("computing").caption().muted(),
+            }
+        } else {
+            options::durations_section(&leg, plan.sweeps.get(&(s, step)))
+        };
+        Some(options::section(&leg, body))
     }
 
     fn close_menus(&mut self) {
@@ -204,6 +334,7 @@ impl Shell {
         self.clock.seek(plan.start);
         self.plan = Some(plan);
         self.selected = None;
+        self.leg = None;
         self.built = None;
         self.timeline.refit();
         self.poll();
@@ -250,12 +381,13 @@ impl Shell {
     }
 
     /// Takes what the plan's designer has sent; the timeline follows the
-    /// plan and the clock.
+    /// plan and the clock; the leg's porkchop is computed if it is new.
     pub fn poll(&mut self) {
         if let Some(plan) = self.plan.as_mut() {
             plan.poll();
             self.timeline.fit(plan.span());
         }
+        self.update_options();
         self.timeline.follow(self.followed, self.clock.t);
         self.followed = self.clock.t;
     }
@@ -490,6 +622,16 @@ impl Shell {
     /// Selects `item`, scrolling the panel to it.
     pub fn select(&mut self, item: Option<(usize, usize)>) {
         self.selected = item;
+        // The options of the leg the item is part of (a stay's, the leg
+        // after it).
+        self.leg = item.and_then(|(s, k)| {
+            let ship = &self.plan.as_ref()?.ships[s];
+            let step = ship.items.get(k)?.step;
+            ship.items
+                .iter()
+                .any(|i| i.step == step && i.kind == ItemKind::Leg)
+                .then_some((s, step))
+        });
         if let Some((s, k)) = item {
             self.scrolls.push(ScrollRequest::to_row_key(
                 panel::LIST_KEY,
@@ -635,10 +777,19 @@ impl App for Shell {
         let middle = match (&self.plan, self.panel_open) {
             (Some(plan), true) => row([
                 map,
-                panel::panel(
-                    &plan.name,
-                    panel::rows(self.eph, &plan.ships, self.clock.t, self.selected),
-                ),
+                column(
+                    [
+                        Some(panel::panel(
+                            &plan.name,
+                            panel::rows(self.eph, &plan.ships, self.clock.t, self.selected),
+                        )),
+                        self.options_section(cx).map(|o| column([divider(), o])),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                )
+                .width(Size::Fixed(panel::WIDTH))
+                .height(Size::Fill(1.0)),
             ])
             .width(Size::Fill(1.0))
             .height(Size::Fill(1.0)),
@@ -765,6 +916,40 @@ impl App for Shell {
         {
             self.clock.seek(item.start);
             self.select(Some((s, k)));
+        } else if clicked
+            && event.route() == Some(options::CHART_KEY)
+            && let (Some(rect), Some(at)) = (event.target_rect(), event.pointer)
+        {
+            self.clicked_chart(at, rect);
+        } else if clicked
+            && let Some(i) = event.route().and_then(options::parse_point_key)
+            && let Some(leg) = self.leg
+            && let Some(days) = self
+                .leg_item(leg)
+                .and_then(|(_, item)| Some(item.options.get(i)?.days))
+        {
+            self.pin(leg, None, vec![days]);
+        } else if event.is_click_or_activate(options::UNPIN_KEY)
+            && let Some(leg) = self.leg
+        {
+            self.pin(leg, None, Vec::new());
+        } else if event.is_click_or_activate(options::SWEEP_KEY)
+            && let Some((s, step)) = self.leg
+            && let Some(offered) = self
+                .leg_item((s, step))
+                .map(|(_, item)| item.options.iter().map(|c| c.days).collect::<Vec<_>>())
+            && let Some(plan) = self.plan.as_mut()
+        {
+            plan.sweep(s, step, options::sweep_durations(&offered));
+        } else if clicked
+            && let Some(i) = event.route().and_then(options::parse_swept_key)
+            && let Some(leg) = self.leg
+            && let Some(days) = self.plan.as_ref().and_then(|p| {
+                let sweep = p.sweeps.get(&leg)?;
+                Some(sweep.options.as_ref()?.as_ref().ok()?.get(i)?.days)
+            })
+        {
+            self.pin(leg, None, vec![days]);
         } else if self.timeline_event(&event, cx) {
             // The timeline took it.
         } else if self.settings.apply(&event) {

@@ -80,27 +80,41 @@ struct Crossing<'p> {
     aero: bool,
 }
 
+/// Where ship `s`'s step `step` leaves from and goes to, and whether
+/// through the atmosphere; `None` for a wait.
+pub fn ends(plan: &Plan, s: usize, step: usize) -> Option<(&Spot, &Spot, bool)> {
+    let ship = plan.ships.get(s)?;
+    let mut at = &ship.start;
+    for (k, st) in ship.steps.iter().enumerate() {
+        if let Step::Go(go) = st {
+            if k == step {
+                return Some((at, &go.to, go.aero));
+            }
+            at = &go.to;
+        }
+    }
+    None
+}
+
 /// `plan`'s legs between planets, in order, those the planner would
 /// price (not from or to a station).
 fn crossings(plan: &Plan) -> Vec<Crossing<'_>> {
     let world = world();
     let mut out = Vec::new();
     for (s, ship) in plan.ships.iter().enumerate() {
-        let mut at = &ship.start;
-        for (k, step) in ship.steps.iter().enumerate() {
-            let Step::Go(go) = step else {
+        for k in 0..ship.steps.len() {
+            let Some((from, to, aero)) = ends(plan, s, k) else {
                 continue;
             };
-            if world.crossing(&at.kind, &go.to.kind, go.aero).is_ok() {
+            if world.crossing(&from.kind, &to.kind, aero).is_ok() {
                 out.push(Crossing {
                     ship: s,
                     step: k,
-                    from: at,
-                    to: &go.to,
-                    aero: go.aero,
+                    from,
+                    to,
+                    aero,
                 });
             }
-            at = &go.to;
         }
     }
     out

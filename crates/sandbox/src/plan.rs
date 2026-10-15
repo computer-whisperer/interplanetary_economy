@@ -8,19 +8,33 @@ use crate::windows::Windows;
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{
-    Checkpoint, Item, ItemKind, Marker, MarkerKind, Plan, Planner, Step, World, resume_from,
+    Checkpoint, Choice, Item, ItemKind, Marker, MarkerKind, Plan, Planner, Step, World, resume_from,
 };
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::track::Track;
+use rayon::prelude::*;
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, LazyLock};
 
+/// A sweep of a leg's durations (M1c.md, step 7 plan, item 5): designed
+/// for a ship's design's generation, the plan left as it is.
+#[derive(Clone, Debug)]
+pub struct Sweep {
+    pub generation: u64,
+    pub durations: Vec<f64>,
+    /// Each duration's design, once done; `Err` why none was.
+    pub options: Option<Result<Vec<Choice>, String>>,
+}
+
 /// What a designer reports about a ship.
 enum Message {
+    /// A sweep of the leg at a step: its options.
+    Swept(usize, Result<Vec<Choice>, String>),
     /// It started: where it is before its first step.
     Started(Checkpoint),
     /// Items, and where the ship is after them.
@@ -69,6 +83,8 @@ pub struct Loaded {
     designs: Vec<Design>,
     /// The windows of its legs between planets.
     pub windows: Windows,
+    /// Sweeps of legs' durations, by ship and step.
+    pub sweeps: HashMap<(usize, usize), Sweep>,
     /// The first ship's start.
     pub start: Epoch,
     /// Changes whenever items arrive or a ship is edited (not when a
@@ -164,6 +180,7 @@ impl Loaded {
             ships,
             designs,
             windows: Windows::default(),
+            sweeps: HashMap::new(),
             start,
             generation: 0,
             pool: Arc::new(pool),
@@ -252,8 +269,77 @@ impl Loaded {
             shown.first_leg = first;
         }
         self.generation += 1;
+        self.sweeps.retain(|&(ship, _), _| ship != s);
         self.design(s, from);
         self.windows.update(&self.plan, &self.pool);
+    }
+
+    /// Designs ship `s`'s leg at `step` at each of `durations` in the
+    /// background, each alone (as pinning it would: the autopilot's
+    /// designs of several durations at once depend on which are asked
+    /// for), from where the ship is before it (going on from a
+    /// checkpoint, as an edit would), to show them beside the leg's own
+    /// options; the plan is left as it is.
+    pub fn sweep(&mut self, s: usize, step: usize, durations: Vec<f64>) {
+        let design = &self.designs[s];
+        let from = resume_from(&design.checkpoints, step).cloned();
+        let ship = self.plan.ships[s].clone();
+        if !matches!(ship.steps.get(step), Some(Step::Go(_))) {
+            return;
+        }
+        let (generation, live) = (design.generation, design.live.clone());
+        self.sweeps.insert(
+            (s, step),
+            Sweep {
+                generation,
+                durations: durations.clone(),
+                options: None,
+            },
+        );
+        let sender = self.sender.clone();
+        self.pool.spawn(move || {
+            let world = world();
+            // The leg designed at `days` alone: its one option.
+            let alone = |days: f64| -> Result<Choice, String> {
+                let mut ship = ship.clone();
+                if let Some(Step::Go(go)) = ship.steps.get_mut(step) {
+                    go.days = vec![days];
+                }
+                let mut planner = match from.clone() {
+                    Some(c) => Planner::resume(world, &ship, c),
+                    None => Planner::new(world, &ship)?,
+                };
+                while live.load(Ordering::Relaxed) == generation {
+                    let items = planner.step().ok_or("the leg was not reached")?;
+                    // The leg itself, not the stay before it.
+                    let leg = |i: &&Item| {
+                        i.step == step && matches!(i.kind, ItemKind::Leg | ItemKind::Failed(_))
+                    };
+                    if let Some(item) = items.iter().find(leg) {
+                        return Ok(match &item.kind {
+                            ItemKind::Failed(_) => Choice {
+                                depart: item.start,
+                                days,
+                                dv: None,
+                            },
+                            _ => item.options.first().copied().unwrap_or(Choice {
+                                depart: item.start,
+                                days,
+                                dv: Some(item.dv),
+                            }),
+                        });
+                    }
+                }
+                Err("the ship was edited".to_string())
+            };
+            let swept = catch_unwind(AssertUnwindSafe(|| {
+                durations.par_iter().map(|&d| alone(d)).collect()
+            }))
+            .unwrap_or_else(|_| Err("sweeping it panicked".into()));
+            if live.load(Ordering::Relaxed) == generation {
+                let _ = sender.send((s, generation, Message::Swept(step, swept)));
+            }
+        });
     }
 
     /// Takes what has arrived; `true` if anything did.
@@ -279,6 +365,18 @@ impl Loaded {
         self.windows.wait();
     }
 
+    /// Waits until every sweep is done.
+    pub fn wait_sweeps(&mut self) {
+        while self.sweeps.values().any(|s| s.options.is_none()) {
+            match self.receiver.recv() {
+                Ok((s, generation, message)) => {
+                    self.take(s, generation, message);
+                }
+                Err(_) => return,
+            }
+        }
+    }
+
     /// Takes a message for ship `s`'s design of `generation`: `false`
     /// if it is of an older one.
     fn take(&mut self, s: usize, generation: u64, message: Message) -> bool {
@@ -288,6 +386,13 @@ impl Loaded {
         }
         match message {
             Message::Started(c) => design.checkpoints.push(c),
+            Message::Swept(step, options) => {
+                if let Some(sweep) = self.sweeps.get_mut(&(s, step))
+                    && sweep.generation == generation
+                {
+                    sweep.options = Some(options);
+                }
+            }
             Message::Items(items, c) => {
                 for item in &items {
                     if let ItemKind::Failed(why) = &item.kind {
