@@ -44,8 +44,9 @@ struct Cli {
     /// Stops of exposure added by hand at the start, as `-` and `=` do.
     #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
     exposure: i32,
-    /// Stops the stars and the Milky Way show over the scene's exposure
-    /// (the settings' background lift); 0 is true to life.
+    /// Stops the stars, the Milky Way and bodies seen as points show over
+    /// the scene's exposure (the settings' background lift); 0 is true to
+    /// life.
     #[arg(long, default_value_t = sandbox::look::BACKGROUND_LIFT, allow_hyphen_values = true)]
     background_lift: i32,
 }

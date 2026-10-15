@@ -334,10 +334,12 @@ fn points_carry_their_spheres_flux() {
 /// A sphere fades from its point to its disk between one and three
 /// pixels in radius, its point's gain over 1 (the viewer's pixel a 60th
 /// of the scene's, so that the gain falls from ~20 to ~2 across the
-/// fade, as 1 / radius²), at the screen's center and near its corner:
-/// the flux shown is the spot's share of the point's (gain × the
-/// sphere's) and the disk's opacity times its own, within 3%, and runs on
-/// across a pixel (where the gain falls as the sphere's flux grows).
+/// fade, as 1 / radius²), at the screen's center and near its corner,
+/// with the sky as it is and lifted 10 stops: the flux shown is the
+/// spot's share of the point's (gain × the sphere's × the lift to the
+/// power of that share) and the disk's opacity times its own, within 3%;
+/// unlifted, it runs on across a pixel (where the gain falls as the
+/// sphere's flux grows).
 /// Found in review: the spot over the disk was drawn at the sphere's
 /// center, behind its disk, and hidden (past one pixel the flux dropped
 /// 5.5×); then, off the screen's center, still partly hidden (to 0.6 of
@@ -354,12 +356,18 @@ fn the_point_fades_into_the_disk() {
     let sun = center + DVec3::new(-alpha.cos(), alpha.sin(), 0.0) * AU_KM;
     let tan_half = (fov / 2.0).tan();
     let side = 2.0 * tan_half / f64::from(size.1);
-    let look = Look {
-        pixel: (side / 60.0) as f32,
-        ..Default::default()
-    };
     let albedo = 0.1;
-    for (place, offset) in [("center", (0.0, 0.0)), ("corner", (0.85, 0.8))] {
+    for (place, offset, lift) in [
+        ("center", (0.0, 0.0), 1.0f64),
+        ("corner", (0.85, 0.8), 1.0),
+        ("center, lifted", (0.0, 0.0), 1024.0),
+        ("corner, lifted", (0.85, 0.8), 1024.0),
+    ] {
+        let look = Look {
+            pixel: (side / 60.0) as f32,
+            sky_lift: lift as f32,
+            ..Default::default()
+        };
         let mut last: Option<f64> = None;
         for radius_px in [0.95, 1.05, 1.5, 2.0, 2.5, 3.5] {
             // Its radius in the pixels where it lands, which subtend
@@ -384,7 +392,7 @@ fn the_point_fades_into_the_disk() {
                 * (2.0 / 3.0 * lambert_phase(alpha) * std::f64::consts::PI * half * half);
             let gain = look.point_gain(half, local);
             let point = ((3.0 - radius_px) / 2.0f64).clamp(0.0, 1.0);
-            let want = sphere * (point * gain + 1.0 - point);
+            let want = sphere * (point * gain * lift.powf(point) + 1.0 - point);
             println!(
                 "{place}, {radius_px} px: gain {gain:.2}, flux {got:.4e}, wanted {want:.4e}"
             );
@@ -393,8 +401,9 @@ fn the_point_fades_into_the_disk() {
                 (got / want - 1.0).abs() < 0.03,
                 "{place}, {radius_px} px: {got} vs {want}"
             );
-            if radius_px < 1.2 {
-                // Across a pixel, the flux shown.
+            if radius_px < 1.2 && lift == 1.0 {
+                // Across a pixel, the flux shown (lifted, it runs on too,
+                // but its lift falls ~5 stops a pixel there).
                 if let Some(before) = last {
                     assert!((got / before - 1.0).abs() < 0.05, "{before} → {got}");
                 }

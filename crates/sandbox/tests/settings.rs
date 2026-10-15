@@ -1,7 +1,7 @@
 //! The settings menu, through damascene as the window delivers input, in
 //! the window's first size: the gear opens it, its slider sets the sky's
 //! lift by whole stops, and a click outside it or Escape closes it. The
-//! lift reaches the sky alone.
+//! lift reaches the sky and bodies' points of light alone.
 
 use damascene_core::prelude::*;
 use damascene_wgpu::Runner;
@@ -86,7 +86,7 @@ fn the_menu_sets_the_sky_lift() {
             assert!(app.settings_open, "the slider leaves the menu open");
             let scene = draw(&mut app, &mut ui);
             assert_eq!(scene.look.sky_lift, 2f32.powi(want));
-            assert_eq!(scene.look.exposure, exposure, "the lift is the sky's alone");
+            assert_eq!(scene.look.exposure, exposure, "the lift leaves the scene's exposure");
         }
         // The arrow keys, on the slider focused by the clicks.
         let events = ui.key_down(
@@ -118,16 +118,17 @@ fn the_menu_sets_the_sky_lift() {
     }
 }
 
-/// With the sky left out, the scene's radiance is the same at lifts 0 and
-/// [`MAX_LIFT`], pixel for pixel: Earth with its air, the orbits' lines
-/// and the station orbits' markers; Saturn with its rings; and Jupiter
-/// from beside Earth, a point (the Sun's disk in the view too).
+/// With the sky left out, what the lift reaches: bodies drawn as points
+/// of light, by its stops (Jupiter from beside Earth, its point's flux
+/// 2¹⁷× at a lift of 17, within 1%), and nothing else: at lifts 0 and
+/// [`MAX_LIFT`], pixel for pixel away from bodies' points, Earth with its
+/// air (and the Moon's disk), the orbits' lines and the station orbits'
+/// markers, and Saturn with its rings.
 #[test]
-fn the_lift_is_the_skys_alone() {
+fn the_lift_reaches_the_sky_and_points_alone() {
     let gpu = Offscreen::new().expect("a GPU");
     let mut renderer = render::Renderer::new(&gpu.device, &gpu.queue);
     sandbox::maps::wait().expect("data/bodies reads");
-    let t = Epoch::from_ymd(2045, 3, 1);
     let size = (640, 400);
     let eph = orbit::ephem::Ephemeris::standard();
     let (earth, saturn, jupiter) = (
@@ -135,51 +136,71 @@ fn the_lift_is_the_skys_alone() {
         eph.lookup("saturn").unwrap(),
         eph.lookup("jupiter").unwrap(),
     );
-    let pe = eph.barycentric_position(earth, t);
-    let to_jupiter = (eph.barycentric_position(jupiter, t) - pe).normalize();
-    let point = render::Camera::looking_at(
-        pe + to_jupiter * 2e5,
-        to_jupiter,
-        DVec3::Z,
-        50f64.to_radians(),
-    );
-    for (name, focus, camera) in [
-        ("Earth", earth, None),
-        ("Saturn", saturn, None),
-        ("Jupiter's point", earth, Some(point)),
-    ] {
-        let shown = |lift: i32, renderer: &mut render::Renderer| {
-            let mut app = Shell::new(t);
-            app.camera = MapCamera::new(eph, focus);
-            app.settings.background_lift = lift;
-            app.update_paths();
-            let mut scene = app.scene(1.0);
-            scene.sky = None;
-            if camera.is_some() {
-                scene.camera = camera;
-            }
-            let target = render::Target::new(&gpu.device, size.0, size.1);
-            let mut encoder = gpu.device.create_command_encoder(&Default::default());
-            renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target, &scene, None);
-            gpu.queue.submit(Some(encoder.finish()));
-            gpu.read_rgba16f(&target.hdr)
-        };
-        let (true_sky, lifted) = (shown(0, &mut renderer), shown(MAX_LIFT, &mut renderer));
-        let lit = true_sky.iter().filter(|p| p[..3].iter().any(|&c| c > 0.0)).count();
-        let differ = true_sky.iter().zip(&lifted).filter(|(a, b)| a != b).count();
-        println!("{name}: {lit} pixels lit, {differ} differ");
-        assert!(lit > 0, "{name} shows nothing");
-        assert_eq!(differ, 0, "{name}: the lift reaches past the sky");
-        if let Some(camera) = camera {
-            let p = camera
-                .project(eph.barycentric_position(jupiter, t), size)
-                .expect("Jupiter is in front");
-            let (cx, cy) = (p.x as i64, p.y as i64);
-            let peak = (cy - 2..=cy + 2)
-                .flat_map(|y| (cx - 2..=cx + 2).map(move |x| (x, y)))
-                .map(|(x, y)| true_sky[(y * i64::from(size.0) + x) as usize][1])
-                .fold(0f32, f32::max);
-            assert!(peak > 0.0, "Jupiter's point is drawn");
+    let mut shown = |t: Epoch, focus, camera: Option<render::Camera>, lift: i32| {
+        let mut app = Shell::new(t);
+        app.camera = MapCamera::new(eph, focus);
+        app.settings.background_lift = lift;
+        app.update_paths();
+        let mut scene = app.scene(1.0);
+        scene.sky = None;
+        if camera.is_some() {
+            scene.camera = camera;
         }
+        let target = render::Target::new(&gpu.device, size.0, size.1);
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        renderer.render(&gpu.device, &gpu.queue, &mut encoder, &target, &scene, None);
+        gpu.queue.submit(Some(encoder.finish()));
+        (scene, gpu.read_rgba16f(&target.hdr))
+    };
+    let t = Epoch::from_ymd(2045, 3, 1);
+    for (name, focus) in [("Earth", earth), ("Saturn", saturn)] {
+        let (scene, true_sky) = shown(t, focus, None, 0);
+        let (_, lifted) = shown(t, focus, None, MAX_LIFT);
+        // Where bodies under 4 px in radius land (points, or fading
+        // from them into their disks).
+        let camera = scene.camera.unwrap();
+        let pixel = 2.0 * (camera.fov_y / 2.0).tan() / f64::from(size.1);
+        let points: Vec<glam::DVec2> = scene
+            .spheres
+            .iter()
+            .filter(|s| (s.radius / (s.center - camera.eye).length()).asin() / pixel < 4.0)
+            .filter_map(|s| camera.project(s.center, size))
+            .collect();
+        let (mut lit, mut differ) = (0, 0);
+        for (i, (a, b)) in true_sky.iter().zip(&lifted).enumerate() {
+            let at = glam::DVec2::new(
+                (i % size.0 as usize) as f64 + 0.5,
+                (i / size.0 as usize) as f64 + 0.5,
+            );
+            if points.iter().any(|p| p.distance(at) < 8.0) {
+                continue;
+            }
+            lit += usize::from(a[..3].iter().any(|&c| c > 0.0));
+            differ += usize::from(a != b);
+        }
+        println!("{name}: {} points; elsewhere {lit} pixels lit, {differ} differ", points.len());
+        assert!(lit > 1000, "{name} shows little");
+        assert_eq!(differ, 0, "{name}: the lift reaches past the sky and points");
     }
+
+    // Jupiter near opposition, from beside Earth.
+    let t = Epoch::from_ymd(2045, 9, 1);
+    let pe = eph.barycentric_position(earth, t);
+    let pj = eph.barycentric_position(jupiter, t);
+    let eye = pe + (pj - pe).normalize() * 2e5;
+    let camera = render::Camera::looking_at(eye, pj, DVec3::Z, 50f64.to_radians());
+    let p = camera.project(pj, size).expect("Jupiter is in front");
+    let (cx, cy) = (p.x as i64, p.y as i64);
+    let flux = |image: &[[f32; 4]]| -> f64 {
+        (cy - 4..=cy + 4)
+            .flat_map(|y| (cx - 4..=cx + 4).map(move |x| (x, y)))
+            .map(|(x, y)| f64::from(image[(y * i64::from(size.0) + x) as usize][1]))
+            .sum()
+    };
+    let (_, true_sky) = shown(t, earth, Some(camera), 0);
+    let (_, lifted) = shown(t, earth, Some(camera), 17);
+    let ratio = flux(&lifted) / flux(&true_sky);
+    println!("Jupiter's point: {:.4e}, lifted {ratio:.1}×", flux(&true_sky));
+    assert!(flux(&true_sky) > 0.0, "Jupiter's point is drawn");
+    assert!((ratio / 2f64.powi(17) - 1.0).abs() < 0.01, "{ratio}");
 }

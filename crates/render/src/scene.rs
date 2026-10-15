@@ -29,9 +29,10 @@ pub const SPOT_PEAK: f32 = 0.354;
 pub const ACUITY: f64 = 2.909e-4;
 
 /// A sphere from one pixel in radius to this fades from its point (a
-/// spot carrying its flux times [`Look::point_gain`]) to its disk: the
-/// spot's share falling and the disk's opacity rising, so that the flux
-/// shown runs on smoothly.
+/// spot carrying its flux times [`Look::point_gain`], lifted with the
+/// sky) to its disk: the spot's share falling and the disk's opacity
+/// rising, so that the flux shown runs on smoothly, and the point's lift
+/// falling in stops with its share.
 const FADE_PX: f64 = 3.0;
 
 /// The most a spot's radiance per share reaches, exposed: under f16's
@@ -81,7 +82,8 @@ pub struct Look {
     /// angle it subtends of the scene, as a camera records them.
     pub pixel: f32,
     /// What the sky's exposure (its stars' and the Milky Way's) is over
-    /// the scene's: 1 as it is.
+    /// the scene's, and that of bodies drawn as points of light, which
+    /// join it: 1 as it is.
     pub sky_lift: f32,
 }
 
@@ -474,7 +476,7 @@ impl Scene {
             // in front of the sphere's disk (and its air and rings), which
             // it fades into: along its center's ray, nearer than anything
             // of it (every pixel of the spot takes the center's depth).
-            let exposure = f64::from(self.look.exposure);
+            let (exposure, lift) = (f64::from(self.look.exposure), f64::from(self.look.sky_lift));
             let front = v * (1.0 - 1.01 * outer / -v.z).max(0.0);
             let mut spot = |k: f64| {
                 out.points.push(DotGpu {
@@ -487,16 +489,17 @@ impl Scene {
             let gain = self.look.point_gain(half_angle, local_pixel);
             let radius_px = half_angle / local_pixel;
             if radius_px < 1.0 {
-                // Under a pixel: a point of light.
+                // Under a pixel: a point of light, lifted with the sky.
                 if front.z < -NEAR_KM {
-                    spot(gain);
+                    spot(gain * lift);
                 }
                 continue;
             }
-            // Its point's share, while the disk fades in.
+            // Its point's share, and the stops of its lift, while the disk
+            // fades in.
             let fade = ((FADE_PX - radius_px) / (FADE_PX - 1.0)).max(0.0);
             if fade > 0.0 {
-                spot(gain * fade);
+                spot(gain * fade * lift.powf(fade));
             }
             // The quad: across the cone of rays that hit the sphere (or its
             // atmosphere), in the plane through its center facing the eye;

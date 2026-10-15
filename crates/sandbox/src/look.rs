@@ -25,10 +25,11 @@ pub const SUN_KEY: f64 = 2.0 * KEY;
 /// (0.0213°), which hosts' display scales approximate.
 pub const PIXEL: f64 = 1.0 / (96.0 * 28.0);
 
-/// Stops the sky (the stars and the Milky Way) shows over the scene's
-/// exposure by default, 0 being true to life: a game's departure
-/// (Realism), so that the sky shows beside a sunlit body. Over Earth's
-/// exposure, +17 shows stars to about magnitude 11.
+/// Stops the sky (the stars and the Milky Way, and bodies drawn as
+/// points of light) shows over the scene's exposure by default, 0 being
+/// true to life: a game's departure (Realism), so that the sky and the
+/// planets show beside a sunlit body. Over Earth's exposure, +17 shows
+/// stars to about magnitude 11.
 pub const BACKGROUND_LIFT: i32 = 17;
 
 /// The most the sky is lifted: enough for the Milky Way to show clearly

@@ -123,9 +123,10 @@ focuses it; on a ship, a marker, a label or a line, it selects that
 item in the plan's panel (`p` shows or hides it), where a click on an
 item jumps to its start. Exposure follows the focus (its sunlit side
 at a fixed level), one for the whole scene; `-` and `=` shift it a stop
-at a time. The settings (the gear) lift the sky over it, 17 stops by
-default (`--background-lift STOPS`); at 0, true to life, no stars show
-beside a sunlit body, as in a photograph. With the sky's exposure +19
+at a time. The settings (the gear) lift the sky over it, with bodies
+seen as points, 17 stops by default (`--background-lift STOPS`); at 0,
+true to life, no stars or planets show beside a sunlit body, as in a
+photograph. With the sky's exposure +19
 stops over Earth's, the Milky Way's band shows faintly; at +22,
 clearly. On an HDR output, highlights use the display's headroom.
 `--focus ID --altitude KM --azimuth DEG --elevation DEG --date

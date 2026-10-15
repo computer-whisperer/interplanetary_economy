@@ -64,7 +64,7 @@ left out); next, step 7 (editing).
   built, see the step 6 plan below; where it differs:
   - Points of light (stars, bodies under a few pixels) are as bright
     to the viewer's eye as their sources would be, at the scene's one
-    exposure, the sky's lifted over it (Realism; decided 2026-10-15). Until then they and the
+    exposure, lifted with the sky over it (Realism; decided 2026-10-15). Until then they and the
     Milky Way showed at a fixed sky exposure where it exceeded the
     frame's (7.5e5), capped at a saturated star's brightness, and drawn
     as a camera records them. A body growing into a disk fades from its
@@ -459,11 +459,16 @@ As realistic as we can afford, in stages, while the map stays readable.
 - The sky (the stars and the Milky Way) is lifted over that exposure by
   a setting, the background lift: 17 stops by default, 0 (true) to 24
   (decided 2026-10-15: the true sky left the map black beside any
-  sunlit body). The exposure keys move it with the
-  rest of the scene. Over Earth's exposure, +17 shows stars to about
-  magnitude 11 and not yet the Milky Way. Bodies drawn as points are not
-  lifted: from Earth, Jupiter's point peaks at 0.0008 of the SDR white,
-  invisible, beside thousands of lifted stars.
+  sunlit body). The exposure keys move it with the rest of the scene.
+  Over Earth's exposure, +17 shows stars to about magnitude 11 and not
+  yet the Milky Way.
+- Bodies drawn as points of light join the sky, lifted with it (decided
+  2026-10-15, so that the planets show where they are, at their
+  brightness among the stars); as a body's disk fades in, from 1 to 3
+  px in radius, its point's lift falls in stops with its share.
+  Rejected: points at the scene's exposure, which left Jupiter's from
+  Earth at 0.0008 of the SDR white, invisible beside thousands of
+  lifted stars.
 - Points of light are as bright to the viewer's eye as their sources
   would be: a star's flux is spread over the sky a pixel subtends at the
   viewer, not the sky it shows of the scene. A logical pixel is taken as
@@ -487,6 +492,14 @@ As realistic as we can afford, in stages, while the map stays readable.
   (LOLA for the Moon, MOLA for Mars, ETOPO for Earth).
 - Bodies smaller than a pixel are drawn as points with their true
   brightness, from distance, phase and albedo.
+- Measured against Horizons' magnitudes (2026-10-15; from Earth's
+  center on three dates, the flux the renderer shows): the giants show
+  ~1 magnitude faint (Jupiter 0.9, Uranus and Neptune 1.0, Saturn with
+  its rings 1.5–1.6), Venus 0.1–0.35; Lambert shading of the Bond
+  albedo gives a geometric albedo of 2/3 of it, and theirs is 1.4–2.5×
+  that. Mercury, Mars and the Moon show too bright, the more at larger
+  phase angles (Mercury 1.4 at 79°, the Moon 1.6 at 137°): their phase
+  curves fall faster than the shading laws'. Open.
 
 **Earth and Mars.**
 - Atmospheres by precomputed scattering (Bruneton 2017 or Hillaire

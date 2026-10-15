@@ -30,7 +30,8 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// What the sky's exposure is multiplied by (`render::Look::sky_lift`).
+    /// What the sky's exposure, and points of light's, is multiplied by
+    /// (`render::Look::sky_lift`).
     pub fn sky_lift(&self) -> f32 {
         f64::from(self.background_lift).exp2() as f32
     }
@@ -68,7 +69,7 @@ pub fn menu(settings: &Settings) -> El {
             ])
             .align(Align::Center),
             slider(LIFT_KEY, lift as f32 / look::MAX_LIFT as f32).width(Size::Fixed(SLIDER_PX)),
-            text("The stars and the Milky Way, over the scene's exposure. 0 is true to life.")
+            text("The stars, the Milky Way and bodies seen as points, over the scene's exposure. 0 is true to life.")
                 .muted()
                 .caption()
                 .wrap_text()
