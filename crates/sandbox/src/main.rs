@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     let date = cli
         .date
-        .or(plan.as_ref().map(|p| p.start))
+        .or(plan.as_ref().map(|p| p.epoch()))
         .unwrap_or(orbit::time::Epoch::from_ymd(2045, 3, 1));
     let (first, last) = eph.span();
     if date.0 < first.0 || date.0 > last.0 {

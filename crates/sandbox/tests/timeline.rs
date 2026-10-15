@@ -45,7 +45,7 @@ fn bars_at_their_times_and_clicks() {
     plan.wait();
     assert!(plan.done() && plan.ships.iter().all(|s| s.failure.is_none()));
     for scale in [1.0f32, 2.0] {
-        let mut app = Shell::new(plan.start);
+        let mut app = Shell::new(plan.epoch());
         app.plan = Some(Loaded::start(
             Plan::parse(TWO, eph, Places::standard()).unwrap(),
         ));

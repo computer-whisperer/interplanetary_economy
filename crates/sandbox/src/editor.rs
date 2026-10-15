@@ -272,7 +272,7 @@ pub fn press(ship: &Ship, field: Field, places: &Places) -> Option<Ship> {
             to: Spot::named("nrho", places)?,
             days: vec![5.0],
             window: None,
-            depart: None,
+            pin: None,
             aero: false,
             note: None,
         })),
@@ -294,7 +294,7 @@ pub fn first_change(old: &Ship, new: &Ship) -> Option<Option<usize>> {
             x.to.source == y.to.source
                 && x.days == y.days
                 && x.window == y.window
-                && x.depart == y.depart
+                && x.pin == y.pin
                 && x.aero == y.aero
         }
         _ => false,
@@ -433,10 +433,15 @@ pub fn section(
                         ..Sides::zero()
                     }),
                 );
-                if let Some(d) = go.depart {
+                if let Some(pin) = go.pin {
+                    let depart = pin
+                        .depart
+                        .map(|d| format!(" leaving {}", orbit::mission::when(d)));
+                    let days = pin.days.map(|d| format!(" taking {} d", days(d)));
                     rows.push(caption(&format!(
-                        "    pinned to leave {}",
-                        orbit::mission::when(d)
+                        "    pinned{}{} (the options' Unpin takes it off)",
+                        depart.unwrap_or_default(),
+                        days.unwrap_or_default()
                     )));
                 }
             }

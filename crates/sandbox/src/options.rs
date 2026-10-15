@@ -41,11 +41,12 @@ const MOST_COLUMNS: usize = 360;
 const MOST_ROWS: usize = 180;
 /// The chart's height, and the section's.
 const CHART_PX: f32 = 170.0;
-/// It is shaded from its least Δv, brightest, to this many times it, in
-/// bands of a tenth of that.
-const CEILING: f32 = 1.5;
+/// It is shaded as the window lanes are, in bands of a tenth.
 const BANDS: f32 = 10.0;
-const BRIGHT: [f32; 3] = [225.0, 225.0, 230.0];
+const CEILING: f32 = crate::windows::CEILING;
+/// A window shorter than this, days, is shown this long (a window of
+/// one day would be one column).
+const LEAST_SHOWN_DAYS: f64 = 120.0;
 const MARK_PX: f32 = 7.0;
 const TRIED: Color = Color::srgb_u8(255, 255, 255);
 const FAILED: Color = Color::srgb_u8(255, 80, 70);
@@ -70,7 +71,7 @@ pub fn parse_swept_key(key: &str) -> Option<usize> {
 }
 
 /// The durations a sweep designs about `offered`, days: [`SWEPT`] of
-/// them, evenly in their logarithm, to a twentieth of a day, none
+/// them, evenly in their logarithm, to two significant figures, none
 /// offered already.
 pub fn sweep_durations(offered: &[f64]) -> Vec<f64> {
     let (lo, hi) = offered
@@ -81,12 +82,15 @@ pub fn sweep_durations(offered: &[f64]) -> Vec<f64> {
     if !lo.is_finite() {
         return Vec::new();
     }
-    let (lo, hi) = ((0.5 * lo).max(0.05), 2.0 * hi);
+    let (lo, hi) = (0.5 * lo, 2.0 * hi);
+    // To two significant figures: a twentieth of a day folded a short
+    // leg's sweep (0.05–0.2 days) to four.
+    let round = |d: f64| {
+        let unit = 10f64.powf(d.log10().floor() - 1.0);
+        (d / unit).round() * unit
+    };
     let mut out: Vec<f64> = (0..SWEPT)
-        .map(|k| {
-            let d = lo * (hi / lo).powf(k as f64 / (SWEPT - 1) as f64);
-            (d * 20.0).round() / 20.0
-        })
+        .map(|k| round(lo * (hi / lo).powf(k as f64 / (SWEPT - 1) as f64)))
         .filter(|d| offered.iter().all(|o| (o - d).abs() > 1e-9))
         .collect();
     out.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
@@ -108,15 +112,23 @@ pub struct Porkchop {
 }
 
 impl Porkchop {
-    /// The porkchop of `crossing` over departures in `window`: a column a
-    /// day, at most [`MOST_COLUMNS`]; rows the durations the date search
-    /// tries at the window's opening, at most [`MOST_ROWS`].
-    pub fn compute(crossing: &Crossing, window: (Epoch, Epoch)) -> Porkchop {
-        let days = (window.1.0 - window.0.0).max(0.0);
+    /// The porkchop of `crossing` over departures in `window` (at least
+    /// [`LEAST_SHOWN_DAYS`] from its opening): a column a day, at most
+    /// [`MOST_COLUMNS`]; rows the durations the date search tries at the
+    /// window's opening, at most [`MOST_ROWS`]. `None` without any.
+    pub fn compute(crossing: &Crossing, window: (Epoch, Epoch)) -> Option<Porkchop> {
+        let window = (
+            window.0,
+            Epoch(window.1.0.max(window.0.0 + LEAST_SHOWN_DAYS)),
+        );
+        let days = window.1.0 - window.0.0;
         let columns = (days.floor() as usize + 1).clamp(1, MOST_COLUMNS);
         let all = crossing.durations(window.0);
         let every = all.len().div_ceil(MOST_ROWS).max(1);
         let durations: Vec<f64> = all.into_iter().step_by(every).collect();
+        if durations.is_empty() {
+            return None;
+        }
         let mut p = Porkchop {
             window,
             columns,
@@ -139,7 +151,7 @@ impl Porkchop {
                 .copied()
                 .filter(|v| !v.is_nan())
                 .fold(f32::NAN, f32::min);
-        p
+        Some(p)
     }
 
     /// Column `column`'s departure.
@@ -224,24 +236,14 @@ impl Porkchop {
     /// over `budget` dimmed.
     fn image(&self, budget: f32) -> Image {
         let most = self.budget_dv(budget);
-        let [r, g, b, _] = tokens::MUTED.to_srgb_u8a();
-        let dark = [f32::from(r), f32::from(g), f32::from(b)];
         let rows = self.durations.len();
         let mut pixels = Vec::with_capacity(4 * self.columns * rows);
         for row in (0..rows).rev() {
             for column in 0..self.columns {
                 let v = self.at(column, row);
-                let shade = 1.0 - (v - self.least) / (self.least * (CEILING - 1.0));
-                let shade = if shade.is_nan() {
-                    0.0
-                } else {
-                    (shade.clamp(0.0, 1.0) * BANDS).ceil() / BANDS
-                };
+                let shade = (crate::windows::shade(v, self.least) * BANDS).ceil() / BANDS;
                 let shade = if v > most { shade * OVER_BUDGET } else { shade };
-                for c in 0..3 {
-                    pixels.push((dark[c] + (BRIGHT[c] - dark[c]) * shade).round() as u8);
-                }
-                pixels.push(255);
+                pixels.extend(crate::windows::shaded(shade));
             }
         }
         Image::from_rgba8(self.columns as u32, rows as u32, pixels)
@@ -269,6 +271,14 @@ impl Default for Options {
 }
 
 impl Options {
+    /// The porkchop kept, if it is ship `s`'s step `step`'s over
+    /// `window`.
+    pub fn current(&self, s: usize, step: usize, window: (Epoch, Epoch)) -> Option<Arc<Porkchop>> {
+        (self.key == Some((s, step, window)))
+            .then(|| self.porkchop.clone())
+            .flatten()
+    }
+
     /// The porkchop of ship `s`'s step `step` over `window`, computed by
     /// `compute` unless kept.
     pub fn porkchop(
@@ -640,6 +650,13 @@ mod tests {
         assert!(d.len() >= SWEPT - 2 && d.windows(2).all(|w| w[1] > w[0]));
         assert!(d.iter().all(|x| ![0.5, 1.0, 2.0].contains(x)));
         assert!(sweep_durations(&[]).is_empty());
+        // A short leg's (low Mars orbit to Phobos, 0.093 days).
+        let d = sweep_durations(&[0.093]);
+        assert!(d.len() >= SWEPT - 1, "{d:?}");
+        assert!(
+            (d[0] - 0.047).abs() < 1e-9 && (d.last().unwrap() - 0.19).abs() < 1e-9,
+            "{d:?}"
+        );
     }
 }
 

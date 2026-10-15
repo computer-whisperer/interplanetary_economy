@@ -25,6 +25,8 @@ use std::sync::{Arc, LazyLock};
 /// for a ship's design's generation, the plan left as it is.
 #[derive(Clone, Debug)]
 pub struct Sweep {
+    /// Its own, so that an earlier sweep's result does not fill it.
+    pub id: u64,
     pub generation: u64,
     pub durations: Vec<f64>,
     /// Each duration's design, once done; `Err` why none was.
@@ -33,8 +35,8 @@ pub struct Sweep {
 
 /// What a designer reports about a ship.
 enum Message {
-    /// A sweep of the leg at a step: its options.
-    Swept(usize, Result<Vec<Choice>, String>),
+    /// A sweep of the leg at a step, by its id: its options.
+    Swept(usize, u64, Result<Vec<Choice>, String>),
     /// It started: where it is before its first step.
     Started(Checkpoint),
     /// Items, and where the ship is after them.
@@ -78,7 +80,6 @@ pub fn world() -> &'static World {
 
 /// A plan being designed.
 pub struct Loaded {
-    pub name: String,
     /// The plan as edited, and the file it is saved to.
     pub plan: Plan,
     pub path: Option<PathBuf>,
@@ -88,8 +89,6 @@ pub struct Loaded {
     pub windows: Windows,
     /// Sweeps of legs' durations, by ship and step.
     pub sweeps: HashMap<(usize, usize), Sweep>,
-    /// The first ship's start.
-    pub start: Epoch,
     /// Changes whenever items arrive or a ship is edited (not when a
     /// ship is only done).
     pub generation: u64,
@@ -97,6 +96,15 @@ pub struct Loaded {
     next_id: u64,
     sender: Sender<(u64, u64, Message)>,
     receiver: Receiver<(u64, u64, Message)>,
+}
+
+impl Drop for Loaded {
+    /// Its designers and sweeps stop after the step they are on.
+    fn drop(&mut self) {
+        for d in &self.designs {
+            d.live.store(u64::MAX, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Each ship's first leg's place in the plan's legs.
@@ -163,12 +171,6 @@ impl Loaded {
                 checkpoints: Vec::new(),
             })
             .collect();
-        let start = plan
-            .ships
-            .iter()
-            .map(|s| s.epoch)
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .unwrap_or(Epoch::from_ymd(2045, 1, 1));
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -178,14 +180,12 @@ impl Loaded {
         let (sender, receiver) = channel();
         let next_id = plan.ships.len() as u64;
         let mut loaded = Loaded {
-            name: plan.name.clone(),
             plan,
             path: None,
             ships,
             designs,
             windows: Windows::default(),
             sweeps: HashMap::new(),
-            start,
             generation: 0,
             pool: Arc::new(pool),
             next_id,
@@ -231,12 +231,16 @@ impl Loaded {
                         }
                     },
                 };
-                while let Some(items) = planner.step() {
+                // Superseded, it stops before its next step.
+                while live.load(Ordering::Relaxed) == generation {
+                    let Some(items) = planner.step() else {
+                        send(Message::Done);
+                        return;
+                    };
                     if !send(Message::Items(items, planner.checkpoint())) {
                         return;
                     }
                 }
-                send(Message::Done);
             }));
             if let Err(panic) = designed {
                 let why = panic
@@ -258,8 +262,15 @@ impl Loaded {
         let from = edited
             .and_then(|e| resume_from(&design.checkpoints, e))
             .cloned();
+        // From the start: none of the old design's checkpoints hold.
+        match &from {
+            Some(c) => {
+                let keep = c.next();
+                design.checkpoints.retain(|c| c.next() <= keep);
+            }
+            None => design.checkpoints.clear(),
+        }
         let keep = from.as_ref().map_or(0, Checkpoint::next);
-        design.checkpoints.retain(|c| c.next() <= keep);
         design.generation += 1;
         design.live.store(design.generation, Ordering::Relaxed);
         self.plan.ships[s] = ship;
@@ -348,9 +359,12 @@ impl Loaded {
             return;
         }
         let (id, generation, live) = (design.id, design.generation, design.live.clone());
+        let sweep_id = self.next_id;
+        self.next_id += 1;
         self.sweeps.insert(
             (s, step),
             Sweep {
+                id: sweep_id,
                 generation,
                 durations: durations.clone(),
                 options: None,
@@ -397,7 +411,7 @@ impl Loaded {
             }))
             .unwrap_or_else(|_| Err("sweeping it panicked".into()));
             if live.load(Ordering::Relaxed) == generation {
-                let _ = sender.send((id, generation, Message::Swept(step, swept)));
+                let _ = sender.send((id, generation, Message::Swept(step, sweep_id, swept)));
             }
         });
     }
@@ -449,9 +463,10 @@ impl Loaded {
         }
         match message {
             Message::Started(c) => design.checkpoints.push(c),
-            Message::Swept(step, options) => {
+            Message::Swept(step, id, options) => {
                 if let Some(sweep) = self.sweeps.get_mut(&(s, step))
                     && sweep.generation == generation
+                    && sweep.id == id
                 {
                     sweep.options = Some(options);
                 }
@@ -475,19 +490,30 @@ impl Loaded {
         true
     }
 
+    /// The first ship's start (2045-01-01 without ships).
+    pub fn epoch(&self) -> Epoch {
+        self.plan
+            .ships
+            .iter()
+            .map(|s| s.epoch)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap_or(Epoch::from_ymd(2045, 1, 1))
+    }
+
     pub fn done(&self) -> bool {
         self.ships.iter().all(|s| s.done)
     }
 
     /// From the first ship's start to the end of the last item designed.
     pub fn span(&self) -> (Epoch, Epoch) {
+        let start = self.epoch();
         let end = self
             .ships
             .iter()
             .flat_map(|s| s.items.last())
             .map(|i| i.end.0)
-            .fold(self.start.0, f64::max);
-        (self.start, Epoch(end))
+            .fold(start.0, f64::max);
+        (start, Epoch(end))
     }
 
     /// Every marker's time ([`event_time`]), sorted.
@@ -507,11 +533,11 @@ impl Loaded {
         let done = self.ships.iter().filter(|s| s.done).count();
         let failed = self.ships.iter().filter(|s| s.failure.is_some()).count();
         let mut s = if done == self.ships.len() {
-            format!("{}: {} ships designed", self.name, done)
+            format!("{}: {} ships designed", self.plan.name, done)
         } else {
             format!(
                 "{}: designing, {done} of {} ships",
-                self.name,
+                self.plan.name,
                 self.ships.len()
             )
         };

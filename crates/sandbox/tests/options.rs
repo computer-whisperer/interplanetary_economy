@@ -145,7 +145,7 @@ fn a_cell_picked_flies_there() {
     let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap());
     plan.wait();
     assert!(plan.ships.iter().all(|s| s.failure.is_none()));
-    let mut app = Shell::new(plan.start);
+    let mut app = Shell::new(plan.epoch());
     app.load(plan);
     let mut h = Harness::new(&app, (1400.0, 900.0));
     h.draw(&mut app);
@@ -184,7 +184,11 @@ fn a_cell_picked_flies_there() {
         Step::Go(go) => go.clone(),
         _ => unreachable!(),
     };
-    let (depart, days) = (go.depart.expect("pinned"), go.days.clone());
+    let pin = go.pin.expect("pinned");
+    let (depart, days) = (
+        pin.depart.expect("a date"),
+        vec![pin.days.expect("a duration")],
+    );
     println!("pinned {depart} for {days:?}");
     assert_eq!(days.len(), 1);
     assert!(
@@ -245,7 +249,10 @@ fn a_cell_picked_flies_there() {
     let point = h.ui.rect_of_key(&point_key(i)).expect("its point is drawn");
     h.click(&mut app, (point.x + point.w / 2.0, point.y + point.h / 2.0));
     match &app.plan.as_ref().unwrap().plan.ships[1].steps[0] {
-        Step::Go(go) => assert_eq!(go.days, [2.0]),
+        Step::Go(go) => {
+            assert_eq!(go.pin.and_then(|p| p.days), Some(2.0));
+            assert_eq!(go.days, [0.5, 1.0, 2.0], "the offered durations stay");
+        }
         _ => unreachable!(),
     }
     app.plan.as_mut().unwrap().wait();
@@ -286,7 +293,7 @@ fn a_cell_picked_flies_there() {
             .expect("a swept point is drawn");
     h.click(&mut app, (point.x + point.w / 2.0, point.y + point.h / 2.0));
     match &app.plan.as_ref().unwrap().plan.ships[1].steps[0] {
-        Step::Go(go) => assert_eq!(go.days, [options[i].days]),
+        Step::Go(go) => assert_eq!(go.pin.and_then(|p| p.days), Some(options[i].days)),
         _ => unreachable!(),
     }
     app.plan.as_mut().unwrap().wait();
@@ -316,7 +323,7 @@ fn goals_and_windows() {
     let eph = Ephemeris::standard();
     let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap());
     plan.wait();
-    let mut app = Shell::new(plan.start);
+    let mut app = Shell::new(plan.epoch());
     app.load(plan);
     let mut h = Harness::new(&app, (1400.0, 1000.0));
     h.draw(&mut app);
@@ -401,10 +408,10 @@ fn goals_and_windows() {
         Step::Go(go) => go.clone(),
         _ => unreachable!(),
     };
-    let depart = go.depart.expect("pinned by the drag");
+    let depart = go.depart().expect("pinned by the drag");
     println!(
         "dragged from {} by {dx:.1} px: leaves {} for {:?}",
-        before.start, depart, go.days
+        before.start, depart, go.pin
     );
     assert!(
         (depart.0 - before.start.0 - 60.0).abs() <= 1.5,
@@ -421,7 +428,10 @@ fn goals_and_windows() {
         .filter(|&r| !p.at(column, r).is_nan())
         .min_by(|&a, &b| p.at(column, a).total_cmp(&p.at(column, b)))
         .unwrap();
-    assert_eq!(go.days, [(p.durations[cheapest] * 100.0).round() / 100.0]);
+    assert_eq!(
+        go.pin.and_then(|p| p.days),
+        Some((p.durations[cheapest] * 100.0).round() / 100.0)
+    );
     app.plan.as_mut().unwrap().wait();
     app.undo();
     app.plan.as_mut().unwrap().wait();
@@ -436,7 +446,7 @@ fn goals_and_windows() {
         Step::Go(go) => go.clone(),
         _ => unreachable!(),
     };
-    assert!(go.depart.is_none());
+    assert!(go.pin.is_none());
     let (open, _) = go.window.expect("a window set");
     assert!(
         (open.0 - flown.window.unwrap().0.0 - 780.0).abs() < 30.0,
@@ -470,11 +480,51 @@ fn goals_and_windows() {
     app.undo();
     app.undo();
     match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
-        Step::Go(go) => assert!(go.depart.is_some() && go.window.is_none()),
+        Step::Go(go) => assert!(go.depart().is_some() && go.window.is_none()),
         _ => unreachable!(),
     }
 }
 
 fn app_porkchop(app: &Shell) -> std::sync::Arc<sandbox::options::Porkchop> {
     app.porkchop().expect("the leg's porkchop")
+}
+
+/// A leg that fails can be selected: its options say why; a porkchop is
+/// offered only for the leg as designed (none while it is designed
+/// again).
+#[test]
+fn failed_and_redesigned_legs() {
+    let eph = Ephemeris::standard();
+    let src = PLAN.replace(
+        r#"to = { low = "mars", altitude = 400 }"#,
+        r#"to = { low = "mars", altitude = 400 }
+pin = { depart = "2032-01-01" }"#,
+    );
+    let mut plan = Loaded::start(Plan::parse(&src, eph, Places::standard()).unwrap());
+    plan.wait();
+    let mut app = Shell::new(plan.epoch());
+    app.load(plan);
+    let ship = &app.plan.as_ref().unwrap().ships[0];
+    let k = ship
+        .items
+        .iter()
+        .position(|i| matches!(i.kind, ItemKind::Failed(_)))
+        .expect("a pin before the ship is ready fails");
+    app.select(Some((0, k)));
+    assert_eq!(app.leg, Some((0, 0)), "a failed leg's options are shown");
+
+    // Unpinned: designed again; no porkchop until it is.
+    let mut ship = app.plan.as_ref().unwrap().plan.ships[0].clone();
+    if let Step::Go(go) = &mut ship.steps[0] {
+        go.pin = None;
+    }
+    app.change(0, ship);
+    app.poll();
+    assert!(
+        app.porkchop().is_none(),
+        "none while the leg is designed again"
+    );
+    app.plan.as_mut().unwrap().wait();
+    app.poll();
+    assert!(app.porkchop().is_some());
 }

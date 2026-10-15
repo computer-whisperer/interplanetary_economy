@@ -28,9 +28,8 @@ const FIT_DAYS: f64 = 10.0;
 const GUTTER_PX: f32 = 170.0;
 const AXIS_PX: f32 = 22.0;
 const LANE_PX: f32 = 18.0;
-/// A window lane's height, and its brightest shade (sRGB).
+/// A window lane's height.
 const WINDOW_PX: f32 = 12.0;
-const WINDOW_BRIGHT: [f32; 3] = [225.0, 225.0, 230.0];
 /// Bars' heights: a leg's or an event's, a stay's; and their least width.
 const LEG_PX: f32 = 10.0;
 const STAY_PX: f32 = 4.0;
@@ -562,22 +561,11 @@ fn window_row(
     cursor: Option<f64>,
 ) -> El {
     let n = width.round().clamp(1.0, 4096.0) as usize;
-    let [r, g, b, _] = tokens::MUTED.to_srgb_u8a();
-    let dark = [f32::from(r), f32::from(g), f32::from(b)];
     let mut pixels = Vec::with_capacity(4 * n);
     for i in 0..n {
         let f = |i: usize| i as f64 / n as f64;
         let v = lane.least_between(tl.at(f(i)), tl.at(f(i + 1)));
-        let shade = 1.0 - (v - lane.least) / (lane.least * (windows::CEILING - 1.0));
-        let shade = if shade.is_nan() {
-            0.0
-        } else {
-            shade.clamp(0.0, 1.0)
-        };
-        for c in 0..3 {
-            pixels.push((dark[c] + (WINDOW_BRIGHT[c] - dark[c]) * shade).round() as u8);
-        }
-        pixels.push(255);
+        pixels.extend(windows::shaded(windows::shade(v, lane.least)));
     }
     let strip = image(Image::from_rgba8(n as u32, 1, pixels))
         .image_fit(ImageFit::Fill)

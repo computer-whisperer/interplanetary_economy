@@ -70,11 +70,11 @@ fn the_plan_menu_opens_plans() {
     let names: Vec<String> = plans_in(&dir).into_iter().map(|(n, _)| n).collect();
     assert!(names.contains(&"gateway-rotation".to_string()), "{names:?}");
     let option = ui
-        .rect_of_key("plan-file:option:gateway-rotation")
+        .rect_of_key("plan-file:option:file:gateway-rotation")
         .expect("the gateway rotation is offered");
     click(&mut app, &mut ui, option);
     let plan = app.plan.as_ref().expect("a plan is open");
-    assert_eq!(plan.name, "Gateway crew rotation");
+    assert_eq!(plan.plan.name, "Gateway crew rotation");
     assert_eq!(
         plan.path.as_deref(),
         Some(dir.join("gateway-rotation.toml").as_path())

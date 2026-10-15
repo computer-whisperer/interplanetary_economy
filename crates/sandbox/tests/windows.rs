@@ -81,3 +81,43 @@ fn lanes_and_their_windows() {
         assert_eq!(near, days[best]);
     }
 }
+
+/// Lanes are their legs' exact ends: two orbits that read alike are two
+/// lanes, one orbit written two ways is one.
+#[test]
+fn lanes_are_their_exact_ends() {
+    let src = r#"
+name = "x"
+[[ship]]
+name = "a"
+start = { at = "leo", epoch = "2033-01-01" }
+[[ship.leg]]
+to = { low = "mars", radius = 3790.2 }
+[[ship]]
+name = "b"
+start = { at = "leo", epoch = "2033-01-01" }
+[[ship.leg]]
+to = { low = "mars", radius = 3790.4 }
+[[ship]]
+name = "c"
+start = { at = "leo", epoch = "2033-01-01" }
+[[ship.leg]]
+to = { low = "mars", radius = 3790.2 }
+"#;
+    let plan = orbit::mission::Plan::parse(
+        src,
+        orbit::ephem::Ephemeris::standard(),
+        orbit::places::Places::standard(),
+    )
+    .unwrap();
+    let mut windows = sandbox::windows::Windows::default();
+    let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
+    windows.update(&plan, &pool);
+    assert_eq!(windows.lanes.len(), 2);
+    assert_eq!(
+        windows.lanes[0].label, windows.lanes[1].label,
+        "they read alike"
+    );
+    assert_eq!(windows.legs[&(0, 0)], windows.legs[&(2, 0)]);
+    assert_ne!(windows.legs[&(0, 0)], windows.legs[&(1, 0)]);
+}

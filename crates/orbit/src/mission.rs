@@ -54,6 +54,10 @@ const TOF_STEP: f64 = 2.0;
 const TRIES: usize = 3;
 const TRIES_APART_DAYS: f64 = 5.0;
 
+/// A pin this close before the ship is ready leaves when it is, days:
+/// pins are kept to the minute.
+const PIN_SLACK_DAYS: f64 = 0.5 / 1_440.0;
+
 /// A station's reference starts this long before it is needed, and runs
 /// this long after, days.
 const VISIT_MARGIN_DAYS: f64 = 2.0;
@@ -120,13 +124,38 @@ pub struct Go {
     /// When the ship may leave; by default from when it is ready, for as
     /// long as [`Planner`] says.
     pub window: Option<(Epoch, Epoch)>,
-    /// When it leaves, pinned: a leg between planets (at the cheapest of
-    /// `days` that day) or an event. What choosing an option writes.
-    pub depart: Option<Epoch>,
+    /// One of its options chosen: what picking one writes, over `days`
+    /// and `window`, which stay as they were.
+    pub pin: Option<Pin>,
     /// Arriving through the atmosphere: aerocapture into a low orbit,
     /// entry to the surface.
     pub aero: bool,
     pub note: Option<String>,
+}
+
+/// A leg's option chosen: when it leaves (a leg between planets, or an
+/// event), and how long it takes (any leg). Either may be left to the
+/// planner.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pin {
+    pub depart: Option<Epoch>,
+    pub days: Option<f64>,
+}
+
+impl Go {
+    /// The durations the planner designs, days: the pinned one, else
+    /// those offered.
+    pub fn durations(&self) -> Vec<f64> {
+        match self.pin.and_then(|p| p.days) {
+            Some(d) => vec![d],
+            None => self.days.clone(),
+        }
+    }
+
+    /// The pinned departure, if any.
+    pub fn depart(&self) -> Option<Epoch> {
+        self.pin.and_then(|p| p.depart)
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -165,11 +194,20 @@ struct LegFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     window: Option<[String; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    depart: Option<String>,
+    pin: Option<PinFile>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     aero: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PinFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    depart: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    days: Option<f64>,
 }
 
 impl Plan {
@@ -194,7 +232,7 @@ impl Plan {
                             (None, Some(days)) => {
                                 if leg.days.is_some()
                                     || leg.window.is_some()
-                                    || leg.depart.is_some()
+                                    || leg.pin.is_some()
                                     || leg.aero
                                 {
                                     return Err(fail("a wait takes no other keys".into()));
@@ -229,10 +267,20 @@ impl Plan {
                                     })
                                     .transpose()
                                     .map_err(fail)?,
-                                depart: leg
-                                    .depart
-                                    .as_deref()
-                                    .map(date)
+                                pin: leg
+                                    .pin
+                                    .map(|p| {
+                                        if p.depart.is_none() && p.days.is_none() {
+                                            return Err("a pin has `depart`, `days` or both".into());
+                                        }
+                                        if p.days.is_some_and(|d| !d.is_finite() || d <= 0.0) {
+                                            return Err("a pin's days are a positive number".into());
+                                        }
+                                        Ok(Pin {
+                                            depart: p.depart.as_deref().map(date).transpose()?,
+                                            days: p.days,
+                                        })
+                                    })
                                     .transpose()
                                     .map_err(fail)?,
                                 aero: leg.aero,
@@ -250,10 +298,16 @@ impl Plan {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let header: String = src
+        // Its opening comments, blank lines among them.
+        let opening: Vec<&str> = src
             .lines()
-            .take_while(|l| l.trim_start().starts_with('#'))
-            .map(|l| format!("{l}\n"))
+            .take_while(|l| l.trim().is_empty() || l.trim_start().starts_with('#'))
+            .collect();
+        let last = opening.iter().rposition(|l| !l.trim().is_empty());
+        let header: String = opening[..last.map_or(0, |k| k + 1)]
+            .iter()
+            .skip_while(|l| l.trim().is_empty())
+            .map(|l| format!("{}\n", l.trim_end_matches('\r')))
             .collect();
         Ok(Plan {
             name: file.name,
@@ -288,7 +342,10 @@ impl Plan {
                                 to: Some(go.to.source.clone()),
                                 days: (!go.days.is_empty()).then(|| go.days.clone()),
                                 window: go.window.map(|(a, b)| [a.stamp(), b.stamp()]),
-                                depart: go.depart.map(Epoch::stamp),
+                                pin: go.pin.map(|p| PinFile {
+                                    depart: p.depart.map(Epoch::stamp),
+                                    days: p.days,
+                                }),
                                 aero: go.aero,
                                 note: go.note.clone(),
                                 ..LegFile::default()
@@ -534,10 +591,10 @@ pub fn leg_kind(eph: &Ephemeris, from: &PlaceKind, go: &Go) -> Result<LegKind, S
                 .into(),
         ),
         _ if from_system == to_system => {
-            if go.days.is_empty() {
+            if go.durations().is_empty() {
                 Err("a leg within a system needs `days`".into())
-            } else if go.depart.is_some() {
-                Err("a pinned departure (`depart`) is for legs between planets and events; within a system, set a `window`".into())
+            } else if go.depart().is_some() {
+                Err("a pinned departure is for legs between planets and events; within a system, set a `window`".into())
             } else {
                 Ok(LegKind::Within(from_system))
             }
@@ -582,25 +639,33 @@ impl Crossing<'_> {
         interplanetary::patched(&self.world.global, &self.from, &self.to, depart, arrive)
     }
 
-    /// The durations the date search tries leaving at `t`, days: every
-    /// [`TOF_STEP`] over the range the bodies' orbits bracket; none where
-    /// the ephemeris does not know them then.
-    pub fn durations(&self, t: Epoch) -> Vec<f64> {
+    /// `t` held within the span the ephemeris knows both ends over.
+    fn known(&self, t: Epoch) -> Epoch {
         let eph = self.world.eph;
-        if !eph.covers(self.from_body, t) || !eph.covers(self.to_system, t) {
-            return Vec::new();
-        }
-        let (lo, hi) =
-            crate::transfer::default_tof_range(self.world.eph, self.from_body, self.to_system, t);
+        let (a, b) = (eph.span_of(self.from_body), eph.span_of(self.to_system));
+        Epoch(t.0.clamp(a.0.0.max(b.0.0), a.1.0.min(b.1.0)))
+    }
+
+    /// The durations the date search tries leaving at `t`, days: every
+    /// [`TOF_STEP`] over the range the bodies' orbits bracket (then, or
+    /// as near then as the ephemeris knows them).
+    pub fn durations(&self, t: Epoch) -> Vec<f64> {
+        let (lo, hi) = crate::transfer::default_tof_range(
+            self.world.eph,
+            self.from_body,
+            self.to_system,
+            self.known(t),
+        );
         let n = ((hi - lo) / TOF_STEP).floor() as usize;
         (0..=n).map(|k| lo + k as f64 * TOF_STEP).collect()
     }
 
-    /// The synodic period of its two planets about `t`, days.
+    /// The synodic period of its two ends about `t` (or as near it as
+    /// the ephemeris knows them), days.
     pub fn synodic_days(&self, t: Epoch) -> f64 {
         self.world
             .eph
-            .synodic_period_days(self.from_body, self.to_system, t)
+            .synodic_period_days(self.from_body, self.to_system, self.known(t))
     }
 }
 
@@ -700,15 +765,20 @@ impl Checkpoint {
 
 /// Of `checkpoints` (by their steps, ascending), the one to go on from
 /// after the ship's steps from `edited` on change: the last before the
-/// edit, but not one in a station's orbit, whose visit was built long
-/// enough for the steps after it (its waits, and the next leg's window
-/// and durations); then the one before it. `None`: from the start.
+/// edit; but if the ship is in a station's orbit there, the one before
+/// (the visit was built long enough for the steps after it: its waits,
+/// and the next leg's window and durations); and none where the plan had
+/// stopped (a failure may have hung on the steps after it). `None`: from
+/// the start.
 pub fn resume_from(checkpoints: &[Checkpoint], edited: usize) -> Option<&Checkpoint> {
-    let k = checkpoints.iter().rposition(|c| c.next <= edited)?;
-    checkpoints[..=k]
-        .iter()
-        .rev()
-        .find(|c| !matches!(c.here, Here::Station(_)))
+    let mut k = checkpoints.iter().rposition(|c| c.next <= edited)?;
+    if matches!(checkpoints[k].here, Here::Station(_)) {
+        k = k.checked_sub(1)?;
+    }
+    while checkpoints[k].stopped {
+        k = k.checked_sub(1)?;
+    }
+    Some(&checkpoints[k])
 }
 
 /// A station orbit for one visit: the reference the ship follows from the
@@ -831,7 +901,7 @@ impl<'w> Planner<'w> {
                 Step::Wait(days) => self.ready = self.ready.plus_days(days),
                 Step::Go(go) => {
                     let clock = Instant::now();
-                    return Some(match self.go(i, &go) {
+                    return Some(match self.go(&go) {
                         Ok(mut items) => {
                             if let Some(i) = items.iter_mut().rfind(|i| i.kind != ItemKind::Capture)
                             {
@@ -864,16 +934,18 @@ impl<'w> Planner<'w> {
     }
 
     /// The departure window for `go`, given its default length in days: an
-    /// instant where its departure is pinned.
+    /// instant where its departure is pinned (held to when the ship is
+    /// ready, if within half a minute of it: pins are kept to the minute).
     fn window(&self, go: &Go, default_days: f64) -> Result<(Epoch, Epoch), String> {
-        if let Some(depart) = go.depart {
-            if depart.0 < self.ready.0 {
+        if let Some(depart) = go.depart() {
+            if depart.0 < self.ready.0 - PIN_SLACK_DAYS {
                 return Err(format!(
                     "the leg is pinned to leave {}, before the ship is ready ({})",
                     when(depart),
                     when(self.ready)
                 ));
             }
+            let depart = Epoch(depart.0.max(self.ready.0));
             return Ok((depart, depart));
         }
         self.unpinned(go, default_days)
@@ -895,7 +967,7 @@ impl<'w> Planner<'w> {
         }
     }
 
-    fn go(&mut self, i: usize, go: &Go) -> Result<Vec<Item>, String> {
+    fn go(&mut self, go: &Go) -> Result<Vec<Item>, String> {
         let eph = self.world.eph;
         // A small body's orbit is known from 2040.
         let (open, _) = self.window(go, 0.0)?;
@@ -927,7 +999,7 @@ impl<'w> Planner<'w> {
                 let (b, radius) = (*b, orbit.radius);
                 self.surface_event(go, b, radius, false)
             }
-            (LegKind::Within(system), _, _) => self.within(i, go, system),
+            (LegKind::Within(system), _, _) => self.within(go, system),
             (LegKind::Between, _, _) => self.between(go),
             _ => unreachable!("leg_kind's kinds match their ends"),
         }?;
@@ -1000,11 +1072,12 @@ impl<'w> Planner<'w> {
     }
 
     /// A leg within planet `system`'s field, by `legs::plan`.
-    fn within(&mut self, i: usize, go: &Go, system: BodyId) -> Result<Vec<Item>, String> {
+    fn within(&mut self, go: &Go, system: BodyId) -> Result<Vec<Item>, String> {
         let world = self.world;
         let eph = world.eph;
         let (field, light) = world.system(system)?;
-        let longest = go.days.iter().copied().fold(0.0, f64::max);
+        let offered = go.durations();
+        let longest = offered.iter().copied().fold(0.0, f64::max);
         // The window: a revolution of the station left or reached, else
         // the defaults.
         let default_days = match (&self.here, &go.to.kind) {
@@ -1038,7 +1111,8 @@ impl<'w> Planner<'w> {
         let arriving = match &go.to.kind {
             PlaceKind::Station { family, period } => {
                 let latest = windows.last().unwrap().1.plus_days(longest);
-                let until = self.visit_until(i + 1, latest, self.member_days(family, *period)?);
+                let until =
+                    self.visit_until(self.at + 1, latest, self.member_days(family, *period)?);
                 Some(self.visit(&go.to, open, until)?)
             }
             _ => None,
@@ -1049,7 +1123,7 @@ impl<'w> Planner<'w> {
             Some(v) => End::Orbit(&v.reference),
             None => self.world.end_to(&go.to.kind, go.aero, false)?,
         };
-        let durations: Vec<f64> = go.days.iter().map(|d| d * DAY).collect();
+        let durations: Vec<f64> = offered.iter().map(|d| d * DAY).collect();
         let leg = Leg {
             field,
             locals: &[],
@@ -1070,8 +1144,7 @@ impl<'w> Planner<'w> {
                 (0.0, (c.0 - o.0) * DAY),
                 &durations,
             );
-            let options = go
-                .days
+            let options = offered
                 .iter()
                 .zip(&designs)
                 .map(|(&days, d)| Choice {
@@ -1116,28 +1189,19 @@ impl<'w> Planner<'w> {
     /// A leg between planetary systems: the cheapest dates by patched
     /// conics, then `interplanetary::plan`.
     fn between(&mut self, go: &Go) -> Result<Vec<Item>, String> {
-        let from_kind = match &self.here {
-            Here::Low { orbit, .. } => PlaceKind::Low(*orbit),
-            Here::Body(b) => PlaceKind::Body(*b),
-            _ => {
-                return Err(
-                    "leaving a station orbit for another planet is not designed yet (M1a step 9); fly through LEO"
-                        .into(),
-                );
-            }
-        };
         let world = self.world;
-        let crossing = world.crossing(&from_kind, &go.to.kind, go.aero)?;
+        let crossing = world.crossing(&self.place, &go.to.kind, go.aero)?;
         let default_days = crossing.synodic_days(self.ready).min(LONGEST_WINDOW_DAYS);
         let (open, close) = self.window(go, default_days)?;
-        let searched = self.unpinned(go, default_days)?;
+        // The window without the pin (a pin overrides a window it is
+        // outside of).
+        let searched = self.unpinned(go, default_days).unwrap_or((open, close));
         let here = self.here.clone();
         let from = end_from(&here);
         let to = crossing.to;
-        let tofs: Vec<f64> = if go.days.is_empty() {
-            crossing.durations(open)
-        } else {
-            go.days.clone()
+        let tofs: Vec<f64> = match go.durations() {
+            d if d.is_empty() => crossing.durations(open),
+            d => d,
         };
         let departs = ((close.0 - open.0) / DEPART_STEP).floor() as usize;
         let global = &world.global;
@@ -1158,7 +1222,7 @@ impl<'w> Planner<'w> {
                 break;
             }
             // Designs tried leave days apart; at a pinned date, any.
-            if go.depart.is_none()
+            if go.depart().is_none()
                 && tried
                     .iter()
                     .any(|c| (c.depart.0 - depart.0).abs() < TRIES_APART_DAYS)
@@ -1222,7 +1286,7 @@ impl<'w> Planner<'w> {
             match step {
                 Step::Wait(days) => t = t.plus_days(*days),
                 Step::Go(go) => {
-                    let longest = go.days.iter().copied().fold(0.0, f64::max);
+                    let longest = go.durations().iter().copied().fold(0.0, f64::max);
                     let tries = 1.0 + (WITHIN_TRIES - 1) as f64 / 4.0;
                     let close = match go.window {
                         Some((_, close)) => Epoch(close.0.max(t.0)),

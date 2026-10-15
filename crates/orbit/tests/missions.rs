@@ -7,7 +7,7 @@
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{
-    Checkpoint, Item, ItemKind, MarkerKind, Plan, Planner, Step, World, check, resume_from,
+    Checkpoint, Item, ItemKind, MarkerKind, Pin, Plan, Planner, Step, World, check, resume_from,
 };
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -99,8 +99,8 @@ fn assert_round_trip(p: &Plan) {
                 (Step::Wait(x), Step::Wait(y)) => assert_eq!(x, y),
                 (Step::Go(x), Step::Go(y)) => {
                     assert_eq!(
-                        (&x.to.label, &x.days, x.window, x.depart, x.aero, &x.note),
-                        (&y.to.label, &y.days, y.window, y.depart, y.aero, &y.note)
+                        (&x.to.label, &x.days, x.window, x.pin, x.aero, &x.note),
+                        (&y.to.label, &y.days, y.window, y.pin, y.aero, &y.note)
                     );
                 }
                 _ => panic!("{x:?} read back as {y:?}"),
@@ -408,9 +408,9 @@ fn an_edit_goes_on_from_the_middle() {
     assert_eq!(resume_from(&checkpoints, 1).map(Checkpoint::next), Some(1));
 }
 
-/// A departure pinned with `depart` flies at that date, as the published
+/// A leg pinned (`pin`) flies at its date and duration, as the published
 /// leg pinned by a window of one day does; pinned before the ship is
-/// ready, or within a system, it is refused.
+/// ready, or a departure within a system, it is refused.
 #[test]
 fn a_pinned_departure_flies_then() {
     let world = World::standard();
@@ -425,8 +425,7 @@ start = { at = "leo", epoch = "2031-01-28" }
 
 [[ship.leg]]
 to = { low = "mars", altitude = 400 }
-depart = "2031-01-28"
-days = [190]
+pin = { depart = "2031-01-28", days = 190 }
 "#;
     let pinned = Plan::parse(src, world.eph, Places::standard()).unwrap();
     assert_round_trip(&pinned);
@@ -440,11 +439,11 @@ days = [190]
 
     for (leg, why) in [
         (
-            "to = { low = \"mars\", altitude = 400 }\ndepart = \"2031-01-27\"",
+            "to = { low = \"mars\", altitude = 400 }\npin = { depart = \"2031-01-27\" }",
             "before the ship is ready",
         ),
         (
-            "to = \"nrho\"\ndays = [5]\ndepart = \"2031-01-29\"",
+            "to = \"nrho\"\ndays = [5]\npin = { depart = \"2031-01-29\" }",
             "between planets",
         ),
     ] {
@@ -502,4 +501,124 @@ to = { low = "mars", altitude = 400 }
         ] => assert_eq!(why, &problems[0].1),
         other => panic!("{other:?}"),
     }
+}
+
+/// A pin a few seconds before the ship is ready (pins are kept to the
+/// minute) leaves when it is ready; minutes before, it is refused.
+/// Unpinned, the leg flies its own durations again.
+#[test]
+fn pins_hold_to_ready_and_come_off() {
+    let world = World::standard();
+    let src = r#"
+name = "x"
+[[ship]]
+name = "s"
+start = { at = "nrho", epoch = "2045-03-05" }
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+[[ship.leg]]
+to = "moon-south-pole"
+"#;
+    let mut plan = Plan::parse(src, world.eph, Places::standard()).unwrap();
+    let items = fly(&world, &plan, "s");
+    // The landing leaves when the ship reaches low lunar orbit, at no
+    // whole minute.
+    let landing = items.iter().find(|i| i.kind == ItemKind::Landing).unwrap();
+    let ready = landing.start;
+    println!(
+        "ready {ready:?}: {:.1} s past the minute",
+        (ready.0 * 1_440.0).fract() * 60.0
+    );
+    for (early_s, flies) in [(20.0, true), (120.0, false)] {
+        let Step::Go(go) = &mut plan.ships[0].steps[1] else {
+            unreachable!()
+        };
+        go.pin = Some(Pin {
+            depart: Some(ready.plus_days(-early_s / 86_400.0)),
+            days: None,
+        });
+        let items = fly(&world, &plan, "s");
+        let landing = items
+            .iter()
+            .find(|i| matches!(i.kind, ItemKind::Landing | ItemKind::Failed(_)));
+        match (landing.map(|i| &i.kind), flies) {
+            (Some(ItemKind::Landing), true) => assert_eq!(landing.unwrap().start, ready),
+            (Some(ItemKind::Failed(why)), false) => {
+                assert!(why.contains("before the ship is ready"))
+            }
+            other => panic!("{early_s} s early: {other:?}"),
+        }
+    }
+    // A duration pinned over those offered, then taken off.
+    let Step::Go(go) = &mut plan.ships[0].steps[0] else {
+        unreachable!()
+    };
+    go.pin = Some(Pin {
+        depart: None,
+        days: Some(1.0),
+    });
+    assert_eq!(go.durations(), [1.0]);
+    assert_eq!(go.days, [0.5], "the offered durations stay");
+    let items = fly(&world, &plan, "s");
+    let leg = items.iter().find(|i| i.kind == ItemKind::Leg).unwrap();
+    assert!((leg.end.0 - leg.start.0 - 1.0).abs() < 1e-6);
+    let Step::Go(go) = &mut plan.ships[0].steps[0] else {
+        unreachable!()
+    };
+    go.pin = None;
+    let leg = fly(&world, &plan, "s")
+        .into_iter()
+        .find(|i| i.kind == ItemKind::Leg)
+        .unwrap();
+    assert!((leg.end.0 - leg.start.0 - 0.5).abs() < 1e-6);
+}
+
+/// A plan stopped by a failure goes on from before the failed leg; a
+/// small body's leg whose ship is ready before its orbit is known (2040)
+/// but whose window opens after is designed, not a panic.
+#[test]
+fn failures_and_small_bodies_before_2040() {
+    let world = World::standard();
+    let src = r#"
+name = "x"
+[[ship]]
+name = "s"
+start = { at = "leo", epoch = "2039-12-01" }
+[[ship.leg]]
+wait = 1
+[[ship.leg]]
+to = "2000-sg344"
+window = ["2039-12-15", "2040-03-01"]
+"#;
+    let plan = Plan::parse(src, world.eph, Places::standard()).unwrap();
+    let ship = &plan.ships[0];
+    let mut planner = Planner::new(&world, ship).unwrap();
+    let mut checkpoints = vec![planner.checkpoint()];
+    let mut items = Vec::new();
+    while let Some(batch) = planner.step() {
+        items.extend(batch);
+        checkpoints.push(planner.checkpoint());
+    }
+    let kinds: Vec<&ItemKind> = items.iter().map(|i| &i.kind).collect();
+    println!("{kinds:?}");
+    // The window opens before 2040: the search prices what it can.
+    assert!(
+        items
+            .iter()
+            .any(|i| matches!(i.kind, ItemKind::Leg | ItemKind::Failed(_)))
+    );
+    // After a failure, an edit to the wait goes on from the start.
+    let src = src.replace(
+        r#"window = ["2039-12-15", "2040-03-01"]"#,
+        r#"window = ["2035-01-01", "2035-01-02"]"#,
+    );
+    let plan = Plan::parse(&src, world.eph, Places::standard()).unwrap();
+    let mut planner = Planner::new(&world, &plan.ships[0]).unwrap();
+    let mut checkpoints = vec![planner.checkpoint()];
+    while planner.step().is_some() {
+        checkpoints.push(planner.checkpoint());
+    }
+    assert_eq!(checkpoints.len(), 2, "the start, and after the failed leg");
+    assert_eq!(resume_from(&checkpoints, 2).map(Checkpoint::next), Some(0));
 }

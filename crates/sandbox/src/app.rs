@@ -28,7 +28,7 @@ use damascene_core::widgets::{slider, text_input};
 use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
-use orbit::mission::{Item, ItemKind, Plan, Step};
+use orbit::mission::{Item, ItemKind, Pin, Plan, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use render::Timings;
@@ -43,7 +43,8 @@ const FOCUS_KEY: &str = "focus";
 const FRAME_KEY: &str = "frame";
 const PLAN_KEY: &str = "plan-file";
 
-/// The plan menu's option for a new plan.
+/// The plan menu's option for a new plan (the files' are `file:` and
+/// their names).
 const NEW_PLAN: &str = "new";
 
 /// The longest step of wall time a frame advances, s.
@@ -216,7 +217,8 @@ impl Shell {
         }
     }
 
-    /// The leg's item, if designed: ship `s`'s leg made by `step`.
+    /// The leg's item, if designed: ship `s`'s leg made by `step`, or
+    /// its failure.
     fn leg_item(&self, (s, step): (usize, usize)) -> Option<(usize, &Item)> {
         self.plan
             .as_ref()?
@@ -225,7 +227,16 @@ impl Shell {
             .items
             .iter()
             .enumerate()
-            .find(|(_, i)| i.step == step && i.kind == ItemKind::Leg)
+            .find(|(_, i)| i.step == step && is_leg(i))
+    }
+
+    /// The porkchop shown for the leg: the one computed for its item's
+    /// window, while that item is designed (not one kept from before an
+    /// edit, while the leg is designed again).
+    fn porkchop_now(&self) -> Option<Arc<Porkchop>> {
+        let (s, step) = self.leg?;
+        let (_, item) = self.leg_item((s, step))?;
+        self.options.current(s, step, item.window?)
     }
 
     /// Computes the porkchop of the leg whose options are shown, if it is
@@ -252,14 +263,14 @@ impl Shell {
             let c = crate::plan::world()
                 .crossing(&from.kind, &to.kind, aero)
                 .ok()?;
-            Some(Porkchop::compute(&c, window))
+            Porkchop::compute(&c, window)
         });
     }
 
-    /// Pins ship `s`'s leg at `step` to leave at `depart` (none: as its
-    /// window allows) taking `days` (none: as the planner picks), and
-    /// designs it again from there; undoable.
-    fn pin(&mut self, (s, step): (usize, usize), depart: Option<Epoch>, days: Vec<f64>) {
+    /// Pins ship `s`'s leg at `step` to `pin` (none: takes its pin away,
+    /// back to its own durations and window), and designs it again from
+    /// there; undoable.
+    fn pin(&mut self, (s, step): (usize, usize), pin: Option<Pin>) {
         let Some(plan) = self.plan.as_ref() else {
             return;
         };
@@ -267,8 +278,7 @@ impl Shell {
         let Some(Step::Go(go)) = ship.steps.get_mut(step) else {
             return;
         };
-        go.depart = depart;
-        go.days = days;
+        go.pin = pin;
         // The items after the edit go; the panel keeps the leg.
         self.change(s, ship);
     }
@@ -276,7 +286,7 @@ impl Shell {
     /// A click on the options panel's chart at `at`: the porkchop's cell
     /// there pinned.
     fn clicked_chart(&mut self, at: (f32, f32), chart: Rect) {
-        let (Some(leg), Some(p)) = (self.leg, self.options.porkchop.clone()) else {
+        let (Some(leg), Some(p)) = (self.leg, self.porkchop_now()) else {
             return;
         };
         let f = (
@@ -297,14 +307,14 @@ impl Shell {
         let item = self.plan.as_ref()?.ships.get(s)?.items.get(k)?;
         (item.kind == ItemKind::Leg
             && self.leg == Some((s, item.step))
-            && self.options.porkchop.is_some())
+            && self.porkchop_now().is_some())
         .then_some((s, k))
     }
 
     /// Moves ship `s`'s leg (item `k`) to leave `days` later: pinned to
     /// the cheapest cell of its porkchop leaving nearest then.
     fn move_leg(&mut self, (s, k): (usize, usize), days: f64) {
-        let (Some(leg), Some(p)) = (self.leg, self.options.porkchop.clone()) else {
+        let (Some(leg), Some(p)) = (self.leg, self.porkchop_now()) else {
             return;
         };
         let Some(item) = self.plan.as_ref().and_then(|p| p.ships[s].items.get(k)) else {
@@ -327,9 +337,10 @@ impl Shell {
         }
     }
 
-    /// The porkchop of the leg whose options are shown, if computed.
+    /// The porkchop of the leg whose options are shown, if computed for
+    /// its item as designed.
     pub fn porkchop(&self) -> Option<Arc<Porkchop>> {
-        self.options.porkchop.clone()
+        self.porkchop_now()
     }
 
     /// Sets the options' Δv budget, as its slider does (0 to 1).
@@ -343,12 +354,17 @@ impl Shell {
     fn pin_cell(&mut self, leg: (usize, usize), p: &Porkchop, column: usize, row: usize) {
         let depart = Epoch((p.depart(column).0 * 1_440.0).round() / 1_440.0);
         let days = (p.durations[row] * 100.0).round() / 100.0;
-        self.pin(leg, Some(depart), vec![days]);
+        self.pin(
+            leg,
+            Some(Pin {
+                depart: Some(depart),
+                days: Some(days),
+            }),
+        );
     }
 
     /// Moves the leg's window a synodic period of its planets `later`,
-    /// or back to its default (from when the ship is ready); unpinned,
-    /// the pin's duration dropped with it.
+    /// or back to its default (from when the ship is ready); unpinned.
     fn move_window(&mut self, (s, step): (usize, usize), later: bool) {
         let Some(plan) = self.plan.as_ref() else {
             return;
@@ -366,9 +382,7 @@ impl Shell {
         let Some(Step::Go(go)) = ship.steps.get_mut(step) else {
             return;
         };
-        if go.depart.take().is_some() {
-            go.days.clear();
-        }
+        go.pin = None;
         go.window = later.then(|| {
             let synodic = c.synodic_days(window.0);
             (window.0.plus_days(synodic), window.1.plus_days(synodic))
@@ -386,7 +400,7 @@ impl Shell {
             Some(Step::Go(go)) => Some(go),
             _ => None,
         };
-        let pinned = go.is_some_and(|g| g.depart.is_some());
+        let pinned = go.is_some_and(|g| g.pin.is_some());
         let windowed = go.is_some_and(|g| g.window.is_some());
         let chart = cx.rect_of_key(options::CHART_KEY);
         let hover = match (self.pointer, chart) {
@@ -408,15 +422,26 @@ impl Shell {
             windowed,
             hover,
         };
-        let body = if plan.windows.legs.contains_key(&(s, step)) {
-            match &self.options.porkchop {
-                Some(p) => options::porkchop_section(
-                    p,
+        let failed = item.and_then(|(_, i)| match &i.kind {
+            ItemKind::Failed(why) => Some(why.clone()),
+            _ => None,
+        });
+        let body = if let Some(why) = failed {
+            text(format!("Could not be designed: {why}"))
+                .caption()
+                .wrap_text()
+                .text_color(tokens::DESTRUCTIVE_TINT_FOREGROUND)
+                .width(Size::Fill(1.0))
+        } else if plan.windows.legs.contains_key(&(s, step)) {
+            match (item, self.porkchop_now()) {
+                (Some(_), Some(p)) => options::porkchop_section(
+                    &p,
                     &leg,
                     chart.map_or(350.0, |r| r.w),
                     self.options.budget,
                 ),
-                None => text("computing").caption().muted(),
+                (Some(_), None) => text("computing").caption().muted(),
+                (None, _) => text("designing").caption().muted(),
             }
         } else {
             options::durations_section(&leg, plan.sweeps.get(&(s, step)))
@@ -438,6 +463,12 @@ impl Shell {
             }
             return;
         };
+        // Steps added or removed: the leg shown may be another now.
+        if ship.steps.len() != plan.plan.ships[s].steps.len()
+            && self.leg.is_some_and(|(ls, _)| ls == s)
+        {
+            self.leg = None;
+        }
         self.undo.push(plan.plan.clone());
         plan.edit(s, ship, changed);
         self.selected = None;
@@ -633,7 +664,7 @@ impl Shell {
     /// Shows `plan` from its first ship's start, the timeline fitted to
     /// it.
     pub fn load(&mut self, plan: Loaded) {
-        self.clock.seek(plan.start);
+        self.clock.seek(plan.epoch());
         self.plan = Some(plan);
         self.selected = None;
         self.leg = None;
@@ -933,7 +964,7 @@ impl Shell {
             let step = ship.items.get(k)?.step;
             ship.items
                 .iter()
-                .any(|i| i.step == step && i.kind == ItemKind::Leg)
+                .any(|i| i.step == step && is_leg(i))
                 .then_some((s, step))
         });
         if let Some((s, k)) = item {
@@ -1065,7 +1096,7 @@ impl Shell {
                 .path
                 .as_deref()
                 .and_then(|p| p.file_stem()?.to_str())
-                .unwrap_or(&p.name)
+                .unwrap_or(&p.plan.name)
                 .to_string(),
             None => "None".to_string(),
         }
@@ -1107,7 +1138,7 @@ impl App for Shell {
                 column(
                     [
                         Some(panel::panel(
-                            &plan.name,
+                            &plan.plan.name,
                             panel::rows(self.eph, &plan.ships, self.clock.t, self.selected),
                         )),
                         match &self.editor {
@@ -1216,7 +1247,7 @@ impl App for Shell {
         if self.plan_open {
             let mut options: Vec<(String, String)> = crate::plan::plans_in(&missions_dir())
                 .into_iter()
-                .map(|(name, _)| (name.clone(), name))
+                .map(|(name, _)| (format!("file:{name}"), name))
                 .collect();
             options.push((NEW_PLAN.to_string(), "New plan".to_string()));
             layers.push(select_menu(PLAN_KEY, options));
@@ -1300,11 +1331,17 @@ impl App for Shell {
                 .leg_item(leg)
                 .and_then(|(_, item)| Some(item.options.get(i)?.days))
         {
-            self.pin(leg, None, vec![days]);
+            self.pin(
+                leg,
+                Some(Pin {
+                    depart: None,
+                    days: Some(days),
+                }),
+            );
         } else if event.is_click_or_activate(options::UNPIN_KEY)
             && let Some(leg) = self.leg
         {
-            self.pin(leg, None, Vec::new());
+            self.pin(leg, None);
         } else if slider::apply_event(
             &mut self.options.budget,
             &event,
@@ -1348,7 +1385,13 @@ impl App for Shell {
                 Some(sweep.options.as_ref()?.as_ref().ok()?.get(i)?.days)
             })
         {
-            self.pin(leg, None, vec![days]);
+            self.pin(
+                leg,
+                Some(Pin {
+                    depart: None,
+                    days: Some(days),
+                }),
+            );
         } else if self.timeline_event(&event, cx) {
             // The timeline took it.
         } else if self.settings.apply(&event) {
@@ -1383,7 +1426,10 @@ impl App for Shell {
             let dir = missions_dir();
             let loaded = match id {
                 NEW_PLAN => Ok(Loaded::empty("New plan", crate::plan::new_plan_path(&dir))),
-                id => Loaded::open(&dir.join(format!("{id}.toml"))),
+                id => match id.strip_prefix("file:") {
+                    Some(stem) => Loaded::open(&dir.join(format!("{stem}.toml"))),
+                    None => Err(format!("no plan {id:?}")),
+                },
             };
             match loaded {
                 Ok(plan) => self.load(plan),
@@ -1478,4 +1524,9 @@ impl App for Shell {
 /// Where plans are opened from and new ones saved: `data/missions/`.
 fn missions_dir() -> std::path::PathBuf {
     crate::data_dir().join("missions")
+}
+
+/// Whether `item` is a leg, designed or failed.
+fn is_leg(item: &Item) -> bool {
+    matches!(item.kind, ItemKind::Leg | ItemKind::Failed(_))
 }

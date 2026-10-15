@@ -299,3 +299,45 @@ fn an_edited_ship_is_designed_again() {
     plan.wait();
     assert_same(&plan.ships[0].items, &fresh.ships[0].items);
 }
+
+/// A ship's start changed to a station, then its first leg edited: it is
+/// designed from the new start (the old design's checkpoints dropped),
+/// as a fresh design of the edited plan is.
+#[test]
+fn a_new_start_drops_the_old_checkpoints() {
+    let eph = Ephemeris::standard();
+    let src = SORTIE.replace(
+        r#"start = { at = "nrho", epoch = "2045-03-05" }"#,
+        r#"start = { at = "llo", epoch = "2045-03-05" }"#,
+    );
+    let mut plan = Loaded::start(Plan::parse(&src, eph, Places::standard()).unwrap());
+    // From low lunar orbit, the first leg goes to low lunar orbit: change
+    // it to the south pole's, so the plan designs.
+    let mut ship = plan.plan.ships[0].clone();
+    ship.steps.remove(0);
+    plan.edit(0, ship, Some(0));
+    plan.wait();
+    // The start to the NRHO, and the first leg there back.
+    let mut fresh_plan = Plan::parse(SORTIE, eph, Places::standard()).unwrap();
+    let mut ship = plan.plan.ships[0].clone();
+    ship.start = fresh_plan.ships[0].start.clone();
+    ship.steps.insert(0, fresh_plan.ships[0].steps[0].clone());
+    plan.edit(0, ship.clone(), None);
+    plan.wait();
+    // Then the first leg's durations: the edit that resumed from the old
+    // start (stepping back from the station's checkpoint onto it).
+    if let Step::Go(go) = &mut ship.steps[0] {
+        go.days = vec![1.0];
+    }
+    plan.edit(0, ship.clone(), Some(0));
+    plan.wait();
+    fresh_plan.ships[0] = ship;
+    let mut fresh = Loaded::start(fresh_plan);
+    fresh.wait();
+    assert!(
+        plan.ships[0].failure.is_none(),
+        "{:?}",
+        plan.ships[0].failure
+    );
+    assert_same(&plan.ships[0].items, &fresh.ships[0].items);
+}

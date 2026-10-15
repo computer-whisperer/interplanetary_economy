@@ -6,6 +6,47 @@ left out; of step 6, part 9's spins and small bodies' maps open, parts
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
 at the end).
 
+- Step 7, a review of parts 2–5 (a sub-agent, with runtime probes)
+  found, all fixed:
+  - Picking an option overwrote the leg's own durations and window, so
+    Unpin lost them (the published Mars 2031 leg pinned and unpinned
+    flew 291.66 days at 6.641 km/s, not its 190 at 7.512). Choices are
+    now a `pin` beside `days` and `window` (replacing part 3's
+    `depart`); Unpin takes the pin away. Within a system a pinned
+    duration is designed alone and the offered ones stay in the file.
+  - A pin in the porkchop's first column, rounded to the minute, could
+    fall before the ship is ready and fail; a pin within half a minute
+    of it now leaves when the ship is ready.
+  - Designed again from its start, a ship kept its old start's
+    checkpoint, and a later edit to its first leg could go on from it
+    (a start moved from low lunar orbit to the NRHO, then the first leg
+    edited: "llo → llo", no design converged). Fixed; the test fails
+    when undone.
+  - A failure was kept when it hung on the steps after it (a station
+    reached, its visit's length from the next leg): `resume_from` no
+    longer goes on from where a plan had stopped, and steps back once,
+    not to the first non-station checkpoint, from a station.
+  - A selected leg that failed showed "designing" forever and could
+    not be selected again; its options now say why it failed.
+  - A small body's leg whose ship is ready before 2040 panicked in the
+    synodic period (and its porkchop would have had no rows): crossings
+    take their periods and durations where the ephemeris knows both
+    ends, and porkchops without rows are none.
+  - Window lanes were keyed by their rounded labels; now by their ends
+    exactly. Lanes and porkchops share one shading.
+  - Lesser: a porkchop kept from before an edit was clickable while
+    the leg was designed again (now none is offered until it is); a
+    one-day window drew a one-column porkchop (now at least 120 days
+    from its opening); sweeps of short legs folded to four durations
+    (now to two significant figures); a second sweep of a leg could
+    take the first's result (sweeps have ids); superseded designers
+    finished a leg before stopping (they check before each step, and
+    stop when the plan is closed); a plan file named `new.toml` clashed
+    with "New plan"; the plan's start went stale after start edits; a
+    file opening with a blank line lost its comments.
+  - Not changed: porkchop rows are the date search's default durations,
+    so a leg's own `days` outside them fall off the chart.
+
 - Step 7, part 7: beyond picking (asked 2026-10-15). Tried and kept,
   for legs between planets:
   - A Δv budget: a slider under the porkchop, from its least Δv to 1.5
@@ -142,7 +183,8 @@ at the end).
     saves over it (notes on legs are kept).
   - `depart` pins legs between planets and events; within a system it
     is refused (set a window), as is a pin before the ship is ready. A
-    pinned leg tries the cheapest durations at its date.
+    pinned leg tries the cheapest durations at its date. (Replaced by
+    `pin` after the review of parts 2–5.)
   - The top bar's Plan menu lists `data/missions/` and "New plan"
     (empty, saved as `new-plan.toml`, or `new-plan-2.toml`, … if
     taken); Ctrl+S saves to the plan's file, with a toast.
@@ -1010,9 +1052,11 @@ lines); Hushfold's distance-field text and polychora's label declutter
    - `days` is required within a system. Between planets it is
      optional; without it the leg takes the cheapest date and duration
      by patched conics in the window.
-   - `depart = "2045-03-01T12:00"` (added in step 7) pins the departure
-     of a leg between planets, or of a landing or an ascent: the window
-     is that instant, and a leg takes the cheapest of `days` then.
+   - `pin = { depart = "2045-03-01T12:00", days = 190 }` (added in step
+     7) chooses one of a leg's options over its `days` and `window`,
+     which stay: the departure of a leg between planets or of an event
+     (the window becomes that instant), the duration of any leg; either
+     may be left out.
 3. **One entry point** (`mission::Planner`) by the kinds of the two
    ends:
    - a low orbit and its body's surface: an event priced by `surface`

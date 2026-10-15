@@ -183,7 +183,7 @@ fn ships_edited() {
     let eph = Ephemeris::standard();
     let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap());
     plan.wait();
-    let mut app = Shell::new(plan.start);
+    let mut app = Shell::new(plan.epoch());
     app.load(plan);
     let mut h = Harness::new(&app, (1400.0, 1000.0));
     h.draw(&mut app);
