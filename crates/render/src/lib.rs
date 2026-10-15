@@ -16,6 +16,7 @@ mod lines;
 pub mod maps;
 pub mod offscreen;
 pub mod paths;
+pub mod photosphere;
 mod post;
 pub mod scene;
 pub mod shape;
@@ -165,6 +166,8 @@ pub struct Renderer {
     spheres: Storage,
     points: Storage,
     markers: Storage,
+    /// Glowing spheres' limbs and surfaces (`photosphere::GLOWS_SIZE`).
+    glows: wgpu::Buffer,
     /// By the scene's sets of paths.
     path_sets: Vec<lines::PathSet>,
     layout: wgpu::BindGroupLayout,
@@ -212,6 +215,14 @@ impl Renderer {
                 ),
                 entry(1, storage),
                 entry(2, storage),
+                entry(
+                    3,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ],
         });
         let path_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -293,6 +304,12 @@ impl Renderer {
             spheres: Storage::new(device, "spheres"),
             points: Storage::new(device, "points"),
             markers: Storage::new(device, "markers"),
+            glows: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("glows"),
+                size: photosphere::GLOWS_SIZE,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             path_sets: Vec::new(),
             groups: None,
             sphere_pipeline: pipeline(
@@ -366,6 +383,7 @@ impl Renderer {
         grew |= self.spheres.write(device, queue, &inst.spheres);
         grew |= self.points.write(device, queue, &inst.points);
         grew |= self.markers.write(device, queue, &inst.markers);
+        photosphere::write(queue, &self.glows, &inst.glows, &inst.features);
         if grew || self.groups.is_none() {
             let group = |dots: &Storage| {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -383,6 +401,10 @@ impl Renderer {
                         wgpu::BindGroupEntry {
                             binding: 2,
                             resource: dots.buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: self.glows.as_entire_binding(),
                         },
                     ],
                 })

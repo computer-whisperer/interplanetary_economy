@@ -302,6 +302,7 @@ impl Shell {
             paths: vec![self.paths.clone(), self.orbits.paths()],
             poses,
             now: t.seconds(),
+            frame_s: self.clock.stepped_s,
             line_px: LINE_PX * px,
             look: render::Look {
                 exposure: self.exposure.value(self.target_exposure()),

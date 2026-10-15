@@ -30,6 +30,9 @@ pub struct Clock {
     pub paused: bool,
     /// The span the ephemeris covers.
     pub span: (Epoch, Epoch),
+    /// Simulated seconds the last tick advanced (0 paused, or held at the
+    /// span's end): what a frame spans.
+    pub stepped_s: f64,
 }
 
 impl Clock {
@@ -39,14 +42,17 @@ impl Clock {
             rate: 0,
             paused: false,
             span,
+            stepped_s: 0.0,
         }
     }
 
     /// Advances by `dt` seconds of wall time, within the span.
     pub fn tick(&mut self, dt: f64) {
+        let before = self.t;
         if !self.paused {
             self.seek(Epoch(self.t.0 + dt * RATES[self.rate].0 / SECONDS_PER_DAY));
         }
+        self.stepped_s = (self.t.0 - before.0) * SECONDS_PER_DAY;
     }
 
     /// Moves to `t`, within the span.

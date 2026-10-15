@@ -269,7 +269,8 @@ fn disk(
             AU_KM * px * across / 2.0,
             Surface::Emissive {
                 radiance: [radiance; 3],
-                darkening: [0.0; 3],
+                limb: render::photosphere::EVEN,
+                photosphere: None,
             },
         )],
         look: Look {
@@ -421,7 +422,8 @@ fn the_suns_lift_dims_it_once_at_every_size() {
                     AU_KM * px * radius_px,
                     Surface::Emissive {
                         radiance: [100.0; 3],
-                        darkening: [0.0; 3],
+                        limb: render::photosphere::EVEN,
+                        photosphere: None,
                     },
                 )],
                 look: Look {

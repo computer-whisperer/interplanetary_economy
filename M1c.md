@@ -2,7 +2,8 @@
 
 Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
 left out); now step 6, part 9 (shapes, small bodies' maps and spins),
-and part 10 (the eye's glare) done; next, step 7 (editing).
+and parts 10 (the eye's glare) and 11 (the Sun's photosphere) done;
+next, step 7 (editing).
 
 - Step 5: labels on the map view, picking by click, and the plan's
   panel. As built, see the step 5 plan below; where it differs:
@@ -1655,3 +1656,136 @@ pixels, not the viewer's sight. Replaced by the viewer's eye's glare
 - Found: the Sun drawn as a point (past ~4 au at the default field of
   view) took the body lift with the planets, 17 stops; it takes its
   own setting instead.
+
+## Step 6, part 11 plan (2026-10-15): the Sun's photosphere
+
+The Sun is a disk of one radiance, darkened toward its limb by a linear
+law per channel. It gets a surface and its measured colors across the
+disk (the user, 2026-10-15: "a better texture, and the right color
+distribution").
+
+**Decided with the user (2026-10-15): procedural, calibrated to
+measurements.** Rejected: a global map stitched from SDO/HMI continuum
+images, whose spots would be one past rotation's frozen into 2045, at
+~1,000 km a texel (granulation blurred when near).
+
+**Color.** The renderer's white is the Sun's whole-disk light
+(`tools/color.py`): the disk's mean stays white, at the radiance the
+scene is lit by. Across the disk, each channel's center-to-limb profile
+comes from the measured limb darkening by wavelength, taken through the
+channels (`tools/sun/`): a polynomial in μ per channel, the disk's mean
+kept. Contrasts on the surface (granulation, spots, faculae) are given
+as temperatures, and their colors follow through the channels too (a
+table of each channel's intensity against temperature, relative to the
+photosphere's).
+
+**The surface**, evaluated per pixel in the sphere's pass, in the Sun's
+body frame (its IAU rotation, 14.1844°/day: the Carrington rate), each
+feature a temperature turned into the channels' light by a table
+(3,000–7,500 K every 100 K, 1 at the quiet photosphere's 6,247 K: the
+disk center's brightness temperature in green):
+1. Granulation: cells on the sphere, their mean area 1.36 Mm² (Sánchez
+   Cuberes et al. 2000; the modal diameter ~1.4 Mm), each living ~6
+   min (Hirzberger et al. 1999's mean; exponentially distributed),
+   born small and shrinking away (each cell weighed in the cellular
+   distance by its life, so the pattern changes continuously). 255 K
+   rms, which gives 18% rms contrast in green at disk center, 15.5% in
+   red and 22.6% in blue (measured), against 3D simulations' 18%, 14%
+   and 25%
+   (Wedemeyer-Böhm and Rouppe van der Voort 2009); falling toward the
+   limb as their simulations do (×0.84 at μ 0.5, ×0.60 at 0.2, ×0.35
+   at 0.05). Faded out where a pixel spans more than ~0.35 Mm
+   (point-sampled, a granule needs ~4 pixels across, or it aliases),
+   and where a frame spans more than a few percent of a lifetime (time
+   warp).
+2. Active regions from a model of the solar cycle at the date:
+   - The sunspot number (version 2) as the sum of cycles in Hathaway
+     2011's shape (b from the amplitude in version 1 numbers, ×0.66):
+     cycle 25 from 2020.1 at 160.9 (SILSO's maximum, October 2024),
+     26 from 2030.7 at 140 (the middle of published predictions,
+     121–158; Gerçeker et al. 2025's maximum in June 2035), later
+     ones every 11.04 years at 179 (cycles 1–24's means). March 2045:
+     cycle 27's rise, SN ≈ 155.
+   - The visible hemisphere's spot area, 9.08 SN + 0.0114 SN² MSH
+     (Nagovitsyn and Osipova 2021): ~1,700 MSH then.
+   - Groups born at the rate that keeps that area, each day's births
+     from that day's seed (deterministic in the date); their largest
+     areas log-normal (Baumann and Solanki 2005: median 62.2 MSH, ln σ
+     = ln 2.45), capped at 5,000; growing over 2 days, then decaying
+     at 10 MSH/day (Gnevyshev–Waldmeier).
+   - Latitude: of the cycle chosen in proportion to the cycles' sunspot
+     numbers then, ±(28° e^(−t/90 months)) (Hathaway 2011, t from the
+     cycle's start), spread 1.5° + 3.8° (1 − e^(−A/400)) with A the
+     hemisphere's area (Hathaway 2015); either hemisphere alike.
+     Longitude uniform at birth, then carried at 14.551 − 2.87 sin²φ
+     °/day (Balthasar et al. 1986, spots), against the frame's rate.
+   - Each group a leader spot of 60% of its area and 1–3 followers
+     sharing the rest, the leader ahead in rotation and toward the
+     equator, their axis tilted by Joy's law, 0.27 φ ± 5° (Dasi-Espuig
+     et al. 2010), 3° + 0.008° A apart (made up: a 1,000 MSH group's
+     11°). Each spot an umbra of 0.4 its radius (penumbra 5–6× the
+     umbra's area: Hathaway 2013) at 4,000 K (12% of the quiet Sun at
+     600 nm; Maltby et al. 1986's darkest large cores 3,900 K; Borrero
+     and Ichimoto 2011: 5–25% in the visible) and a penumbra at 5,765 K
+     (75% at 600 nm; theirs 65–85%). Spot shares, follower counts and
+     separations are made up; real umbrae of small spots run brighter.
+   - Faculae: a plage around each group, 10× its spots' area (SATIRE's
+     filling factors at maximum, ~3% against ~0.3%), lasting twice as
+     long, its excess temperature against μ from Yeo et al. 2013's fit
+     at 617 nm at a plage's 300 G (+9 K at disk center, +128 K at μ
+     0.4, +24 K at 0.1: 6–8% at its peak, near μ 0.3–0.4).
+3. The disk's mean is not renormalized: spots and faculae move the
+   Sun's light by ~0.1%, as they do (Kopp 2016).
+
+**Tests**, beside each part: each channel's profile against its
+integration; the disk's mean with no spots; granulation's contrast at
+full resolution, and its fade when under a pixel; the same date giving
+the same spots; spot area against the sunspot number, latitudes against
+the cycle's phase; a spot drifting with differential rotation.
+Screenshots: the Sun from 1 au, from 0.05 au, and from just over it.
+
+As built (2026-10-15), where it differs or adds:
+- The limb: the linear law it replaced had the center at 1.25, 1.29 and
+  1.33 of the mean and μ 0.1 at 0.58, 0.51 and 0.43; measured, 1.21,
+  1.25 and 1.32, and 0.54, 0.47 and 0.36 (the lines in the spectrum
+  change them under 0.3%). The 5th-order fits are exact to 4 places.
+- Granulation: every cell lives 6 min (the distribution's spread left
+  out), its life offset its own; its share of the cellular distance
+  0.5–1 and its brightness 0.3–1 with its life, and each granule's own
+  0.7–1; a dome, smoothstep(0, 0.8, 1 − F1/F2). Its mean and rms
+  measured on the GPU (0.227, 0.235). 255 K rms gives 18.1% in green,
+  15.5% in red and 22.6% in blue, the disk 1.2% brighter. Faded from a
+  pixel spanning 0.15 of a grid spacing to 0.6, and from a frame
+  spanning 3% of a life to 15%.
+- Spots are smooth round umbrae and penumbrae (no penumbral filaments),
+  each covering its share of a pixel's footprint (a disk of its area,
+  or of a twentieth of the spot's radius, softening a near spot's
+  edge), blended in light; faculae a Gaussian plage around each group.
+  The date's surface moves the disk's light by +0.01% to +0.11%
+  whether the disk is 450 pixels in radius or 4. Found in review:
+  spread over a pixel's width and blended in temperature, a spot under
+  a pixel took half of it (−2.4% for a 4-pixel disk).
+- Groups' lives: the Gnevyshev–Waldmeier rule's linear decay gives the
+  largest (3,000 MSH) ~300 days, against ~100–135 observed for giant
+  groups (the review's reading; Hathaway and Choudhary 2008's decay
+  rising with area, a secondary source's, would shorten them). The
+  area over a day runs 0.25–1.9× its target (5–95%); over 60 years,
+  0.96. Kept, noted.
+- Latitudes fold at the equator. The model's groups are drawn once a
+  day (0.18 ms each time).
+- The model: SN 162 at October 2024 (SILSO's 160.9), 141 at June 2035,
+  155 in March 2045; then ~15 groups on the whole Sun (~7 seen: version
+  1's Wolf number gives ~6), the spot area over 2046 within 17% of its
+  target, latitudes 19.5° early in a cycle and 8.6° late.
+- On the GPU the glows are a uniform buffer (a stage's storage buffers
+  are at most 8): at most 4 glowing spheres and 512 features; features
+  under the eye's horizon on the sphere are left out. The Sun filling a
+  1920×1080 view up close: 0.9 or 1.5 ms, frame to frame of the same
+  scene (0.09 ms plain), most of it the granulation.
+- Found in research: Yeo et al. 2013's fit's left vector runs (B/μ)⁰ to
+  (B/μ)³ (read as ¹ to ⁴, faculae came out at 1,000%).
+- Open: on SDR, the Sun's exposure key leaves its disk's center at 1.5×
+  the white, in the tonemap's shoulder, which washes its surface out
+  near (two stops down shows it); network and polar faculae; small
+  spots' brighter umbrae; eclipses of the Sun from a surface still take
+  its disk as even.

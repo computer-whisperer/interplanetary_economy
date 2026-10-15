@@ -40,8 +40,9 @@ struct Sphere {
     // The eye's height above the surface, |center| - radius, from 64-bit
     // values.
     altitude: f32,
-    // 1 for a sphere glowing with `color` itself (the Sun), 0 for one lit.
-    emissive: f32,
+    // For a sphere glowing with `color` itself (the Sun), 1 + its index in
+    // `glows`; 0 for one lit.
+    glow: u32,
     // Irradiance from the Sun, in units of 1 au's (lit spheres).
     irradiance: f32,
     // 1 where the quad is the whole screen.
@@ -50,8 +51,7 @@ struct Sphere {
     color: vec3<f32>,
     // Under 1 while it fades in from its point (scene.rs, `FADE_PX`).
     opacity: f32,
-    // Unit, toward the Sun; for a glowing sphere, its limb darkening's
-    // coefficients.
+    // Unit, toward the Sun (lit spheres).
     light: vec3<f32>,
     _pad: f32,
     // What a lit sphere's surface reflects is multiplied by, per channel
@@ -202,9 +202,61 @@ struct Piece {
     fractions: vec2<f32>,
 }
 
+// A glowing sphere's limb and surface (photosphere.rs, `GlowGpu`).
+struct Glow {
+    // The k-th coefficient of each channel's light at μ over its disk's
+    // mean, a polynomial in μ.
+    limb: array<vec4<f32>, 6>,
+    // The quiet surface's temperature, K, and the table of each channel's
+    // light against temperature (`count` entries from `first` K every
+    // `step`; 0 for no surface).
+    quiet: f32,
+    first: f32,
+    step: f32,
+    count: u32,
+    // Spots' umbrae's and penumbrae's temperatures, K.
+    umbra: f32,
+    penumbra: f32,
+    features_start: u32,
+    features_count: u32,
+    // The granulation's rms temperature, K (0 for none), its grid's
+    // spacing and the sphere's radius, km; how many of its cells' lives
+    // have passed (wrapping) and the share of the current one.
+    granulation_k: f32,
+    spacing_km: f32,
+    radius_km: f32,
+    cycle: u32,
+    phase: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+    // The faculae's excess temperature, K, at μ 0.1, 0.2, … 1.0.
+    facular: array<vec4<f32>, 3>,
+    temperatures: array<vec4<f32>, 48>,
+}
+
+// A spot or a facula (photosphere.rs, `FeatureGpu`): its center in the
+// body frame, its radius (radians on the sphere), its kind (0 a spot, 1
+// a facula), and a spot's umbra's share of its radius or a facula's
+// strength.
+struct Feature {
+    center: vec3<f32>,
+    radius: f32,
+    kind: u32,
+    share: f32,
+    _pad: vec2<f32>,
+}
+
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> spheres: array<Sphere>;
 @group(0) @binding(2) var<storage, read> dots: array<Dot>;
+// Glowing spheres' (photosphere.rs: `MAX_GLOWS`, `MAX_FEATURES`).
+struct Glows {
+    glows: array<Glow, 4>,
+    features: array<Feature, 512>,
+}
+
+@group(0) @binding(3) var<uniform> glow_data: Glows;
 // A sphere's maps (white, flat and empty where it has none):
 // equirectangular, east longitude from −180° at the left, north up.
 @group(3) @binding(0) var color_map: texture_2d<f32>;
@@ -322,6 +374,8 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
         p = d * (q / (b + sqrt(disc)));
     }
     let up = normalize(p - s.center);
+    // How far the surface turns across a pixel, radians.
+    let up_rate = max(length(dpdx(up)), length(dpdy(up)));
     // Where that is on the maps, and how fast that changes across the
     // screen (before any pixel is discarded), the longitude's change
     // taken across the date line the short way.
@@ -359,10 +413,10 @@ fn sphere_fs(in: SphereOut) -> SphereFragment {
     var surface = vec3<f32>(0.0);
     if (ground) {
         surface = s.color;
-        if (s.emissive > 0.5) {
-            // The linear law, its disk's mean kept: I₀ = mean / (1 − u/3).
+        if (s.glow > 0u) {
+            let g = s.glow - 1u;
             let mu = max(dot(up, -d), 0.0);
-            surface = s.color * (vec3<f32>(1.0) - s.light * (1.0 - mu)) / (vec3<f32>(1.0) - s.light / 3.0);
+            surface = s.color * glow_limb(g, mu) * photosphere(g, transpose(s.axes) * up, mu, up_rate);
         } else {
             // Sunlight reaching the ground: past other bodies, and
             // through the air (the scaled medium's direct beam, and its
@@ -1466,3 +1520,163 @@ fn star_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u
 // of its flux a pixel can take (centered on it).
 const SPOT_SIGMA: f32 = 0.6;
 const SPOT_PEAK: f32 = 0.354;
+
+// A glowing sphere's surface (photosphere.rs; M1c.md, step 6, part 11
+// plan).
+
+// Each channel's light at `mu` over its disk's mean, for glow `g`.
+fn glow_limb(g: u32, mu: f32) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
+    var m = 1.0;
+    for (var k = 0u; k < 6u; k++) {
+        light += glow_data.glows[g].limb[k].xyz * m;
+        m *= mu;
+    }
+    return light;
+}
+
+// Each channel's light at `t` K over the quiet surface's, by glow `g`'s
+// table.
+fn glow_light(g: u32, t: f32) -> vec3<f32> {
+    let last = glow_data.glows[g].count - 1u;
+    let x = clamp((t - glow_data.glows[g].first) / glow_data.glows[g].step, 0.0, f32(last));
+    let k = min(u32(x), max(last, 1u) - 1u);
+    return mix(glow_data.glows[g].temperatures[k].xyz, glow_data.glows[g].temperatures[min(k + 1u, last)].xyz, x - f32(k));
+}
+
+// The faculae's excess temperature at `mu`, K: between the table's
+// entries at μ 0.1, 0.2, … 1.0, held under 0.1.
+fn facular_excess(g: u32, mu: f32) -> f32 {
+    let x = clamp(mu * 10.0 - 1.0, 0.0, 9.0);
+    let k = min(u32(x), 8u);
+    let a = glow_data.glows[g].facular[k / 4u][k % 4u];
+    let b = glow_data.glows[g].facular[(k + 1u) / 4u][(k + 1u) % 4u];
+    return mix(a, b, x - f32(k));
+}
+
+// The granulation's rms at `mu` over its rms at disk center: Wedemeyer-
+// Böhm and Rouppe van der Voort 2009's simulations (their Fig. 8), ×0.84
+// at μ 0.5, ×0.60 at 0.2, ×0.35 at 0.05 and nearer the limb.
+fn granulation_falloff(mu: f32) -> f32 {
+    if (mu < 0.2) {
+        return mix(0.35, 0.60, saturate((mu - 0.05) / 0.15));
+    }
+    if (mu < 0.5) {
+        return mix(0.60, 0.84, (mu - 0.2) / 0.3);
+    }
+    return mix(0.84, 1.0, (mu - 0.5) / 0.5);
+}
+
+fn hash_u32(x: u32) -> u32 {
+    var h = x * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    return (h >> 22u) ^ h;
+}
+
+// Grid cell `c`'s hash in life `k`.
+fn cell_hash(c: vec3<i32>, k: u32) -> u32 {
+    return hash_u32(bitcast<u32>(c.x) ^ hash_u32(bitcast<u32>(c.y) ^ hash_u32(bitcast<u32>(c.z) ^ hash_u32(k))));
+}
+
+// A hash's top 24 bits in [0, 1).
+fn unit_of(h: u32) -> f32 {
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// The granulation's pattern's mean and rms (`granules`), measured on
+// the GPU (crates/sandbox/tests/sun.rs, `granulation_has_the_measured_
+// contrast`, holds the contrast they give).
+const GRANULE_MEAN: f32 = 0.227;
+const GRANULE_RMS: f32 = 0.235;
+
+// Granulation at `q` (the surface in grid spacings, body frame): each
+// grid cell's granule lives `phase`'s span, offset by its own, born
+// half-size and dim, grown, shrunk and dimmed away and born again
+// elsewhere in its cell (its share of the cellular distance and its
+// brightness following its life, so that the pattern changes
+// continuously, births and deaths in the lanes). Each granule a dome
+// brightest at its center, of its own brightness, falling into the dark
+// lanes; zero mean, unit rms.
+fn granules(q: vec3<f32>, cycle: u32, phase: f32) -> f32 {
+    let base = vec3<i32>(floor(q));
+    var d1 = 1e9;
+    var d2 = 1e9;
+    var s1 = 0.0;
+    for (var z = -1; z <= 1; z++) {
+        for (var y = -1; y <= 1; y++) {
+            for (var x = -1; x <= 1; x++) {
+                let c = base + vec3<i32>(x, y, z);
+                let t = phase + unit_of(cell_hash(c, 0x9e3779b9u));
+                let h = cell_hash(c, cycle + u32(floor(t)));
+                let jitter = vec3<f32>(unit_of(h), unit_of(hash_u32(h)), unit_of(hash_u32(h ^ 0x68bc21ebu)));
+                let life = sin(PI * fract(t));
+                let dist = length(vec3<f32>(c) + jitter - q) / (0.5 + 0.5 * life);
+                if (dist < d1) {
+                    d2 = d1;
+                    d1 = dist;
+                    s1 = life * (0.7 + 0.3 * unit_of(hash_u32(h ^ 0x2c1b3c6du)));
+                } else if (dist < d2) {
+                    d2 = dist;
+                }
+            }
+        }
+    }
+    let v = smoothstep(0.0, 0.8, 1.0 - d1 / d2) * (0.3 + 0.7 * s1);
+    return (v - GRANULE_MEAN) / GRANULE_RMS;
+}
+
+// What glow `g`'s surface makes of each channel's light at `n` (the body
+// frame's unit normal), seen at `mu`, where the surface turns `rate`
+// radians across a pixel: granulation (faded out from where a pixel spans
+// 0.15 of its grid's spacing to 0.6, before it aliases), faculae
+// and spots, each a temperature, through the table.
+fn photosphere(g: u32, n: vec3<f32>, mu: f32, rate: f32) -> vec3<f32> {
+    if (glow_data.glows[g].count == 0u) {
+        return vec3<f32>(1.0);
+    }
+    var t = glow_data.glows[g].quiet;
+    let rms = glow_data.glows[g].granulation_k;
+    if (rms > 0.0) {
+        let spacings = glow_data.glows[g].radius_km / glow_data.glows[g].spacing_km;
+        let fade = 1.0 - smoothstep(0.15, 0.6, rate * spacings);
+        if (fade > 0.0) {
+            t += rms * fade * granulation_falloff(mu) * granules(n * spacings, glow_data.glows[g].cycle, glow_data.glows[g].phase);
+        }
+    }
+    // Faculae warm the surface; spots cover their share of the pixel, in
+    // light: its footprint taken as a disk of its area (or of a twentieth
+    // of the spot's radius, softening a near spot's edge), each spot's and
+    // umbra's share of it covered (`covered`), so that one under a pixel
+    // takes its area's light.
+    var plage = 0.0;
+    var pen = 0.0;
+    var umb = 0.0;
+    let foot = rate / sqrt(PI);
+    let start = glow_data.glows[g].features_start;
+    for (var j = 0u; j < glow_data.glows[g].features_count; j++) {
+        let f = glow_data.features[start + j];
+        let dist = length(n - f.center);
+        if (f.kind == 1u) {
+            let x = dist / f.radius;
+            if (x < 3.0) {
+                plage += f.share * exp(-x * x);
+            }
+            continue;
+        }
+        let soft = max(foot, 0.05 * f.radius);
+        if (dist >= f.radius + soft) {
+            continue;
+        }
+        let umbra = f.share * f.radius;
+        pen += covered(soft, f.radius, dist);
+        umb += covered(max(foot, 0.05 * umbra), umbra, dist);
+    }
+    pen = min(pen, 1.0);
+    umb = min(umb, pen);
+    t += facular_excess(g, mu) * min(plage, 1.0);
+    let light = glow_light(g, t);
+    if (pen <= 0.0) {
+        return light;
+    }
+    return light * (1.0 - pen) + glow_light(g, glow_data.glows[g].penumbra) * (pen - umb) + glow_light(g, glow_data.glows[g].umbra) * umb;
+}

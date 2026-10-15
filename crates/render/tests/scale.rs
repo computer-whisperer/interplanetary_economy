@@ -102,7 +102,8 @@ fn moon_limb_from_low_orbit() {
                 MOON_RADIUS,
                 Surface::Emissive {
                     radiance: [1.0; 3],
-                    darkening: [0.0; 3],
+                    limb: render::photosphere::EVEN,
+                    photosphere: None,
                 },
             )],
             ..Default::default()
@@ -162,7 +163,8 @@ fn radiance_has_its_units() {
             695_700.0,
             Surface::Emissive {
                 radiance: [sun_radiance; 3],
-                darkening: [0.0; 3],
+                limb: render::photosphere::EVEN,
+                photosphere: None,
             },
         )],
         ..Default::default()
@@ -415,7 +417,8 @@ fn the_point_fades_into_the_disk() {
 
 /// A glowing sphere darkened toward its limb keeps its flux: its pixels,
 /// each weighted by the sky it subtends, sum to the even disk's within
-/// 0.3%, while its center is brighter by 1 / (1 − u/3).
+/// 0.3%, while its center is brighter by its polynomial's sum (here the
+/// linear law's, 1 / (1 − u/3)).
 #[test]
 fn limb_darkening_keeps_the_flux() {
     let gpu = Offscreen::new().expect("a GPU");
@@ -443,7 +446,9 @@ fn limb_darkening_keeps_the_flux() {
             .sum()
     };
     let mut seen = Vec::new();
-    for darkening in [[0.0; 3], u] {
+    // I(μ) / mean = (1 − u (1 − μ)) / (1 − u/3).
+    let linear = u.map(|u| [1.0 - u, u, 0.0, 0.0, 0.0, 0.0].map(|a| a / (1.0 - u / 3.0)));
+    for limb in [render::photosphere::EVEN, linear] {
         let scene = Scene {
             camera: Some(camera),
             spheres: vec![Sphere::plain(
@@ -451,7 +456,8 @@ fn limb_darkening_keeps_the_flux() {
                 695_700.0,
                 Surface::Emissive {
                     radiance: [1.0; 3],
-                    darkening,
+                    limb,
+                    photosphere: None,
                 },
             )],
             ..Default::default()

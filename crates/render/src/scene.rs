@@ -10,6 +10,7 @@ use crate::camera::{Camera, NEAR_KM};
 use crate::glare::Eye;
 use crate::maps::{Maps, Shading, SurfaceGpu};
 use crate::paths::{MAX_POSES, Paths, Pose, split};
+use crate::photosphere::{FeatureGpu, GlowGpu, Photosphere};
 use crate::sky::Sky;
 use bytemuck::{Pod, Zeroable};
 use glam::{DMat3, DVec3};
@@ -67,6 +68,9 @@ pub struct Scene {
     /// The moment drawn, s on the paths' time axis: before it they take
     /// their past colors.
     pub now: f64,
+    /// Seconds of `now` a frame spans (time warp; 0 paused): what changes
+    /// faster averages out (a glowing sphere's granulation).
+    pub frame_s: f64,
     /// Lines' width, pixels.
     pub line_px: f32,
 }
@@ -190,16 +194,19 @@ impl Sphere {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Surface {
     /// Lambertian with this albedo, lit by the Sun.
     Lit([f32; 3]),
-    /// Glowing (the Sun): its disk's mean radiance, darkened toward the
-    /// limb by the linear law, I(μ) = I₀ (1 − u (1 − μ)), with `darkening`
-    /// u per channel (0: even).
+    /// Glowing (the Sun): its disk's mean radiance; each channel's light
+    /// at μ over that mean, a polynomial in μ from μ⁰ (its disk's mean 1:
+    /// Σ 2 aₖ / (k + 2); [`EVEN`](crate::photosphere::EVEN) for an even
+    /// disk); and its surface, if
+    /// any.
     Emissive {
         radiance: [f32; 3],
-        darkening: [f32; 3],
+        limb: [[f32; 6]; 3],
+        photosphere: Option<Arc<Photosphere>>,
     },
 }
 
@@ -260,7 +267,9 @@ pub struct SphereGpu {
     pub center: [f32; 3],
     pub radius: f32,
     pub altitude: f32,
-    pub emissive: f32,
+    /// 1 + its glow's index (`Instances::glows`) for a glowing sphere; 0
+    /// for a lit one.
+    pub glow: u32,
     pub irradiance: f32,
     pub fullscreen: f32,
     pub color: [f32; 3],
@@ -315,6 +324,9 @@ pub struct Instances {
     pub maps: Vec<Option<Arc<Maps>>>,
     pub points: Vec<DotGpu>,
     pub markers: Vec<DotGpu>,
+    /// Glowing spheres' limbs and surfaces, and their features.
+    pub glows: Vec<GlowGpu>,
+    pub features: Vec<FeatureGpu>,
 }
 
 fn f32x3(v: DVec3) -> [f32; 3] {
@@ -623,27 +635,37 @@ impl Scene {
                     [c.x as f32, c.y as f32, c.z as f32, 1.0]
                 })
             });
-            let (emissive, color, irradiance, light) = match s.surface {
+            let (glow, color, irradiance, light) = match &s.surface {
                 Surface::Lit(albedo) => {
-                    let (albedo, irradiance, light, _) = lit(albedo);
-                    (0.0, albedo, irradiance as f32, f32x3(cam.rotate(light)))
+                    let (albedo, irradiance, light, _) = lit(*albedo);
+                    (0, albedo, irradiance as f32, f32x3(cam.rotate(light)))
                 }
-                // For a glowing sphere, `light` holds its darkening.
                 Surface::Emissive {
                     radiance,
-                    darkening,
-                } => (
-                    1.0,
-                    radiance.map(|c| c * self.look.sun_lift),
-                    0.0,
-                    darkening,
-                ),
+                    limb,
+                    photosphere,
+                } => {
+                    let eye = s.axes.transpose() * (cam.eye - s.center) / s.radius;
+                    out.glows.push(crate::photosphere::glow(
+                        limb,
+                        photosphere.as_deref(),
+                        (self.now, self.frame_s),
+                        eye,
+                        &mut out.features,
+                    ));
+                    (
+                        out.glows.len().min(crate::photosphere::MAX_GLOWS) as u32,
+                        radiance.map(|c| c * self.look.sun_lift),
+                        0.0,
+                        [0.0; 3],
+                    )
+                }
             };
             out.spheres.push(SphereGpu {
                 center: f32x3(v),
                 radius: bound as f32,
                 altitude: (d - bound) as f32,
-                emissive,
+                glow,
                 irradiance,
                 fullscreen: if billboard.is_some() { 0.0 } else { 1.0 },
                 color,
