@@ -170,7 +170,7 @@ cargo test --workspace --locked
 ```
 
 CI runs these on each push to main and each pull request
-(`.github/workflows/ci.yml`). The render and sandbox tests draw on a
+(`.github/workflows/ci.yml`), on Rust 1.96.0. The render and sandbox tests draw on a
 GPU; CI's runners have none and draw on lavapipe, Mesa's Vulkan on the
 CPU. Locally, `VK_DRIVER_FILES` set to its ICD file and
 `LIBGL_ALWAYS_SOFTWARE=1` (else wgpu takes a GPU through OpenGL) do the

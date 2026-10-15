@@ -8,12 +8,16 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Rust is pinned (dtolnay/rust-toolchain@VERSION below): the version
+# rustfmt and clippy are held to, bumped by hand, so a new release's lints
+# do not fail CI on their own.
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -22,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -36,6 +40,6 @@ jobs:
       # The runners have no GPU: the render and sandbox tests draw on
       # lavapipe, Mesa's Vulkan on the CPU.
       - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
