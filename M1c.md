@@ -1,9 +1,10 @@
 # M1c — Creative sandbox and the map view
 
 Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
-left out); now step 6, part 9 (shapes, small bodies' maps and spins),
-and parts 10 (the eye's glare) and 11 (the Sun's photosphere) done;
-next, step 7 (editing).
+left out; of step 6, part 9's spins and small bodies' maps open, parts
+10, the eye's glare, and 11, the Sun's photosphere, done); now step 7,
+mission planning, grown from editing (decided 2026-10-15; step 7 plan,
+at the end).
 
 - Step 5: labels on the map view, picking by click, and the plan's
   panel. As built, see the step 5 plan below; where it differs:
@@ -305,7 +306,8 @@ next, step 7 (editing).
     the same trip from 2033-03-30 leaves low lunar orbit in a plane 166°
     off (3.2 km/s), and a departure for Mars on arrival in LEO is 85°
     off. Decided 2026-10-14: it stays reported through M1c and is fixed
-    before M1b (DESIGN.md, Milestones).
+    before M1b (DESIGN.md, Milestones); 2026-10-15: fixed in M1c, as
+    step 7's last part.
   - Long stays in a low orbit are sampled ~2,900 times a day, so a wait
     through a synodic period in LEO would be ~2 million samples. Step 4's
     lines will need a lighter form for long coasts.
@@ -347,7 +349,10 @@ In:
 - the 3D map view: playback with a time scrubber and time warp, reference
   frames, bodies, trajectories, labels, picking;
 - panels: the plan's legs, their Δv and durations, failures and why;
-- editing a leg's window or duration and re-planning it in place.
+- planning (step 7, grown from editing a leg's window or duration,
+  decided 2026-10-15): a timeline of the plan's ships, the windows
+  between planets, each leg's options along its frontier, editing and
+  re-planning in place, saving and loading plans.
 
 Out:
 
@@ -741,8 +746,10 @@ lines); Hushfold's distance-field text and polychora's label declutter
    - the bodies' orbits;
    - atmospheres, clouds and night lights;
    - relief, eclipses, rings and shape models.
-7. Editing: a leg's window or duration, re-planned in place; loading and
-   saving plans.
+7. Mission planning (step 7 plan, at the end): the timeline,
+   re-planning from the middle of a plan, plans written out, window
+   lanes, the options panel, editing, choices beyond picking, and legs
+   leaving a low orbit from the ship's own orbit.
 8. The gate.
 
 ### Step 1 plan (2026-10-14)
@@ -1789,3 +1796,125 @@ As built (2026-10-15), where it differs or adds:
   near (two stops down shows it); network and polar faculae; small
   spots' brighter umbrae; eclipses of the Sun from a surface still take
   its disk as even.
+
+## Step 7 plan (2026-10-15): mission planning
+
+Decided 2026-10-15: step 7 grows from editing a leg's window or duration
+into the planning interface, and comes before M1b. It takes from M3 the
+two panels that need no economy, the window calendar and the leg
+options panel (DESIGN.md, UI); inventory projections and the ledger
+stay in M3, after M1b. The choices offered are the autopilot's, along
+each leg's frontier; past them, other ways to choose are tried (part
+7); a burn editor stays out. M1b's first item, legs leaving a low orbit
+from the ship's own orbit, moves here, last.
+
+Each part is committed on its own.
+
+1. **Timeline** (`sandbox::timeline`), under the map and the panel,
+   replacing the scrubber.
+   - Its own time axis. It opens fitted to the plan (else to a year
+     about the clock); the wheel zooms about the pointer, from the
+     ephemeris's span down to an hour across; a drag on the lanes pans.
+     Ticks on a calendar ladder (years, months, days, hours), labeled
+     at the coarsest step that leaves room. A click or drag on the
+     axis's row seeks the clock. While playing, when the clock leaves
+     the span shown, the span pages after it.
+   - A lane per ship, its name in a gutter at left. Its items are bars:
+     legs, landings and ascents in their paths' colors (`paths`), stays
+     dimmer and thinner, a failure in its marker's color. Burns, flybys,
+     passes and jumps are ticks in their markers' colors. A bar is at
+     least 2 px wide.
+   - A cursor at the clock's time across the lanes.
+   - A click on a bar selects its item, as the panel and the map do,
+     and seeks the clock to where it landed; the selected item is
+     outlined. Hovering on a bar shows the item's label, dates and Δv.
+   - Built from damascene elements placed by a layout closure, as the
+     labels are, one keyed element per bar drawn, so that damascene
+     routes clicks, hovers and the wheel. Damascene 0.8's plot widget
+     has lanes and a time axis, but no bars and no color per mark.
+   - Lanes past the strip's height scroll; the strip takes at most a
+     third of the window.
+2. **Re-planning from the middle** (`orbit::mission`).
+   - Each item names the plan's step that made it; the stay before a
+     leg belongs to the leg.
+   - The planner keeps a checkpoint before each step: where the ship
+     is, since when, and when it is ready. A planner resumes from a
+     checkpoint with the ship's steps after it edited.
+   - Where an edit takes effect: at the edited step, except that a
+     station's visit is built long enough for the steps after it (its
+     waits, the next leg's window and longest duration), so an edit to
+     those takes effect at the leg that arrived at the station. An edit
+     to a ship's start takes effect at its start.
+   - In the sandbox each ship's design has a generation. An edit bumps
+     it, keeps the items before where it takes effect, and starts
+     designing from that checkpoint. A design of an older generation
+     finishes the leg it is on (a design cannot be interrupted) and its
+     items are dropped.
+3. **Plans written out** (`orbit::mission`).
+   - `Plan::to_toml`, which `Plan::parse` reads back to the same plan.
+     Places keep the TOML they were written as.
+   - `depart = "YYYY-MM-DD HH:MM"` pins a leg's departure, with one
+     duration in `days`: what choosing an option writes. The window and
+     the frontier shown stay those the leg has without the pin.
+   - The sandbox saves to the file it loaded (Ctrl+S) and opens plans
+     from `data/missions/` through a menu, or starts an empty one.
+4. **Window lanes**, under the ships' lanes.
+   - One per kind of leg between planets in the plan: its two ends, and
+     whether it arrives through the atmosphere.
+   - For each day's departures across the timeline's span, the least Δv
+     by patched conics over the durations, as the design's search
+     prices them (`interplanetary::patched`), on one sequential ramp
+     with a legend in km/s. Past a ceiling the lane is empty.
+   - Computed in the background a lane at a time, and kept. Each
+     ship's departure is marked in its lane.
+   - Measured first: the cost of a day of departures over the
+     durations.
+5. **Options panel**, for the selected leg, below the plan's list.
+   - Between planets: the porkchop over the leg's window (departure
+     against duration, shaded as the window lanes are, with contours at
+     round values); the dates the design tried, marked converged or
+     not; the one flown, ringed. A click on a cell pins the leg there
+     (part 3) and re-plans from it (part 2). The design keeps its grid
+     (`between`'s cells already are one) in the item.
+   - Within a system: Δv against duration at the offered durations. A
+     sweep (a dozen durations around them) is designed in the
+     background on request, its points shown as they converge. A click
+     on a point pins that duration.
+6. **Editing**, in the plan's panel.
+   - A leg's destination (a menu of places), window, durations and
+     aerocapture; a wait's days; a ship's start and epoch.
+   - Adding a leg or a wait after any item, removing one, moving one
+     up or down; adding, renaming and removing ships; undo.
+   - Each edit re-plans from where it takes effect; rows not yet
+     designed again say so.
+   - An edit that cannot be flown (a surface reached from an orbit
+     about another body, a window closing before the ship is ready)
+     says why at once, from the plan's own checks, without a design.
+7. **Beyond picking** (asked 2026-10-15: past the autopilot's options,
+   look for other ways to choose). To try, keeping what works and
+   listing the rest:
+   - goals rather than points: the cheapest leaving by a date,
+     arriving by a date, the fastest under a Δv; each a choice over the
+     frontier the leg already has;
+   - dragging a leg's bar on the timeline to move its departure,
+     snapping to designs;
+   - the next or the previous window, for a leg between planets;
+   - moving a ship's start moving its pinned legs with it.
+8. **Leaving a low orbit from the ship's own orbit** (from M1b, decided
+   2026-10-15). A leg that leaves a low orbit the ship arrived in by a
+   flown leg starts from that orbit: its plane fixed, its departure
+   time chosen in the window for its phase. Until then the jump is
+   reported (step 1 plan, item 4). It is playbook work, of a size not
+   yet known.
+9. **Tests and costs:**
+   - the timeline's mapping between time and pixels, its zoom about the
+     pointer and its ticks; bars drawn at their items' times within a
+     pixel (offscreen); a click on a bar selecting its item;
+   - a plan edited and re-planned from the middle gives the items a
+     fresh design of the edited plan gives;
+   - a plan written out and read back is the same plan;
+   - a porkchop's cell picked flies at that cell;
+   - the timeline's CPU time a frame with the published plan; a
+     re-plan after an edit, against gate item 5.
+
+Then step 8, the gate.

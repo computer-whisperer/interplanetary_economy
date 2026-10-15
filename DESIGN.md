@@ -1,6 +1,7 @@
 # Interplanetary Economy — MVP Design Sketch
 
-Status: draft, 2026-10-12; n-body sandbox and the 3D map view 2026-10-13.
+Status: draft, 2026-10-12; n-body sandbox and the 3D map view 2026-10-13;
+the planning panels moved into M1c 2026-10-15.
 Working title TBD.
 
 ## Vision (full game, for context)
@@ -346,9 +347,9 @@ is not planned.
 
 Around the map, minimal and information-dense:
 - **Window calendar:** a Gantt chart of upcoming windows per route, shaded by
-  Δv.
+  Δv. Built in M1c (step 7) as lanes of its timeline.
 - **Leg options panel** when planning: the Δv-versus-time frontier (a
-  porkchop for interplanetary legs).
+  porkchop for interplanetary legs). Built in M1c (step 7).
 - **Inventory projection** per place: stock over time with scheduled arrivals,
   departures and consumption, with projected stockouts highlighted. This is
   the main lead-time instrument.
@@ -405,15 +406,15 @@ Around the map, minimal and information-dense:
   loaded into the sandbox, flown by the autopilot and played back in the
   3D map view, with no economy. Before M1b, so that the view the game
   centers on is built and stress-tested before the progression mechanics.
+  Its step 7 is the planning interface (decided 2026-10-15): a timeline
+  of the plan's ships, the window calendar and the leg options panel
+  (from M3), editing and re-planning in place.
   - **Gate.** The legs M1a checked against published values fly and
     draw, and halo orbits close in the Earth–Moon frame. Zooming from 5 au
     to a low lunar orbit shows no jitter. A ship on every Mars window
     2040–2075 plays at a month per second at the display's refresh rate.
     HDR outputs use their headroom.
 - **M1b, headless sim core** on the sandbox.
-  - First, legs leaving a low orbit the ship arrived in start from its
-    own orbit (decided 2026-10-14): until then the planner reports the
-    jump and does not fly it (M1c.md, step 1).
   - Places, commodities, facilities, ships, rocket-equation costing,
     missions and standing routes flown by the autopilot.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.
@@ -439,7 +440,8 @@ Around the map, minimal and information-dense:
   - **Gate.** Pass: no single path wins a large majority of plausible draws,
     and first-five-year decisions differ across draws. Fail: retune or rethink
     before building any UI.
-- **M3, playable UI** on the core, around M1c's map view.
+- **M3, playable UI** on the core, around M1c's map view and planning
+  panels: inventory projections, the ledger, and the economy's actions.
 - **M4, contracts and firms;** A/B against direct-build-only.
 
 ## Deliberately out of the MVP
