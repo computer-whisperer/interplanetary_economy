@@ -202,6 +202,9 @@ fn a_ship_at_a_point_is_shown() {
 #[test]
 fn clicks_pick_what_they_land_on() {
     let gpu = render::offscreen::Offscreen::new().expect("a GPU");
+    // The anchors are compared between frames: a shape read between them
+    // would widen its body's (`bodies::extent`).
+    sandbox::maps::wait().expect("data/bodies reads");
     let eph = Ephemeris::standard();
     let moon = eph.lookup("moon").unwrap();
     let mut app = Shell::new(Epoch::from_ymd(2045, 3, 5));
