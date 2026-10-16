@@ -2837,12 +2837,8 @@ dependencies = [
  "clap",
  "highs",
  "orbit",
- "rand",
- "rand_chacha",
- "rand_distr",
  "rayon",
- "serde",
- "toml",
+ "sim",
 ]
 
 [[package]]
@@ -3408,6 +3404,9 @@ dependencies = [
  "anyhow",
  "clap",
  "orbit",
+ "rand",
+ "rand_chacha",
+ "rand_distr",
  "rayon",
  "serde",
  "toml",

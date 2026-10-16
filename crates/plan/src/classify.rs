@@ -1,7 +1,7 @@
 //! Which development path a plan follows.
 
 use crate::model::{Commodity, MUSD_PER_USD_T, Plan};
-use crate::params::Scenario;
+use crate::scenario::Scenario;
 use orbit::ephem::Ephemeris;
 use orbit::routes::RouteGraph;
 use std::fmt;

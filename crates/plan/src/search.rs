@@ -2,7 +2,7 @@
 //! exact solve and single drops. See M2.md, "Fixed costs".
 
 use crate::model::{Lp, Plan, ProgramSetup};
-use crate::params::Scenario;
+use crate::scenario::Scenario;
 use highs::HighsModelStatus;
 
 /// A program whose plants install less equipment than this, t, is not in

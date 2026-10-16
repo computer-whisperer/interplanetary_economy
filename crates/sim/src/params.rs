@@ -1,7 +1,9 @@
-//! The economy's parameters (`data/economy.toml`) and draws of them: a
-//! [`Scenario`] is one game's worth of concrete numbers.
+//! The economy's parameters (`data/economy.toml`) and the world's draw of
+//! them (M1b.md, step 2 plan, part 1): an [`Economy`] is one game's worth
+//! of concrete numbers, in their own units. M2's LP builds its periods
+//! from one (`plan::scenario`). The draw keeps M2's order, so M2's seeds
+//! give M2's worlds.
 
-use crate::calendar::{Calendar, DAYS_PER_YEAR};
 use orbit::ephem::{BodyKind, Ephemeris};
 use orbit::routes::{PlaceId, RouteGraph};
 use orbit::time::Epoch;
@@ -396,7 +398,7 @@ pub struct PropellantSpec {
 
 /// A kind of plant at one site, as drawn.
 #[derive(Clone, Debug)]
-pub struct FacilityOption {
+pub struct Facility {
     pub id: String,
     pub node: PlaceId,
     /// Per t/yr of rated output.
@@ -404,11 +406,12 @@ pub struct FacilityOption {
     /// Equipment, t per t/yr of output.
     pub alpha: f64,
     pub grade: f64,
-    pub build_periods: usize,
+    /// From installation to output.
+    pub build_months: f64,
     /// Cumulative output the deposit can yield, t.
     pub reserve: Option<f64>,
-    /// Indices into [`Scenario::programs`] that must be paid before the
-    /// plant is installed.
+    /// Indices into [`Economy::programs`] that must be finished before
+    /// the plant is installed.
     pub programs: Vec<usize>,
 }
 
@@ -425,27 +428,32 @@ pub enum ProgramKind {
 pub struct Program {
     pub id: String,
     pub kind: ProgramKind,
-    /// $M. A survey's is its mission cost divided by the prior probability
-    /// that the deposit has the resource: the expected cost of finding one.
+    /// $M.
     pub cost_musd: f64,
-    /// Spending is at most `cost_musd / lead_periods` per period.
-    pub lead_periods: usize,
+    /// From its start to the first plant it allows; spending is at most
+    /// `cost_musd / years` a year.
+    pub years: f64,
+    /// The probability that what a survey characterizes has the resource
+    /// at all; 1 for a technology.
+    pub prior: f64,
 }
 
+/// Third-party demand for one thing: Q = `ref_tpy` × `share` × (price /
+/// `ref_usd_per_kg`)^−`elasticity` in the start year, growing by `growth`
+/// a year, between the prices given.
 #[derive(Clone, Debug)]
-pub struct DemandSegment {
-    pub usd_per_kg: f64,
-    /// t/yr at the start; grows with the category.
-    pub tpy: f64,
-}
-
-#[derive(Clone, Debug)]
-pub struct DemandCategory {
+pub struct Demand {
     pub id: String,
     pub what: Demanded,
     pub nodes: Vec<PlaceId>,
-    pub segments: Vec<DemandSegment>,
+    pub ref_tpy: f64,
+    /// Of the row's demand, by its `split` (1 without one).
+    pub share: f64,
+    pub ref_usd_per_kg: f64,
+    pub elasticity: f64,
     pub growth: f64,
+    pub max_usd_per_kg: f64,
+    pub min_usd_per_kg: f64,
 }
 
 /// What a draw decided about one asteroid.
@@ -456,14 +464,17 @@ pub struct AsteroidDraw {
     pub mass_t: f64,
 }
 
+/// One game's economy, as drawn.
 #[derive(Clone, Debug)]
-pub struct Scenario {
-    pub cal: Calendar,
+pub struct Economy {
+    pub start: Epoch,
+    pub end: Epoch,
     pub discount_rate: f64,
     /// By [`Propellant`].
     pub propellants: [PropellantSpec; 2],
-    /// $/kg to LEO, per period.
-    pub launch_usd_per_kg: Vec<f64>,
+    /// $/kg to LEO at the start and at the end, declining geometrically
+    /// between them.
+    pub launch_usd_per_kg: [f64; 2],
     pub equipment_usd_per_kg: f64,
     pub propellant_usd_per_kg: f64,
     pub budget_musd_per_year: f64,
@@ -471,21 +482,10 @@ pub struct Scenario {
     pub metal_steps: Vec<(f64, f64)>,
     pub surfaces: Vec<PlaceId>,
     pub ships: Vec<ShipClass>,
-    pub facilities: Vec<FacilityOption>,
+    pub facilities: Vec<Facility>,
     pub programs: Vec<Program>,
-    pub demand: Vec<DemandCategory>,
+    pub demand: Vec<Demand>,
     pub asteroids: Vec<AsteroidDraw>,
-}
-
-impl Scenario {
-    pub fn propellant(&self, p: Propellant) -> &PropellantSpec {
-        &self.propellants[p as usize]
-    }
-
-    /// Discount factor of period `p`, at its middle.
-    pub fn discount(&self, p: usize) -> f64 {
-        (1.0 + self.discount_rate).powf(-self.cal.years_at(p))
-    }
 }
 
 impl EconomyFile {
@@ -494,14 +494,8 @@ impl EconomyFile {
             .expect("data/economy.toml is valid")
     }
 
-    /// One draw of the economy, on a calendar of `period_months` steps.
-    pub fn scenario(
-        &self,
-        eph: &Ephemeris,
-        graph: &RouteGraph,
-        draw: &mut Draw,
-        period_months: u32,
-    ) -> Scenario {
+    /// One draw of the economy, its places those of `graph`.
+    pub fn draw(&self, eph: &Ephemeris, graph: &RouteGraph, draw: &mut Draw) -> Economy {
         let node = |id: &str| {
             graph
                 .lookup(id)
@@ -509,15 +503,11 @@ impl EconomyFile {
         };
         let start: Epoch = self.start.parse().expect("economy.toml: start");
         let end: Epoch = self.end.parse().expect("economy.toml: end");
-        let cal = Calendar::with_period(start, end, period_months as f64 * DAYS_PER_YEAR / 12.0);
 
-        let (l0, l1) = (
+        let launch_usd_per_kg = [
             self.earth.launch_usd_per_kg_start.sample(draw),
             self.earth.launch_usd_per_kg_end.sample(draw),
-        );
-        let launch_usd_per_kg = (0..cal.periods)
-            .map(|p| l0 * (l1 / l0).powf(p as f64 / (cal.periods - 1) as f64))
-            .collect();
+        ];
 
         let mut ships: Vec<ShipClass> = self
             .ship
@@ -540,7 +530,6 @@ impl EconomyFile {
             })
             .collect();
 
-        let build_periods = |months: f64| (months / 12.0 / cal.period_years()).round() as usize;
         let alpha = |e: &EquipmentRow, grade: f64, draw: &mut Draw| {
             e.plant.sample(draw) + e.ore.sample(draw) / grade
         };
@@ -558,13 +547,13 @@ impl EconomyFile {
             if !present {
                 continue;
             }
-            let option = |id: String, grade: f64| FacilityOption {
+            let option = |id: String, grade: f64| Facility {
                 id,
                 node: node(&f.node),
                 output: f.output.into(),
                 alpha: plant + ore / grade,
                 grade,
-                build_periods: build_periods(f.build_months),
+                build_months: f.build_months,
                 reserve: None,
                 programs: Vec::new(),
             };
@@ -627,13 +616,13 @@ impl EconomyFile {
             let k = draw.pick(&weights);
             let composition = plants.get(k).map(|p| {
                 let grade = p.grade.sample(draw);
-                facilities.push(FacilityOption {
+                facilities.push(Facility {
                     id: format!("{}@{}", p.id, n.id),
                     node: place,
                     output: p.output.into(),
                     alpha: alpha(&p.equipment_t_per_tpy, grade, draw),
                     grade,
-                    build_periods: build_periods(p.build_months),
+                    build_months: p.build_months,
                     reserve: Some(mass_t * p.minable_fraction * grade),
                     programs: Vec::new(),
                 });
@@ -653,17 +642,6 @@ impl EconomyFile {
         let mut demand = Vec::new();
         for d in &self.demand {
             let ref_tpy = d.ref_tpy.sample(draw);
-            let q = |p: f64| ref_tpy * (p / d.ref_usd_per_kg).powf(-d.elasticity);
-            let mut segments = Vec::new();
-            let mut hi = d.max_usd_per_kg;
-            while hi > d.min_usd_per_kg * 1.000_001 {
-                let lo = hi / 2.0;
-                segments.push(DemandSegment {
-                    usd_per_kg: (hi * lo).sqrt(),
-                    tpy: q(lo) - q(hi),
-                });
-                hi = lo;
-            }
             let parts = match (d.what, &d.split) {
                 (WhatRow::Payload, None) => vec![(d.id.clone(), Demanded::Payload, 1.0)],
                 (WhatRow::Methalox, None) => vec![(d.id.clone(), Demanded::Methalox, 1.0)],
@@ -686,20 +664,19 @@ impl EconomyFile {
                 ),
             };
             for (id, what, share) in parts {
-                demand.push(DemandCategory {
+                demand.push(Demand {
                     id,
                     what,
                     // Places the graph leaves out (`plan --hub`) are not
                     // served; the test below checks the names.
                     nodes: d.nodes.iter().filter_map(|n| graph.lookup(n)).collect(),
-                    segments: segments
-                        .iter()
-                        .map(|s| DemandSegment {
-                            usd_per_kg: s.usd_per_kg,
-                            tpy: s.tpy * share,
-                        })
-                        .collect(),
+                    ref_tpy,
+                    share,
+                    ref_usd_per_kg: d.ref_usd_per_kg,
+                    elasticity: d.elasticity,
                     growth: d.growth,
+                    max_usd_per_kg: d.max_usd_per_kg,
+                    min_usd_per_kg: d.min_usd_per_kg,
                 });
             }
         }
@@ -708,8 +685,6 @@ impl EconomyFile {
         let equipment_usd_per_kg = self.earth.equipment_usd_per_kg.sample(draw);
         let budget_musd_per_year = self.budget.musd_per_year.sample(draw);
 
-        let lead_periods =
-            |years: f64| (years / cal.period_years() - 1e-9).ceil().max(1.0) as usize;
         let mut programs: Vec<Program> = self
             .technology
             .iter()
@@ -717,7 +692,8 @@ impl EconomyFile {
                 id: t.id.clone(),
                 kind: ProgramKind::Technology,
                 cost_musd: t.cost_musd.sample(draw),
-                lead_periods: lead_periods(t.years.sample(draw)),
+                years: t.years.sample(draw),
+                prior: 1.0,
             })
             .collect();
         for (f, need) in facilities.iter_mut().zip(needs) {
@@ -729,13 +705,14 @@ impl EconomyFile {
                     panic!("economy.toml: unknown technology {:?}", need.technology)
                 });
             f.programs.push(tech);
-            if let Some((row, p, id)) = need.survey {
+            if let Some((row, prior, id)) = need.survey {
                 let survey = find(&programs, ProgramKind::Survey, &id).unwrap_or_else(|| {
                     programs.push(Program {
                         id,
                         kind: ProgramKind::Survey,
-                        cost_musd: row.cost_musd.sample(draw) / p,
-                        lead_periods: lead_periods(row.years.sample(draw)),
+                        cost_musd: row.cost_musd.sample(draw),
+                        years: row.years.sample(draw),
+                        prior,
                     });
                     programs.len() - 1
                 });
@@ -760,8 +737,9 @@ impl EconomyFile {
             ship.trip_musd += row.ops_musd_per_trip.sample(draw);
         }
 
-        Scenario {
-            cal,
+        Economy {
+            start,
+            end,
             discount_rate: self.discount_rate,
             propellants,
             launch_usd_per_kg,
@@ -799,11 +777,11 @@ impl From<OutputRow> for Output {
 mod tests {
     use super::*;
 
-    /// Demand categories name places of the route graph (a scenario skips
+    /// Demand categories name places of the route graph (a draw skips
     /// absent ones, for graphs restricted by `plan --hub`).
     #[test]
     fn demand_nodes_are_places() {
-        let graph = crate::edges::standard(Ephemeris::standard());
+        let graph = RouteGraph::standard();
         for d in &EconomyFile::standard().demand {
             for n in &d.nodes {
                 assert!(graph.lookup(n).is_some(), "{}: no place {n}", d.id);
@@ -814,9 +792,8 @@ mod tests {
     #[test]
     fn deposits_share_one_survey_and_leaner_ones_need_more_equipment() {
         let eph = Ephemeris::standard();
-        let graph = crate::edges::standard(eph);
-        let sc = EconomyFile::standard().scenario(eph, &graph, &mut Draw::Central, 6);
-        let mut ice: Vec<&FacilityOption> = sc
+        let e = EconomyFile::standard().draw(eph, RouteGraph::standard(), &mut Draw::Central);
+        let mut ice: Vec<&Facility> = e
             .facilities
             .iter()
             .filter(|f| f.id.starts_with("lunar-ice:"))
@@ -833,7 +810,7 @@ mod tests {
         }
         assert!(ice.iter().all(|f| f.programs == ice[0].programs));
         assert!(ice.iter().all(|f| f.reserve.is_some()));
-        let surveys = sc.programs.iter().filter(|p| p.id == "survey:lunar-ice");
+        let surveys = e.programs.iter().filter(|p| p.id == "survey:lunar-ice");
         assert_eq!(surveys.count(), 1);
     }
 }

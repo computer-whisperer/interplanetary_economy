@@ -26,8 +26,9 @@ sandbox and autopilot ([M1a.md](M1a.md)) and the M2 kill-test
   and for career: a game's log (a mission plan, with career's re-plans
   and a scenario's checks), each ship's design walked step by step and
   kept by its inputs, so that an edit or an undo designs only what it
-  changed, and each mode's rules; the `sim` command runs a log
-  headless.
+  changed, and each mode's rules; the economy's parameters
+  (`data/economy.toml`) and the world's draw of them; the `sim` command
+  runs a log headless.
 - `crates/render` — the map view's renderer ([M1c.md](M1c.md)): a scene
   drawn in linear HDR (the sky's stars and Milky Way; bodies with their
   maps, atmospheres, rings and eclipses; points; markers; paths' lines
@@ -43,7 +44,8 @@ sandbox and autopilot ([M1a.md](M1a.md)) and the M2 kill-test
   the plan's panel, and settings.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
   program that plans the whole economy for one draw of the hidden
-  parameters, and a sweep that classifies the plans' development paths.
+  parameters (the sim engine's draw, on periods of six months by
+  default), and a sweep that classifies the plans' development paths.
   It prices transport from the route graph (`data/routes.toml`, M1a step
   11).
 - `data/` — game data: JPL's DE440 ephemeris for 2025–2080 (`de440.bin`),

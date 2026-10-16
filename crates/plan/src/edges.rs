@@ -9,12 +9,6 @@ use orbit::transfer::{Grid, Porkchop, default_tof_range};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-/// The route graph the game uses.
-pub fn standard(eph: &Ephemeris) -> RouteGraph {
-    RouteGraph::from_toml(include_str!("../../../data/routes.toml"), eph)
-        .expect("data/routes.toml is valid")
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EdgeKind {
     /// A leg within one planetary system. It takes days, so it leaves and
@@ -190,10 +184,10 @@ mod tests {
     #[test]
     fn mars_edges_follow_the_windows() {
         let eph = Ephemeris::standard();
-        let graph = standard(eph);
+        let graph = RouteGraph::standard();
         let cal = Calendar::monthly(Epoch::from_ymd(2040, 1, 1), Epoch::from_ymd(2047, 1, 1));
         let pair = (graph.lookup("leo").unwrap(), graph.lookup("lmo").unwrap());
-        let edges = interplanetary_edges(eph, &graph, &cal, &[pair], 4.5);
+        let edges = interplanetary_edges(eph, graph, &cal, &[pair], 4.5);
         // Cheap departures cluster around the 2041, 2043 and 2045–46 windows.
         let months: Vec<Epoch> = edges.iter().map(|e| cal.start_of(e.leave)).collect();
         for e in &edges {

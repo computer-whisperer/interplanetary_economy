@@ -7,6 +7,7 @@
 use crate::ephem::{BodyId, Ephemeris};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PlaceId(usize);
@@ -215,6 +216,18 @@ impl RouteGraph {
             }
         }
         g
+    }
+
+    /// `data/routes.toml`, loaded once per process.
+    pub fn standard() -> &'static RouteGraph {
+        static STANDARD: OnceLock<RouteGraph> = OnceLock::new();
+        STANDARD.get_or_init(|| {
+            RouteGraph::from_toml(
+                include_str!("../../../data/routes.toml"),
+                Ephemeris::standard(),
+            )
+            .expect("data/routes.toml is valid")
+        })
     }
 
     pub fn from_toml(src: &str, eph: &Ephemeris) -> Result<RouteGraph, String> {

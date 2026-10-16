@@ -5,5 +5,6 @@ pub mod designs;
 pub mod game;
 pub mod hash;
 pub mod log;
+pub mod params;
 pub mod report;
 pub mod run;

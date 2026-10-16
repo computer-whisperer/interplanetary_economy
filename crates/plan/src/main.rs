@@ -7,9 +7,10 @@ use orbit::routes::RouteGraph;
 use plan::classify::{Classification, SOURCES, Source, classify, programs_of, source_of};
 use plan::edges::{self, Edge};
 use plan::model::{Commodity, Lp, Plan, ProgramSetup};
-use plan::params::{Draw, EconomyFile, Scenario};
+use plan::scenario::Scenario;
 use plan::search::{self, Outcome};
 use rayon::prelude::*;
+use sim::params::{Draw, EconomyFile};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -112,9 +113,10 @@ struct World {
 impl World {
     fn scenario(&self, seed: Option<u64>, opts: &Opts) -> Scenario {
         let mut draw = seed.map_or(Draw::Central, Draw::seeded);
-        let mut sc = self
-            .econ
-            .scenario(self.eph, &self.graph, &mut draw, opts.months);
+        let mut sc = Scenario::new(
+            &self.econ.draw(self.eph, &self.graph, &mut draw),
+            opts.months,
+        );
         for &(src, factor) in &opts.alpha {
             for k in 0..sc.facilities.len() {
                 if source_of(self.eph, &self.graph, &sc, k) == src {
@@ -183,11 +185,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let eph = Ephemeris::standard();
     let (Cmd::Solve { opts, .. } | Cmd::Sweep { opts, .. }) = &cli.cmd;
-    let mut graph = edges::standard(eph);
-    if let Some(hub) = &opts.hub {
-        let others: Vec<&str> = STATIONS.into_iter().filter(|s| s != hub).collect();
-        graph = graph.without(&others);
-    }
+    let graph = match &opts.hub {
+        Some(hub) => {
+            let others: Vec<&str> = STATIONS.into_iter().filter(|s| s != hub).collect();
+            RouteGraph::standard().without(&others)
+        }
+        None => RouteGraph::standard().clone(),
+    };
     let world = World {
         eph,
         graph,

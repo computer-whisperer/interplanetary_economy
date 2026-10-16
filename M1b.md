@@ -1,6 +1,7 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-16: step 1 under way. Decided: one engine for both
+Status, 2026-10-16: step 1 done; step 2 under way (its plan below,
+after step 1's). Decided: one engine for both
 modes, with economy components landing in the sandbox first (Modes,
 below), and the four decisions below, each as recommended.
 
@@ -105,6 +106,15 @@ below), and the four decisions below, each as recommended.
   - Left as they are: undo keeps the designs of the last 64 ships
     replaced, so an undo further back designs again; two walks can
     design the same step at once (both count in `designs_made`).
+- Step 2, part 1: `data/economy.toml`'s reader and the world's draw
+  are the engine's (`sim::params`: `EconomyFile::draw` gives an
+  `Economy`, in the parameters' own units); `crates/plan` builds its
+  periods from one (`plan::scenario::Scenario::new`). M2's scenarios
+  for the central draw and seeds 1–3, at 3- and 6-month periods, on the
+  full route graph and with the NRHO as the hub, read the same to the
+  bit before and after (their `Debug` text, 16 files). The route
+  graph's loader moved to `orbit` (`RouteGraph::standard`), beside
+  `Places::standard`.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
@@ -204,7 +214,9 @@ Decided 2026-10-16 by the user, each as recommended.
      So a mature economy at a month a second probably outruns 24
      cores. Designs running ahead of departures (a route designs its
      next as soon as the last is designed) absorb bursts, not a
-     sustained deficit. Step 2 measures it, and gate item 4 holds it.
+     sustained deficit. Step 5 measures it on standing routes'
+     departures (moved from step 2, which has none), and gate item 4
+     holds it.
    - **What fails.** Some departures fail as they did in M1a's sweep:
      legs between stations (88.5% converge, 42% of re-plans succeed)
      and slow or near-180° departures to other planets. A mission's
@@ -513,15 +525,17 @@ own. Each economy component lands in the sandbox first (Modes, above).
    - The parameters moved from `crates/plan`. Scenario scripts and
      `sim run`.
    - First of all: designs bit-identical across thread counts.
-2. **Ships with mass:** classes, purchase at LEO, missions with a
-   class and a manifest, the rocket equation at burns, upkeep, landings
-   and ascents, and boil-off. Stays in their lighter form. In the
-   sandbox: each burn's propellant, and where a ship runs dry.
+2. **Ships with mass:** the parameters moved from `crates/plan`; the
+   state and the loop, with its daily tick (both from step 1); classes,
+   purchase at LEO, missions with a class and a manifest, the rocket
+   equation at burns, upkeep, landings and ascents, and boil-off. Stays
+   in their lighter form. In the sandbox: each burn's propellant, and
+   where a ship runs dry.
 3. **Stations and depots:** placing a station (one reference, extended
    ahead), stocks, loading and refuelling, purchases at LEO, and
    projections.
-4. **Plants, programs and surveys;** in career, grades hidden until
-   surveyed.
+4. **Plants, programs and surveys,** with keyed draws (survey noise is
+   the first); in career, grades hidden until surveyed.
 5. **Standing routes.**
 6. **The cheapest cost, the Access Cost Index and the traffic
    generator.**
@@ -698,3 +712,133 @@ matters.
        now and leaves from its own orbit.
    - A career log opened in the sandbox gives the same hashes.
    - An undo designs nothing.
+
+## Step 2 plan (2026-10-16): ships with mass
+
+Ships get a class from `data/economy.toml`, a load at their start, and
+tanks that their burns empty. The engine gets its state and the loop
+that advances it. Ships share nothing yet (depots are step 3), so a
+ship's tanks depend only on its own design, class and load. Each part
+is committed on its own.
+
+1. **The parameters move to the engine** (`sim::params`; step 1's part
+   6).
+   - `data/economy.toml`'s reader and the world's draw (`EconomyFile`,
+     `Dist`, `Draw`) move from `crates/plan`. The draw gives one game's
+     parameters in their own units (`Economy`): launch $/kg at the start
+     and end of its decline, build months and program years, survey
+     costs as quoted, demand's reference quantities.
+   - `crates/plan` builds its periods from that (`Scenario`): the
+     calendar, launch price by period, build and lead periods, survey
+     costs divided by the deposit's prior, demand's price segments.
+   - The draw keeps M2's order, so M2's seeds give M2's worlds. Before
+     the move, the scenarios of the central draw and seeds 1–3 are
+     written out (their `Debug` text); after it, they read the same to
+     the bit. M2's tests pass unchanged.
+   - Keyed draws wait for their first consumer, survey noise in step 4.
+     Nothing in step 2 is random after setup.
+2. **Classes and loads in the log** (`sim::ships`).
+   - A ship names its class. Its start says what it carries: propellant
+     (t; a full tank by default, at the class's mixture ratio) and cargo
+     by commodity (LOX, methane, hydrogen, equipment, payload, metal):
+
+     ```toml
+     [[ship]]
+     id = 0
+     name = "Tug"
+     class = "tug-h"
+     start = { at = "leo", epoch = "2045-03-01", propellant_t = 120.0, cargo = { equipment = 20.0 } }
+     ```
+
+     `orbit`'s `Ship` keeps these as written, as `Plan` keeps `[game]`,
+     and `sim` reads them. They are not design inputs.
+   - A ship without a class is massless, as in M1c, so `data/missions/`
+     reads unchanged.
+   - What a class allows, checked against the ship's steps: aerocapture
+     and entry (`aero`), landing at a surface (`lands`), legs between
+     planets (`interplanetary`), and a load within its tank and hold.
+     - Sandbox: a warning on the step, as a jump has now.
+     - Career: an action that breaks one is refused when made. A career
+       ship starts at LEO, where it is bought.
+   - Prices wait. A purchase's cost needs the launch price in time,
+     which comes with step 3's purchases at LEO; the account is step
+     7's.
+3. **The state and the loop** (`sim::state`).
+   - The state: each ship's tanks (LOX and fuel) and hold, and whether
+     and where it ran dry.
+   - Events in time order: each burn of a flown leg (its markers:
+     burns, flybys, passes, landings, ascents), ties broken by kind,
+     then by ship id; and a daily tick at the start of each day.
+   - **A burn** of Δv uses m(1 − e^(−Δv / g₀Isp)) of the mass before
+     it, LOX and fuel at the mixture ratio. A jump is not burned: it is
+     a junction not flown, flagged as now.
+   - **The daily tick.** A station stay's upkeep (its item's Δv, spread
+     evenly over the stay) for the part of the day stayed, by the same
+     equation. Hydrogen boils off at `fuel_boiloff_per_day`, in tanks
+     and holds. LOX and methane don't (`economy.toml` takes them as
+     storable).
+   - **Running dry.** A burn the tanks can't make strands the ship there.
+     The loop records the burn and how short it fell (m/s), and the
+     ship's design after it is not flown. Both modes do this in step 2;
+     career's refusal of a plan that would run dry, when it is made,
+     comes with step 3's projections.
+   - The loop runs to the earliest time a ship's design has not reached;
+     beyond it the state is pending.
+   - Any change re-runs it from the game's start. Snapshots wait until a
+     measurement says a re-run is too slow (gate item 4: 1 s over the
+     whole game); the re-run is timed here on the published plan.
+   - The state hash adds each ship's tanks and hold, by bits.
+4. **The sandbox.**
+   - The ship's section: a class menu ("none": massless) and the
+     start's propellant and cargo.
+   - The panel: each burn's propellant (t) on its row, and the tanks
+     after each leg; the ship's row, its tanks at the clock.
+   - A ship that runs dry: the burn marked, and its path after it drawn
+     as not flown (dimmed).
+   - An edit of the class or the load re-runs the loop and designs
+     nothing.
+5. **Headless.**
+   - `sim run` prints each burn's propellant, and each ship's tanks
+     monthly.
+   - Checks: a ship's propellant at a date, within bounds; a ship runs
+     dry at a step, or not at all.
+   - Scenarios: a hydrolox tug from LEO to low lunar orbit and back,
+     boiling off between; a lander landing at the south pole and
+     ascending again; a ship loaded short, which runs dry.
+6. **Lighter stays.**
+   - A stay keeps a sample every 2° of its orbit: ~2,900 a day in LEO,
+     ~160 kB a day, held twice (the engine's cache and the sandbox's
+     views, step 1 part 7).
+   - A stay in a low orbit keeps its first state, and states taken from
+     its one integration [about a day apart; set by the sandbox's draw
+     time]. Samples are made when asked: `Track::at` integrates from the
+     kept state before the time asked, and the sandbox draws the
+     revolution about the clock from samples made then, again as the
+     clock leaves it. A station stay reads its visit's reference rather
+     than copying it. Departures still leave from the state the planner
+     integrated.
+   - Checked: positions agree with today's samples [within 1 m, to
+     confirm]; the published plan's memory before and after; the
+     sandbox's frame time with the clock running through a long stay.
+7. **Tests.**
+   - Burns: each burn's propellant matches a hand computation from its
+     marker's Δv; a station stay burns its upkeep; a hydrolox ship
+     parked n days keeps (1 − f)ⁿ of its hydrogen, and a methalox one
+     all its methane.
+   - A ship loaded short runs dry at the right burn, short by the right
+     Δv.
+   - Each class check is refused in career and warned in the sandbox.
+   - Hashes, now with tanks: the same at 1 and 24 threads; a career log
+     in the sandbox gives the same; an edit, re-run, gives a fresh run's.
+   - An edit of the load designs nothing.
+8. **Measurements.**
+   - Design times on a quiet machine, owed from step 1: the published
+     plan `--alone` against M1c's.
+   - The loop's re-run time on the published plan.
+   - Decision 1 had step 2 measure design throughput at a month a
+     second. That needs standing routes' departures, so it moves to
+     step 5.
+
+Left out of step 2: refuelling and loading at stops (step 3, with
+stocks and purchases at LEO), turnaround days (step 5, with trips
+counted), and trip costs (step 7).

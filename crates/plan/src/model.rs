@@ -2,9 +2,10 @@
 //! foresight. See M2.md for the formulation.
 
 use crate::edges::{Edge, EdgeKind};
-use crate::params::{PROPELLANTS, Propellant, Scenario, ShipClass};
+use crate::scenario::Scenario;
 use highs::{Col, HighsModelStatus, Model, RowProblem, Sense, SolvedModel};
 use orbit::routes::{PlaceId, RouteGraph};
+use sim::params::{PROPELLANTS, Propellant, ShipClass};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -708,8 +709,8 @@ impl Lp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::ProgramKind;
     use crate::testing::{richest_lunar_ice, short};
+    use sim::params::ProgramKind;
 
     fn free(sc: &Scenario) -> Vec<ProgramSetup> {
         vec![

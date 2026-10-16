@@ -6,7 +6,7 @@ pub mod calendar;
 pub mod classify;
 pub mod edges;
 pub mod model;
-pub mod params;
+pub mod scenario;
 pub mod search;
 #[cfg(test)]
 mod testing;

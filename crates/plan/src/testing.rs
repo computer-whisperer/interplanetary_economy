@@ -1,17 +1,21 @@
 //! Small scenarios for tests.
 
 use crate::edges::{self, Edge};
-use crate::params::{Draw, EconomyFile, Scenario};
+use crate::scenario::Scenario;
 use orbit::ephem::Ephemeris;
 use orbit::routes::RouteGraph;
+use sim::params::{Draw, EconomyFile};
 
 /// The central draw, cut to its first `years` (quarterly), and its
 /// transport network, with the L1 halo as the only station (`plan --hub
 /// l1`: the LP over every station does not solve).
 pub fn short(years: usize) -> (RouteGraph, Scenario, Vec<Edge>) {
     let eph = Ephemeris::standard();
-    let graph = edges::standard(eph).without(&["l2", "nrho", "dro"]);
-    let mut sc = EconomyFile::standard().scenario(eph, &graph, &mut Draw::Central, 3);
+    let graph = RouteGraph::standard().without(&["l2", "nrho", "dro"]);
+    let mut sc = Scenario::new(
+        &EconomyFile::standard().draw(eph, &graph, &mut Draw::Central),
+        3,
+    );
     sc.cal.periods = years * 4;
     sc.launch_usd_per_kg.truncate(sc.cal.periods);
     let mut all = edges::local_edges(&graph, &sc.cal);

@@ -1,7 +1,8 @@
-# The economy for the M2 kill-test (crates/plan): prices, ships, plants,
-# resources and demand. Uncertain values are distributions, sampled once per
-# game: { median, sigma } is lognormal (sigma of the natural log), { low,
-# high } is uniform, a bare number is fixed.
+# The economy, read by the sim engine (crates/sim, `params`) and M2's
+# kill-test (crates/plan): prices, ships, plants, resources and demand.
+# Uncertain values are distributions, sampled once per game: { median,
+# sigma } is lognormal (sigma of the natural log), { low, high } is
+# uniform, a bare number is fixed.
 #
 # Units: tonnes (t), $M for money unless a key says otherwise, t/yr for
 # rates. Sources are cited inline; [ext] marks our own extrapolation from
