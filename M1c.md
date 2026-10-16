@@ -47,6 +47,21 @@ step 8, the gate (step 8 plan, at the end).
     - Windows the compositor puts on the Radeon VII's outputs render on
       the 6900 XT and cross between GPUs: the 18.5 and 50 ms frames of
       steps 2 and 4.
+    - Near Mars (20,000 km up), the window opened on DP-3 (3840×2160 at
+      60 Hz, where the focus was): after designing, frames at the
+      refresh (16.67 ms, 95% 16.8, the longest 18–19 ms), GPU 1.57 ms;
+      while designing, the longest 55–64 ms (two runs).
+    - The offscreen test (CPU and GPU time a frame, stepping a month a
+      second) is not written yet.
+  - Item 4, SDR: twelve scenes shot through the SDR tonemap
+    (`--screenshot`: Earth whole and half lit, the Moon from 3,000 and
+    100 km, Mars, Venus, Jupiter, Saturn, the Sun from 2 and 30 million
+    km, the gateway and Mars plans). No clipped bands: the scenes' whites
+    top out at 250 of 255, and only the Sun seen from Venus (2 pixels)
+    reaches white. A channel at 255 alone comes from colored stars'
+    cores (a few pixels each) and the legs' and UI's own colors. Still
+    open: the Sun's disk washed out near white, smooth, its spots and
+    limb darkening kept.
   - Item 5, frames while the Mars plan designs (all cores): 6.8–7.7 ms
     on average, 95% 12.5–15 ms, the longest 79–107 ms (up to 203 in
     later runs, 13 frames over 25 ms of work a run); after it, the
