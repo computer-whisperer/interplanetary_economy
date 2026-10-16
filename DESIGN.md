@@ -436,7 +436,9 @@ Around the map, minimal and information-dense:
     HDR outputs use their headroom.
 - **M1b, the sim engine,** one for sandbox and career (Modes); it also
   runs headless. Economy components land in the sandbox first. See
-  M1b.md (draft).
+  M1b.md: the Authority's trips are flown, third-party traffic priced
+  from the route graph; pricing authority, bonds and crew are in
+  (decided 2026-10-16).
   - Places, commodities, facilities, ships, rocket-equation costing,
     missions and standing routes flown by the autopilot.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.

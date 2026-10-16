@@ -1,8 +1,8 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-16: draft plan. Decided: one engine for both modes,
-with economy components landing in the sandbox first (Modes, below).
-Open: the user's decisions (Decisions, below). Nothing built.
+Status, 2026-10-16: plan. Decided: one engine for both modes, with
+economy components landing in the sandbox first (Modes, below), and
+the four decisions below, each as recommended. Nothing built.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
@@ -65,11 +65,11 @@ in front of them in career. Q1 (lead time), Q3 (demand) and Q5
 
 ## Decisions
 
-For the user; each gives a recommendation first.
+Decided 2026-10-16 by the user, each as recommended.
 
 1. **Which trips fly.** M1a left this to here ("whether M1b flies ships
-   per trip for the legs that pass is decided before M1b").
-   Recommended: every trip of the Authority's ships is designed and
+   per trip for the legs that pass is decided before M1b"). Every
+   trip of the Authority's ships is designed and
    flown. Third-party traffic and the Access Cost Index are priced from
    the route graph (`data/routes.toml`: legs within a system at the
    medians of flown designs, between systems by patched conics) and are
@@ -116,15 +116,16 @@ For the user; each gives a recommendation first.
      120–1,200 missions at 10–100 t each [guess], and sells ~14 kt of
      propellant at the hub to departing traffic. Flying them would add
      as many designs again, for ships nobody plans.
-2. **Powers.** DESIGN.md's M1b list leaves the powers out (DESIGN.md,
-   The Authority). Recommended: pricing authority and revenue bonds in
-   M1b, as rules a scenario can exercise; concessions with M4's
+2. **Powers.** DESIGN.md's M1b list left the powers out (DESIGN.md,
+   The Authority). Pricing authority and revenue bonds are in M1b, as
+   rules a scenario can exercise; concessions come with M4's
    contracts. Q5 is about the powers, and M3 plays what M1b has.
-3. **Crew.** M2 had none. Recommended in: crew carried by crew
-   transports with a longest transit, outposts consuming Supplies, and
-   crew lost with a ship. The mandates need them (8 crew continuously
-   at the south pole by 2046, which takes rotations).
-4. **The gate** (proposed below); DESIGN.md gives M1b none.
+3. **Crew** is in (M2 had none): crew carried by crew transports with
+   a longest transit, outposts consuming Supplies, and crew lost with
+   a ship. The mandates need them (8 crew continuously at the south
+   pole by 2046, which takes rotations).
+4. **The gate** is below, with its thresholds as proposed (20%, 10
+   minutes, 1 s); DESIGN.md gave M1b none.
 
 ## Scope
 
@@ -357,7 +358,7 @@ Out:
   from `crates/plan` (`params`: `EconomyFile`, `Dist`, `Draw`), and
   `crates/plan` builds its periods from them.
 
-## Gate (proposed)
+## Gate
 
 1. **Deterministic.** A scenario run twice, and at 1 and 24 threads,
    gives the same state hash every day.
@@ -369,17 +370,17 @@ Out:
      scenario: its program and survey, its plant, its fleet, and its
      largest flows as standing routes.
    - Over 2045–2060, its supply by source and its Earth purchases land
-     within [20%] of the LP's.
+     within 20% of the LP's.
    - Each difference is explained by what the LP leaves out: phasing,
      departures one at a time, lumpy demand, boil-off by the day. Its
      NRHO-to-Mars payload goes through LEO (Out, above), and the
      comparison counts that.
 4. **Fast enough.**
-   - That scenario runs 2040–2075 headless in [10 minutes] on the
+   - That scenario runs 2040–2075 headless in 10 minutes on the
      development machine.
    - At a month a second, no departure waits on its design.
    - In the sandbox, an edit's economy re-runs, its designs reused, in
-     [1 s] over the whole game.
+     1 s over the whole game.
 
 Fail:
 
