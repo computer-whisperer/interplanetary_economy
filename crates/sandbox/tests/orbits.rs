@@ -4,7 +4,7 @@
 use orbit::time::Epoch;
 use sandbox::app::Shell;
 use sandbox::frames::Frame;
-use sandbox::paths::ORBIT_SET;
+use sandbox::paths::ORBIT_SETS;
 
 #[test]
 fn every_orbit_passes_through_its_body_in_every_frame() {
@@ -20,13 +20,12 @@ fn every_orbit_passes_through_its_body_in_every_frame() {
         app.set_frame(frame);
         app.update_paths();
         let scene = app.scene(1.0);
-        let orbits = &scene.paths[ORBIT_SET];
-        assert!(
-            orbits.paths.len() >= 12,
-            "{id}: {} orbits",
-            orbits.paths.len()
-        );
-        for path in &orbits.paths {
+        let orbits: Vec<_> = scene.paths[ORBIT_SETS..]
+            .iter()
+            .flat_map(|set| &set.paths)
+            .collect();
+        assert!(orbits.len() >= 12, "{id}: {} orbits", orbits.len());
+        for path in orbits {
             let pose = scene.poses[path.pose];
             let at = pose.to_world(path.at(t.seconds()).expect("now is in the window"));
             let nearest = bodies

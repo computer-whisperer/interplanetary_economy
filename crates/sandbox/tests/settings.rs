@@ -19,7 +19,7 @@ use sandbox::frame::{self, Output, View};
 use sandbox::frames::Frame;
 use sandbox::labels::Target;
 use sandbox::look::{MAX_LIFT, MAX_NIGHT_LIGHTS};
-use sandbox::paths::{ORBIT_SET, PLAN_SET};
+use sandbox::paths::{ORBIT_SETS, PLAN_SET};
 use sandbox::plan::Loaded;
 use sandbox::settings::{self, CONTROLS, Lines, Settings, TOGGLES};
 
@@ -411,7 +411,10 @@ fn hidden_lines_are_left_out() {
             |f: fn(&Target) -> bool| app.anchors().iter().filter(|a| f(&a.target)).count();
         [
             scene.paths[PLAN_SET].paths.len(),
-            scene.paths[ORBIT_SET].paths.len(),
+            scene.paths[ORBIT_SETS..]
+                .iter()
+                .map(|s| s.paths.len())
+                .sum(),
             scene.markers.len(),
             labeled(|t| matches!(t, Target::Marker { .. })),
             labeled(|t| matches!(t, Target::Loop(_))),

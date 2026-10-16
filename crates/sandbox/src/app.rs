@@ -810,8 +810,10 @@ impl Shell {
             spheres: bodies::spheres(eph, &self.bodies, t, camera.eye),
             markers,
             sky: sky::loaded().map(|d| sky::sky(d, t)),
-            // By `paths::PLAN_SET` and `ORBIT_SET`.
-            paths: vec![self.paths.clone(), self.orbits.paths()],
+            // By `paths::PLAN_SET` and `ORBIT_SETS`.
+            paths: std::iter::once(self.paths.clone())
+                .chain(self.orbits.paths().iter().cloned())
+                .collect(),
             poses,
             now: t.seconds(),
             frame_s: self.clock.stepped_s,

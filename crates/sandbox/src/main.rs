@@ -25,6 +25,10 @@ struct Cli {
     /// the plan's first ship's start, or 2045-03-01.
     #[arg(long)]
     date: Option<orbit::time::Epoch>,
+    /// The time warp the clock starts playing at: 1s, 10s, 1min, 10min,
+    /// 1h, 6h, 1day, 1week, 1month or 1year (each a second).
+    #[arg(long, default_value = "1s", value_parser = warp)]
+    warp: usize,
     /// The frame paths are drawn in: focus, earth-moon,
     /// earth-moon-pulsating, sun-earth or sun-mars.
     #[arg(long, default_value = "focus")]
@@ -65,6 +69,15 @@ fn size(s: &str) -> Result<(u32, u32), String> {
     Ok((n(w)?, n(h)?))
 }
 
+/// Into `clock::RATES`, by its name without spaces.
+fn warp(s: &str) -> Result<usize, String> {
+    let names = sandbox::clock::RATES.map(|(_, name)| name.replace(' ', ""));
+    names
+        .iter()
+        .position(|n| n == s)
+        .ok_or_else(|| format!("expected one of {}", names.join(", ")))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let eph = orbit::ephem::Ephemeris::standard();
@@ -96,6 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     let mut app = sandbox::app::Shell::new(date);
     app.plan = plan;
+    app.clock.rate = cli.warp;
     let focus = eph
         .lookup(&cli.focus)
         .filter(|&b| sandbox::bodies::drawn(eph).contains(&b) && eph.covers(b, date))

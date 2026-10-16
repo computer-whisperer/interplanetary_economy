@@ -1,11 +1,42 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
-left out; of step 6, part 9's spins and small bodies' maps open, parts
-10, the eye's glare, and 11, the Sun's photosphere, done); now step 7,
-mission planning, grown from editing (decided 2026-10-15; step 7 plan,
-at the end): parts 1–7 done and reviewed, part 8 (legs leaving a low
-orbit from the ship's own orbit) done; next, step 8, the gate.
+Status, 2026-10-16: steps 1–7 done (6 done before 5, its shape models
+left out; of step 6, part 9's spins and small bodies' maps open); now
+step 8, the gate (step 8 plan, at the end).
+
+- Step 8, so far:
+  - Item 1 holds at the end of step 7: the published plan flies with no
+    jumps (the low lunar orbit round trip's return now from its own
+    orbit, +62.0 m/s), its Δv as at step 1 (Mars handbook departures
+    3,576 / 3,550 / 3,523 / 3,583 m/s, 2000 SG344 4,038, Phobos 1,205
+    each way, NRHO to low lunar orbit 684). `orbit mission` designs ships
+    one after another, so its times are each leg's alone: 0.1–3.7 s,
+    and LEO to the DRO 16.5 s, over item 5's 10 s.
+  - Item 3's plan, `data/missions/mars-windows.toml`: the 17 ships fly
+    (5,611–6,284 m/s, 202–348 days), designed in 50 s one after another.
+  - Item 3 measured in a window on DP-1 (3840×2160 at 240 Hz, HDR), a
+    month a second around the Sun: frames every 7.28 ms (95%: 8.79), GPU
+    0.98 ms. Not at the refresh (4.17 ms), and CPU-bound. Without a plan,
+    6.81 ms: the plan was not the cause.
+    - The bodies' orbits were one set of paths, prepared again whenever
+      any orbit's window moved: every frame at a month a second
+      (Phobos's step is half an hour), ~62,000 small bodies' samples
+      with it. Now a set each (`paths::ORBIT_SETS`): 5.87 ms without a
+      plan, 5.67 with it.
+    - Of the rest, `queue.submit` took ~2.2 ms a frame, in the kernel
+      (`DRM_IOCTL_AMDGPU_CS`, ~1.1 ms a call; system time 2.0 ms a
+      frame): validating the buffer objects a submission uses. With
+      `RADV_PERFTEST=localbos` (buffers always valid) it takes ~0.05 ms
+      and a frame's work 1.9 ms, yet frames still come every 5.8 ms.
+    - The compositor caps it: vkcube on the same GPU and output runs
+      ~196 frames a second; prism's own frames on DP-1 take 2.3 ms
+      (peak 3.5), 19% of them a vblank late.
+    - Windows the compositor puts on the Radeon VII's outputs render on
+      the 6900 XT and cross between GPUs: the 18.5 and 50 ms frames of
+      steps 2 and 4.
+  - Item 5, frames while the Mars plan designs (all cores): 6.8–7.7 ms
+    on average, 95% 12.5–15 ms, the longest 79–107 ms; after it, the
+    longest 65–72 ms.
 
 - Step 7, part 8: leaving a low orbit from the ship's own orbit (from
   M1b; how decided 2026-10-15: small plane offsets paid at once, large
@@ -2285,3 +2316,28 @@ Each part is committed on its own.
      re-plan after an edit, against gate item 5.
 
 Then step 8, the gate.
+
+## Step 8 plan (2026-10-16): the gate
+
+1. **Item 1.** The published plan flown again at the end of step 7
+   (part 8 changed legs leaving a low orbit), against M1a's values.
+2. **Item 2.** The offscreen checks for a marker and for lines (steps 3
+   and 4) stand; nothing new.
+3. **Item 3.** `data/missions/mars-windows.toml`: a ship on each of the
+   17 Earth–Mars windows `orbit windows earth mars` finds from 2040 to
+   2075 (2041-09 to 2075-11), LEO to a 400 km low Mars orbit, one way.
+   Round trips would add stays of ~500 days in low Mars orbit, sampled
+   whole (step 1's known gap), a different question. `sandbox --warp`
+   starts the clock at a rate; measured in a window (`--frames`: wall
+   and GPU time a frame) around the Sun and near Mars, and by an
+   offscreen test (CPU and GPU time a frame, stepping a month a second
+   at the display's refresh).
+4. **Item 4.** HDR checked on the development machine's OLED
+   (2026-10-16, with prism's gamut tools). SDR: the gate's scenes shot
+   through the SDR tonemap, checked for clipped bands. Open from step
+   6: the Sun's disk washed out on SDR.
+5. **Item 5.** Each leg of the published plan designed alone, against
+   10 s; in the sandbox, an edit's time to its re-planned items, and
+   the frame's CPU time while it designs. M1a's 0.1 s is for
+   re-planning a standing route's departure (`legs::replan`); the
+   sandbox has no standing routes (M1b's), and an edit designs afresh.

@@ -1,0 +1,125 @@
+# A ship on every Earth–Mars window from 2040 to 2075 (M1c.md, gate item
+# 3): the windows `orbit windows earth mars` finds, each ship leaving LEO
+# within one for a 400 km Mars orbit, at the date and duration patched
+# conics price cheapest.
+
+name = "Mars windows 2040-2075"
+
+[[ship]]
+name = "Mars 2041"
+start = { at = "leo", epoch = "2041-09-30" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2041-09-30", "2041-11-07"]
+
+[[ship]]
+name = "Mars 2043"
+start = { at = "leo", epoch = "2043-10-27" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2043-10-27", "2043-12-01"]
+
+[[ship]]
+name = "Mars 2045"
+start = { at = "leo", epoch = "2045-11-23" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2045-11-23", "2046-01-04"]
+
+[[ship]]
+name = "Mars 2048"
+start = { at = "leo", epoch = "2048-03-04" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2048-03-04", "2048-04-07"]
+
+[[ship]]
+name = "Mars 2050"
+start = { at = "leo", epoch = "2050-05-06" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2050-05-06", "2050-06-16"]
+
+[[ship]]
+name = "Mars 2052"
+start = { at = "leo", epoch = "2052-07-21" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2052-07-21", "2052-08-26"]
+
+[[ship]]
+name = "Mars 2054"
+start = { at = "leo", epoch = "2054-08-17" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2054-08-17", "2054-09-30"]
+
+[[ship]]
+name = "Mars 2056"
+start = { at = "leo", epoch = "2056-09-19" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2056-09-19", "2056-10-27"]
+
+[[ship]]
+name = "Mars 2058"
+start = { at = "leo", epoch = "2058-10-17" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2058-10-17", "2058-11-21"]
+
+[[ship]]
+name = "Mars 2060"
+start = { at = "leo", epoch = "2060-11-11" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2060-11-11", "2060-12-19"]
+
+[[ship]]
+name = "Mars 2062"
+start = { at = "leo", epoch = "2062-12-14" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2062-12-14", "2063-02-07"]
+
+[[ship]]
+name = "Mars 2065"
+start = { at = "leo", epoch = "2065-04-13" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2065-04-13", "2065-05-19"]
+
+[[ship]]
+name = "Mars 2067"
+start = { at = "leo", epoch = "2067-06-22" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2067-06-22", "2067-08-02"]
+
+[[ship]]
+name = "Mars 2069"
+start = { at = "leo", epoch = "2069-08-01" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2069-08-01", "2069-09-20"]
+
+[[ship]]
+name = "Mars 2071"
+start = { at = "leo", epoch = "2071-09-07" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2071-09-07", "2071-10-17"]
+
+[[ship]]
+name = "Mars 2073"
+start = { at = "leo", epoch = "2073-10-07" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2073-10-07", "2073-11-12"]
+
+[[ship]]
+name = "Mars 2075"
+start = { at = "leo", epoch = "2075-11-02" }
+[[ship.leg]]
+to = { low = "mars", altitude = 400 }
+window = ["2075-11-02", "2075-12-07"]

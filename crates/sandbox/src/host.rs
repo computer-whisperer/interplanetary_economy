@@ -61,9 +61,14 @@ struct Log {
     present: String,
     hdr: bool,
     output: Option<(f32, f32)>,
-    /// Wall time between frames, and the GPU's per frame, ms.
-    wall: Vec<f32>,
+    /// Wall time between frames, ms, and whether the plan was being
+    /// designed; the GPU's time per frame, ms.
+    wall: Vec<(f32, bool)>,
     gpu: Vec<f32>,
+    /// Per frame, ms: waiting for the swapchain's texture, and from it
+    /// until presenting returns (which may wait for the display).
+    acquire: Vec<f32>,
+    presented: Vec<f32>,
     /// Whether `gpu` times whole frames, or (without timestamps between
     /// passes) the scene's pass alone.
     whole_frame: bool,
@@ -74,15 +79,30 @@ impl Log {
     const SETTLE: usize = 10;
 
     fn summary(&self) -> String {
-        let stats = |v: &[f32]| {
-            let mut v: Vec<f32> = v.iter().skip(Self::SETTLE).copied().collect();
+        let stats = |v: &mut Vec<f32>| {
             if v.is_empty() {
                 return "–".to_string();
             }
             v.sort_by(f32::total_cmp);
             let mean = v.iter().sum::<f32>() / v.len() as f32;
             let p95 = v[((v.len() - 1) as f32 * 0.95) as usize];
-            format!("mean {mean:.2} ms, 95% {p95:.2} ms over {} frames", v.len())
+            let max = v[v.len() - 1];
+            format!(
+                "mean {mean:.2} ms, 95% {p95:.2} ms, longest {max:.2} ms over {} frames",
+                v.len()
+            )
+        };
+        let wall = |designing: bool| {
+            let mut v: Vec<f32> = (self.wall.iter().skip(Self::SETTLE))
+                .filter(|w| w.1 == designing)
+                .map(|w| w.0)
+                .collect();
+            stats(&mut v)
+        };
+        let designing = if self.wall.iter().skip(Self::SETTLE).any(|w| w.1) {
+            format!("frame interval while the plan designs: {}\n", wall(true))
+        } else {
+            String::new()
         };
         let output = match self.output {
             Some((headroom, nits)) => {
@@ -91,18 +111,21 @@ impl Log {
             None => String::new(),
         };
         format!(
-            "{}\nsurface {} ({}), HDR {}{output}\nframe interval: {}\nGPU per {}: {}\n",
+            "{}\nsurface {} ({}), HDR {}{output}\n{designing}frame interval: {}\n\
+             waiting for the texture: {}\nfrom the texture to presented: {}\nGPU per {}: {}\n",
             self.adapter,
             self.format,
             self.present,
             if self.hdr { "active" } else { "not active" },
-            stats(&self.wall),
+            wall(false),
+            stats(&mut self.acquire.iter().skip(Self::SETTLE).copied().collect()),
+            stats(&mut self.presented.iter().skip(Self::SETTLE).copied().collect()),
             if self.whole_frame {
                 "frame"
             } else {
                 "scene pass"
             },
-            stats(&self.gpu),
+            stats(&mut self.gpu.iter().skip(Self::SETTLE).copied().collect()),
         )
     }
 }
@@ -339,6 +362,7 @@ impl Host {
         if let Some(size) = self.pending_resize.take() {
             gfx.resize(size.width, size.height);
         }
+        let asked = Instant::now();
         let texture = match gfx.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -369,6 +393,7 @@ impl Host {
             }
         };
         let now = Instant::now();
+        self.log.acquire.push((now - asked).as_secs_f32() * 1e3);
         let dt = self.last_frame.map(|t| now - t).unwrap_or_default();
         self.last_frame = Some(now);
         self.frame_index += 1;
@@ -394,7 +419,8 @@ impl Host {
         let scene = self.app.scene(scale);
         self.log.output = self.app.stats.output;
         if self.frame_index > 1 {
-            self.log.wall.push(dt.as_secs_f32() * 1e3);
+            let designing = self.app.plan.as_ref().is_some_and(|p| !p.done());
+            self.log.wall.push((dt.as_secs_f32() * 1e3, designing));
         }
         let surface_view = texture.texture.create_view(&Default::default());
         let viewport = Rect::new(
@@ -424,6 +450,7 @@ impl Host {
             self.log.whole_frame = t.frame.is_some();
         }
         gfx.queue.present(texture);
+        self.log.presented.push(now.elapsed().as_secs_f32() * 1e3);
         let cursor = gfx.renderer.snapshot_cursor();
         if cursor != self.cursor {
             gfx.window.set_cursor(winit_cursor(cursor));

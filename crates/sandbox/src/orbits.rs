@@ -6,7 +6,10 @@
 //! body in every frame.
 //!
 //! A body's window steps by a sixteenth of its period, so it is sampled
-//! again only when now moves a step.
+//! again only when now moves a step. Each orbit is a set of paths of its
+//! own, uploaded alone: at a month a second Phobos's window moves every
+//! frame, and the small bodies' orbits (~3,000 samples each) would be
+//! prepared again with it.
 
 use crate::paths::LOOP_POSE;
 use crate::settings::Lines;
@@ -59,6 +62,8 @@ struct Orbit {
     /// Samples per step.
     per_step: i64,
     samples: Vec<Sample>,
+    /// Its line, as a set of its own; `None` until drawn again.
+    set: Option<Arc<Paths>>,
 }
 
 /// The bodies' orbits as paths, and the poses they are placed with.
@@ -69,7 +74,8 @@ pub struct Orbits {
     focus: Option<BodyId>,
     /// The classes of lines shown when the paths were built.
     lines: Option<Lines>,
-    paths: Arc<Paths>,
+    /// The sets of the orbits shown.
+    shown: Vec<Arc<Paths>>,
 }
 
 /// Whether `lines` shows the orbits of bodies of `kind`.
@@ -125,6 +131,7 @@ impl Orbits {
                     step: None,
                     per_step: SAMPLES_PER_STEP.max((step / spacing).ceil() as i64),
                     samples: Vec::new(),
+                    set: None,
                 })
             })
             .collect();
@@ -137,7 +144,7 @@ impl Orbits {
             parents,
             focus: None,
             lines: None,
-            paths: Arc::default(),
+            shown: Vec::new(),
         }
     }
 
@@ -145,11 +152,15 @@ impl Orbits {
     /// focus's, and leaves out the classes `lines` hides; `true` if the
     /// paths changed.
     pub fn update(&mut self, eph: &Ephemeris, t: Epoch, focus: BodyId, lines: Lines) -> bool {
-        let mut changed = self.focus != Some(focus) || self.lines != Some(lines);
+        let refocused = self.focus != Some(focus);
+        let mut changed = refocused || self.lines != Some(lines);
         self.focus = Some(focus);
         self.lines = Some(lines);
         let now = t.seconds();
         for orbit in &mut self.orbits {
+            if refocused {
+                orbit.set = None;
+            }
             let step = orbit.period / STEPS as f64;
             let k = (now / step).floor() as i64;
             if orbit.step == Some(k) {
@@ -175,35 +186,40 @@ impl Orbits {
                     })
                 })
                 .collect();
+            orbit.set = None;
             changed = true;
         }
         if changed {
-            self.paths = Arc::new(Paths {
-                paths: self
-                    .orbits
-                    .iter()
-                    .filter(|o| o.samples.len() > 1 && shown(&lines, &eph.body(o.body).kind))
-                    .map(|o| {
-                        let small = matches!(eph.body(o.body).kind, BodyKind::SmallBody { .. });
-                        let mut color = if small {
-                            SMALL_BODY_COLOR
-                        } else {
-                            PLANET_COLOR
-                        };
-                        if Some(o.body) == self.focus {
-                            color = color.map(|c| c * FOCUS_GAIN);
-                        }
-                        Path {
-                            pose: self.pose_of(o.parent),
-                            samples: o.samples.clone(),
-                            future: color,
-                            past: color.map(|c| c * PAST_DIM),
-                            gap: GAP,
-                            window: None,
-                        }
-                    })
-                    .collect(),
-            });
+            for k in 0..self.orbits.len() {
+                let o = &self.orbits[k];
+                if o.set.is_some() || o.samples.len() < 2 {
+                    continue;
+                }
+                let small = matches!(eph.body(o.body).kind, BodyKind::SmallBody { .. });
+                let mut color = if small {
+                    SMALL_BODY_COLOR
+                } else {
+                    PLANET_COLOR
+                };
+                if Some(o.body) == self.focus {
+                    color = color.map(|c| c * FOCUS_GAIN);
+                }
+                let path = Path {
+                    pose: self.pose_of(o.parent),
+                    samples: o.samples.clone(),
+                    future: color,
+                    past: color.map(|c| c * PAST_DIM),
+                    gap: GAP,
+                    window: None,
+                };
+                self.orbits[k].set = Some(Arc::new(Paths { paths: vec![path] }));
+            }
+            self.shown = self
+                .orbits
+                .iter()
+                .filter(|o| shown(&lines, &eph.body(o.body).kind))
+                .filter_map(|o| o.set.clone())
+                .collect();
         }
         changed
     }
@@ -218,8 +234,9 @@ impl Orbits {
                 .expect("a parent")
     }
 
-    pub fn paths(&self) -> Arc<Paths> {
-        self.paths.clone()
+    /// The orbits shown, a set each.
+    pub fn paths(&self) -> &[Arc<Paths>] {
+        &self.shown
     }
 
     /// The parents' poses at `t`, after [`LOOP_POSE`]: each at its
@@ -256,14 +273,14 @@ mod tests {
         let mut orbits = Orbits::new(eph, &bodies, t);
         assert!(orbits.update(eph, t, eph.lookup("earth").unwrap(), Lines::default()));
         let poses: Vec<Pose> = orbits.poses(eph, t).collect();
-        let paths = orbits.paths();
         let (mut checked, mut worst) = (0, 0f64);
-        for (o, path) in orbits
+        for (o, set) in orbits
             .orbits
             .iter()
             .filter(|o| o.samples.len() > 1)
-            .zip(&paths.paths)
+            .zip(orbits.paths())
         {
+            let path = &set.paths[0];
             let pose = poses[path.pose - LOOP_POSE - 1];
             let at = pose.to_world(path.at(t.seconds()).expect("now is in the window"));
             let body = eph.barycentric_position(o.body, t);
@@ -303,7 +320,7 @@ mod tests {
         };
         let all = Lines::default();
         orbits.update(eph, t, earth, all);
-        let total = orbits.paths().paths.len();
+        let total = orbits.paths().len();
         // Each class's switch, and the kinds of bodies it holds.
         type Class = (fn(&mut Lines) -> &mut bool, fn(&BodyKind) -> bool);
         let classes: [Class; 3] = [
@@ -320,9 +337,9 @@ mod tests {
             let mut lines = all;
             *field(&mut lines) = false;
             assert!(orbits.update(eph, t, earth, lines));
-            assert_eq!(orbits.paths().paths.len(), total - n);
+            assert_eq!(orbits.paths().len(), total - n);
             assert!(orbits.update(eph, t, earth, all));
-            assert_eq!(orbits.paths().paths.len(), total);
+            assert_eq!(orbits.paths().len(), total);
         }
     }
 

@@ -21,9 +21,9 @@ pub const VIEW_POSE: usize = 0;
 pub const LOOP_POSE: usize = 1;
 
 /// The scene's sets of paths (`render::Scene::paths`): the plan's with the
-/// reference loops, and the bodies' orbits.
+/// reference loops, then the bodies' orbits, a set each.
 pub const PLAN_SET: usize = 0;
-pub const ORBIT_SET: usize = 1;
+pub const ORBIT_SETS: usize = 1;
 
 /// Legs' colors, in order (sRGB).
 const LEG_COLORS: [u32; 8] = [
