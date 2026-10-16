@@ -3,7 +3,7 @@
 //! edited plan does (M1b.md, step 1 plan, part 1): the engine keys
 //! designs by their inputs and compares states by their bits.
 
-use orbit::mission::{Checkpoint, Item, Plan, Planner, Ship, Step, World, resume_from};
+use orbit::mission::{Checkpoint, Item, Plan, Planner, Ship, Step, World, reads, resume_from};
 use orbit::places::Places;
 use std::time::Instant;
 
@@ -198,4 +198,41 @@ fn going_on_from_a_checkpoint_is_a_fresh_design() {
         let (fresh, _) = fly(&world, &edited);
         assert_identical(&format!("step {step} edited"), &resumed, &fresh);
     }
+}
+
+/// A step's design depends on no step past those `reads` names: the crew
+/// rotation's step from each checkpoint, designed again with the first
+/// step past them changed, is the same to the bit.
+#[test]
+fn a_step_reads_what_reads_says() {
+    let world = World::standard();
+    let ship = plan("gateway-rotation.toml").ships[0].clone();
+    let (items, checkpoints) = fly(&world, &ship);
+    let mut checked = 0;
+    for c in &checkpoints[..checkpoints.len() - 1] {
+        let end = reads(&ship, Some(c.next()));
+        let Some(past) = ship.steps.get(end) else {
+            continue;
+        };
+        let mut changed = ship.clone();
+        changed.steps[end] = match past {
+            Step::Wait(days) => Step::Wait(days + 30.0),
+            Step::Go(go) => {
+                let mut go = go.clone();
+                go.days = vec![go.longest() + 30.0];
+                Step::Go(go)
+            }
+        };
+        let step = |ship: &Ship| Planner::resume(&world, ship, c.clone()).step().unwrap();
+        let (mine, again) = (step(&ship), step(&changed));
+        let designed: Vec<Item> = items
+            .iter()
+            .filter(|i| mine.iter().any(|m| m.step == i.step))
+            .cloned()
+            .collect();
+        assert_identical(&format!("from step {}", c.next()), &mine, &designed);
+        assert_identical(&format!("step {end} changed"), &again, &mine);
+        checked += 1;
+    }
+    assert!(checked >= 4, "{checked} steps checked");
 }

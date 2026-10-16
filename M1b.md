@@ -12,6 +12,36 @@ below), and the four decisions below, each as recommended.
   leaves LEO for Mars from its own orbit. Edits: three to the crew
   rotation, two of them stepping back past a station visit. Nothing
   needed fixing.
+- Part 2: plan files give ships ids and pass `[game]` and `[[replan]]`
+  to the engine (`sim::log`). Career's actions are made at whole
+  minutes (`log::minute`), so a log reads back as the game it was.
+- Part 3: the planner's career rule (`Checkpoint::staying`, a
+  not-before time, `Planner::outstays`). The low lunar orbit round
+  trip, re-planned halfway through its wait in LEO, keeps its orbit to
+  the bit until now and leaves from it, 222.5 m/s dearer than with its
+  plane free: the plane it flew is the one it has. The visit check is
+  made where the planner stands, before the waits (found by its test).
+- Parts 4–5: designs keyed by their inputs, chained, kept and walked in
+  the background (`sim::designs`); the game and its modes' policies,
+  and a hash of each day's state (`sim::game`). A step's key covers the
+  steps `mission::reads` names, checked: changing the next step leaves
+  each of the crew rotation's steps the same to the bit. Changes from
+  the plan:
+  - Monthly snapshots and the event loop move to step 2. Step 1's
+    state is its designs, which a re-run takes from the cache.
+  - Keys replace `resume_from`: an edit walks the ship again through
+    the cache, and stepping back at a station follows from what each
+    step reads.
+  - A sandbox edit of a ship with re-plans folds them into its steps.
+  - A re-plan whose step is not yet designed when it is made is
+    accepted, and refused (as the ship's failure) once designed.
+  - Tests: the game designs what the planner does; 1 and 24 threads
+    give the same hashes; an edit designs from the step it changes on
+    (two designs for the sortie's wait: the step and the end after
+    it), an undo none; career keeps every day before now, refuses a
+    re-plan of a leg begun and any sandbox edit, and its log reads back
+    with the same hashes in career and in the sandbox; a longer NRHO
+    visit is refused.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
@@ -531,7 +561,9 @@ matters.
      unchanged ship in a re-run designs nothing.
 5. **The loop** (`sim::game`).
    - It advances in time order through each ship's steps and a daily
-     tick (empty until step 2), and snapshots its state monthly.
+     tick (empty until step 2), and snapshots its state monthly. (Moved
+     to step 2: step 1's state is its designs, which a re-run takes
+     from the cache.)
    - A change re-runs from the last snapshot before the earliest time
      it affects:
      - a sandbox edit: the time of the checkpoint it resumes from

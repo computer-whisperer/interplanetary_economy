@@ -3405,6 +3405,7 @@ name = "sim"
 version = "0.1.0"
 dependencies = [
  "orbit",
+ "rayon",
  "serde",
  "toml",
 ]

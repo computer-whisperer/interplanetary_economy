@@ -870,6 +870,33 @@ impl Checkpoint {
     }
 }
 
+/// The steps the planner reads designing the step from `next` (a
+/// checkpoint's): from it through the leg the step designs, and through
+/// the leg after that when the step reaches a station (its visit is built
+/// long enough for them, [`Planner`]'s `visit_until`). From the start
+/// (`None`), the steps a station start's visit is built for. Its end:
+/// what designs are keyed by (M1b.md, step 1 plan, part 4).
+pub fn reads(ship: &Ship, next: Option<usize>) -> usize {
+    let after = |from: usize| -> usize {
+        ship.steps[from.min(ship.steps.len())..]
+            .iter()
+            .position(|s| matches!(s, Step::Go(_)))
+            .map_or(ship.steps.len(), |k| from + k + 1)
+    };
+    let at_station = |kind: &PlaceKind| matches!(kind, PlaceKind::Station { .. });
+    match next {
+        None if at_station(&ship.start.kind) => after(0),
+        None => 0,
+        Some(next) => {
+            let end = after(next);
+            match ship.steps.get(end.wrapping_sub(1)) {
+                Some(Step::Go(go)) if end > next && at_station(&go.to.kind) => after(end),
+                _ => end,
+            }
+        }
+    }
+}
+
 /// Of `checkpoints` (by their steps, ascending), the one to go on from
 /// after the ship's steps from `edited` on change: the last before the
 /// edit; but if the ship is in a station's orbit there, the one before
