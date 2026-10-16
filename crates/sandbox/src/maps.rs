@@ -302,8 +302,12 @@ static STARTED: Once = Once::new();
 pub fn start() {
     STARTED.call_once(|| {
         std::thread::spawn(|| {
-            let read =
-                read(&data_dir().join("bodies"), Ephemeris::standard()).map(|(maps, problems)| {
+            // Apart from rayon's global pool, whose tasks the view's
+            // rebuilds would wait behind.
+            let pool = crate::background::pool("maps");
+            let read = pool
+                .install(|| read(&data_dir().join("bodies"), Ephemeris::standard()))
+                .map(|(maps, problems)| {
                     for p in problems {
                         eprintln!("sandbox: {p}; drawn without");
                     }

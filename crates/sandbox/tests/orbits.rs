@@ -4,7 +4,6 @@
 use orbit::time::Epoch;
 use sandbox::app::Shell;
 use sandbox::frames::Frame;
-use sandbox::paths::ORBIT_SETS;
 
 #[test]
 fn every_orbit_passes_through_its_body_in_every_frame() {
@@ -20,7 +19,7 @@ fn every_orbit_passes_through_its_body_in_every_frame() {
         app.set_frame(frame);
         app.update_paths();
         let scene = app.scene(1.0);
-        let orbits: Vec<_> = scene.paths[ORBIT_SETS..]
+        let orbits: Vec<_> = scene.paths[app.orbit_sets()..]
             .iter()
             .flat_map(|set| &set.paths)
             .collect();

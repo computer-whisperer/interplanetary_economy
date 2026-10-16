@@ -3279,6 +3279,7 @@ dependencies = [
  "damascene-winit-wgpu",
  "glam 0.34.1",
  "image",
+ "libc",
  "orbit",
  "png",
  "pollster",

@@ -9,7 +9,6 @@ use crate::labels::{Anchor, Ball, Placed, Target, View, hidden};
 use glam::Vec2;
 use orbit::ephem::BodyId;
 use rayon::prelude::*;
-use std::collections::HashMap;
 
 /// How near a click must come to a ship, a marker or a body's point, and
 /// to a line, logical px.
@@ -67,24 +66,22 @@ pub fn body(at: Vec2, anchors: &[Anchor]) -> Option<Pick> {
 }
 
 /// The ship and item whose line passes nearest a click at `at` (px on
-/// `view`), within [`LINE_PX`], where `balls` do not hide it: `owners`
-/// gives each item's path among `paths`, placed by `poses`, as drawn at
+/// `view`), within [`LINE_PX`], where `balls` do not hide it: `lines` are
+/// the items' (ship and item, by index), placed by `poses`, as drawn at
 /// `now` (s on the paths' time axis).
 pub fn line(
     at: Vec2,
     view: &View,
-    paths: &render::Paths,
+    lines: &[((usize, usize), &render::Path)],
     poses: &[render::Pose],
     now: f64,
-    owners: &HashMap<(usize, usize), usize>,
     balls: &[Ball],
 ) -> Option<(usize, usize)> {
     let scale = f64::from(view.scale);
     let at = at.as_dvec2() * scale;
-    owners
+    lines
         .par_iter()
-        .filter_map(|(&owner, &p)| {
-            let path = paths.paths.get(p)?;
+        .filter_map(|&(owner, path)| {
             let pose = poses.get(path.pose)?;
             let shown = |p| !hidden(view.camera.eye, p, balls, None);
             let d = path.near(

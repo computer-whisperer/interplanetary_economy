@@ -17,7 +17,7 @@ use sandbox::frame::{self, Output, View, shot};
 use sandbox::frames::Frame;
 use sandbox::labels::{self, Target, mps};
 use sandbox::panel::{self, Tone};
-use sandbox::paths::{PLAN_SET, VIEW_POSE};
+use sandbox::paths::{SHIP_SETS, VIEW_POSE};
 use sandbox::pick::Pick;
 use sandbox::plan::{Loaded, Ship};
 
@@ -255,7 +255,7 @@ fn clicks_pick_what_they_land_on() {
     );
 
     // A point on the leg's line on the view, clear of anchors and labels.
-    let line = scene.paths[PLAN_SET].paths.last().unwrap();
+    let line = scene.paths[SHIP_SETS].paths.last().unwrap();
     let view = app.view().unwrap();
     let on_line = (5..70)
         .filter_map(|i| {
@@ -341,7 +341,7 @@ fn a_line_over_a_disk_is_picked() {
             .unwrap()
             .clone();
         // The stay's line: the one in the view's frame spanning it.
-        let line = scene.paths[PLAN_SET]
+        let line = scene.paths[SHIP_SETS]
             .paths
             .iter()
             .find(|p| {
@@ -452,6 +452,7 @@ fn panel_rows_carry_dv_and_failures() {
             done: true,
             failure: Some(why.into()),
             first_leg: 0,
+            revision: 0,
         },
         Ship {
             name: "Failed".into(),
@@ -462,6 +463,7 @@ fn panel_rows_carry_dv_and_failures() {
             done: true,
             failure: Some(why.into()),
             first_leg: 0,
+            revision: 0,
         },
     ];
     let panicked = "designing it panicked: no message";
@@ -477,6 +479,7 @@ fn panel_rows_carry_dv_and_failures() {
             done: true,
             failure: Some(panicked.into()),
             first_leg: 0,
+            revision: 0,
         },
     ];
     let rows = panel::rows(eph, &ships, Epoch::from_ymd(2045, 3, 2), None);
@@ -589,7 +592,7 @@ fn clicks_reach_the_map_and_the_panel() {
         assert_eq!(app.selected, Some((0, item)));
 
         // On the leg's line, clear of anchors and labels.
-        let line = scene.paths[PLAN_SET].paths.last().unwrap();
+        let line = scene.paths[SHIP_SETS].paths.last().unwrap();
         let v = app.view().unwrap();
         let anchors = app.anchors().to_vec();
         let on_line = (5..70)

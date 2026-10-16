@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod atmospheres;
+pub mod background;
 pub mod bodies;
 pub mod camera;
 pub mod clock;

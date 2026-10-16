@@ -9,8 +9,10 @@ use orbit::places::Places;
 use orbit::time::Epoch;
 use sandbox::app::Shell;
 use sandbox::frames::Frame;
-use sandbox::paths::{self, PLAN_SET, VIEW_POSE};
+use sandbox::labels::Target;
+use sandbox::paths::{self, SHIP_SETS, VIEW_POSE};
 use sandbox::plan::{Loaded, on_track};
+use std::sync::Arc;
 
 /// From the NRHO to low lunar orbit: designed in a fraction of a second.
 const QUICK: &str = r#"
@@ -46,11 +48,11 @@ fn lines_follow_tracks_in_every_frame() {
     assert_eq!(kinds, [&ItemKind::Stay, &ItemKind::Leg], "{kinds:?}");
     let moon = eph.lookup("moon").unwrap();
     for (id, _, frame) in Frame::offered(eph) {
-        let built = paths::build(eph, &frame, moon, &[], &plan.ships);
-        assert_eq!(built.paths.len(), 2, "{id}");
+        let built = paths::build(eph, &frame, moon, 0, ship);
+        assert_eq!(built.set.paths.len(), 2, "{id}");
         let mut worst: f64 = 0.0;
-        for (path, owner) in built.paths.iter().zip(&built.owners) {
-            let item = &ship.items[owner.unwrap().1];
+        for (path, &k) in built.set.paths.iter().zip(&built.items) {
+            let item = &ship.items[k];
             let track = item.track.as_ref().unwrap();
             for k in 1..400 {
                 let t = Epoch(item.start.0 + (item.end.0 - item.start.0) * f64::from(k) / 400.0);
@@ -78,8 +80,7 @@ fn ship_and_burns_on_the_line() {
     app.clock.seek(t);
     let scene = app.scene(1.0);
     let view = scene.poses[VIEW_POSE];
-    let paths = &scene.paths[PLAN_SET];
-    let line = paths.paths.last().unwrap();
+    let line = scene.paths[SHIP_SETS].paths.last().unwrap();
     let on_line = view.to_world(line.at(t.seconds()).unwrap());
     let ship = scene
         .markers
@@ -149,12 +150,9 @@ fn small_body_focus_before_2040() {
     app.follow_focus();
     app.update_paths();
     let scene = app.scene(1.0);
-    let loops = scene.paths[PLAN_SET]
-        .paths
-        .iter()
-        .filter(|p| p.pose == paths::LOOP_POSE)
-        .count();
-    assert_eq!(scene.paths[PLAN_SET].paths.len(), loops, "no ship paths");
+    let ships = &scene.paths[SHIP_SETS..app.orbit_sets()];
+    assert_eq!(ships.len(), 1);
+    assert!(ships[0].paths.is_empty(), "no ship paths");
     app.clock.seek(Epoch::from_ymd(2035, 1, 1));
     assert_eq!(app.clock.t, start);
     app.tick(0.1);
@@ -205,9 +203,9 @@ fn published_plan_gpu_time() {
         app.follow_focus();
         app.update_paths();
         let scene = app.scene(1.0);
-        let samples: usize = scene.paths[PLAN_SET]
-            .paths
+        let samples: usize = scene.paths[SHIP_SETS..app.orbit_sets()]
             .iter()
+            .flat_map(|set| &set.paths)
             .map(|p| p.samples.len())
             .sum();
         match gpu.time_scene(&mut renderer, &scene, (1920, 1080)) {
@@ -280,9 +278,11 @@ fn an_edited_ship_is_designed_again() {
     let mut plan = Loaded::start(parse());
     plan.wait();
     let other = plan.ships[1].items.clone();
-    let generation = plan.generation;
+    let revisions = [plan.ships[0].revision, plan.ships[1].revision];
     plan.edit(0, edited.ships[0].clone(), Some(2));
-    assert!(plan.generation > generation);
+    // Only the edited ship's lines are built again.
+    assert!(plan.ships[0].revision != revisions[0]);
+    assert_eq!(plan.ships[1].revision, revisions[1]);
     assert!(!plan.ships[0].done);
     assert!(
         plan.ships[0].items.iter().all(|i| i.step < 2),
@@ -298,6 +298,88 @@ fn an_edited_ship_is_designed_again() {
     plan.edit(0, edited.ships[0].clone(), Some(2));
     plan.wait();
     assert_same(&plan.ships[0].items, &fresh.ships[0].items);
+}
+
+/// Each ship's lines are a set of their own: an edit builds the edited
+/// ship's again and keeps the other's, and so does removing the last
+/// ship; a ship moved by a removal is built again, its events by its new
+/// place.
+#[test]
+fn an_edit_builds_its_own_ships_lines_alone() {
+    let eph = Ephemeris::standard();
+    let parse = || Plan::parse(SORTIE, eph, Places::standard()).unwrap();
+    let shell = || {
+        let mut plan = Loaded::start(parse());
+        plan.wait();
+        let mut app = Shell::new(Epoch::from_ymd(2045, 3, 6));
+        app.plan = Some(plan);
+        app.frame = Frame::offered(eph)[1].2;
+        let moon = eph.lookup("moon").unwrap();
+        app.camera = sandbox::camera::MapCamera::new(eph, moon);
+        app.camera.set_altitude(eph, 40_000.0);
+        app
+    };
+    let sets = |app: &mut Shell| {
+        app.update_paths();
+        app.scene(1.0).paths[SHIP_SETS..app.orbit_sets()].to_vec()
+    };
+    let mut app = shell();
+    let before = sets(&mut app);
+    assert_eq!(before.len(), 2);
+    assert!(before.iter().all(|set| !set.paths.is_empty()));
+    let mut edited = parse().ships[0].clone();
+    edited.steps[2] = Step::Wait(3.0);
+    app.plan.as_mut().unwrap().edit(0, edited, Some(2));
+    let after = sets(&mut app);
+    assert!(
+        !Arc::ptr_eq(&after[0], &before[0]),
+        "the edited ship's built again"
+    );
+    assert!(Arc::ptr_eq(&after[1], &before[1]), "the other's kept");
+    app.plan.as_mut().unwrap().remove_ship(1);
+    let left = sets(&mut app);
+    assert_eq!(left.len(), 1);
+    assert!(
+        Arc::ptr_eq(&left[0], &after[0]),
+        "kept after the last's removal"
+    );
+
+    let mut app = shell();
+    let before = sets(&mut app);
+    app.plan.as_mut().unwrap().remove_ship(0);
+    let left = sets(&mut app);
+    assert_eq!(left.len(), 1);
+    assert!(!Arc::ptr_eq(&left[0], &before[1]), "moved: built again");
+    let scene = app.scene(1.0);
+    app.place_labels(&scene, Some((1000, 700)), 1.0);
+    let markers: Vec<usize> = app
+        .anchors()
+        .iter()
+        .filter_map(|a| match a.target {
+            Target::Marker { ship, .. } => Some(ship),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !markers.is_empty(),
+        "the remaining ship's markers are labeled"
+    );
+    assert!(markers.iter().all(|&s| s == 0), "{markers:?}");
+}
+
+/// The jumps between markers follow the plan with the ships' lines
+/// hidden (found in review: their times stayed the old plan's).
+#[test]
+fn jumps_follow_the_plan_with_its_lines_hidden() {
+    let mut app = Shell::new(Epoch::from_ymd(2045, 3, 5));
+    app.settings.lines.ships = false;
+    app.update_paths();
+    assert!(app.event_times().is_empty());
+    app.load(designed());
+    app.update_paths();
+    let times = app.plan.as_ref().unwrap().events();
+    assert!(!times.is_empty());
+    assert_eq!(app.event_times(), &times[..]);
 }
 
 /// A ship's start changed to a station, then its first leg edited: it is

@@ -12,7 +12,8 @@ use orbit::ephem::{BodyId, Ephemeris};
 use orbit::mission::{Item, ItemKind, MarkerKind};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use rayon::prelude::*;
-use render::{Path, Sample, Shape};
+use render::{Path, Paths, Sample, Shape};
+use std::sync::Arc;
 
 /// The poses paths are drawn with (`render::Path::pose`): the view's frame,
 /// and the frame reference loops are in; the bodies' orbits' follow
@@ -20,10 +21,12 @@ use render::{Path, Sample, Shape};
 pub const VIEW_POSE: usize = 0;
 pub const LOOP_POSE: usize = 1;
 
-/// The scene's sets of paths (`render::Scene::paths`): the plan's with the
-/// reference loops, then the bodies' orbits, a set each.
-pub const PLAN_SET: usize = 0;
-pub const ORBIT_SETS: usize = 1;
+/// The scene's sets of paths (`render::Scene::paths`), each uploaded
+/// apart: the reference loops, then each ship's (from [`SHIP_SETS`], so
+/// that a ship's new items or edit build and upload its own alone), then
+/// the bodies' orbits, a set each (`Shell::orbit_sets`).
+pub const LOOP_SET: usize = 0;
+pub const SHIP_SETS: usize = 1;
 
 /// Legs' colors, in order (sRGB).
 const LEG_COLORS: [u32; 8] = [
@@ -161,50 +164,32 @@ pub fn loop_paths(loops: Vec<Vec<Sample>>) -> Vec<Path> {
         .collect()
 }
 
-/// What is drawn of a plan in a frame.
+/// What is drawn of a ship in a frame.
 #[derive(Clone, Debug, Default)]
 pub struct Built {
-    pub paths: Vec<Path>,
-    /// Each path's ship and item, by their indices, where it is one's.
-    pub owners: Vec<Option<(usize, usize)>>,
+    pub set: Arc<Paths>,
+    /// Each path's item, by its index in the ship's.
+    pub items: Vec<usize>,
+    /// Its events, as ship `s`'s.
     pub events: Vec<Event>,
 }
 
-/// The ships' paths and events in `frame`, after `loops`.
-pub fn build(
-    eph: &Ephemeris,
-    frame: &Frame,
-    focus: BodyId,
-    loops: &[Path],
-    ships: &[Ship],
-) -> Built {
-    let colored: Vec<(usize, usize, [f32; 3])> = ships
-        .iter()
-        .enumerate()
-        .flat_map(|(s, ship)| {
-            colors(ship)
-                .into_iter()
-                .enumerate()
-                .map(move |(k, c)| (s, k, c))
-        })
-        .collect();
-    let drawn: Vec<(Path, (usize, usize))> = colored
+/// Ship `s`'s paths and events in `frame`.
+pub fn build(eph: &Ephemeris, frame: &Frame, focus: BodyId, s: usize, ship: &Ship) -> Built {
+    let colors = colors(ship);
+    let (paths, items): (Vec<Path>, Vec<usize>) = colors
         .par_iter()
-        .filter_map(|&(s, k, color)| {
-            item_path(eph, frame, focus, &ships[s].items[k], color).map(|p| (p, (s, k)))
+        .enumerate()
+        .filter_map(|(k, &color)| {
+            item_path(eph, frame, focus, &ship.items[k], color).map(|p| (p, k))
         })
-        .collect();
+        .unzip();
     let mut out = Built {
-        paths: loops.to_vec(),
-        owners: vec![None; loops.len()],
+        set: Arc::new(Paths { paths }),
+        items,
         events: Vec::new(),
     };
-    for (path, owner) in drawn {
-        out.paths.push(path);
-        out.owners.push(Some(owner));
-    }
-    for &(s, k, color) in &colored {
-        let (ship, item) = (&ships[s], &ships[s].items[k]);
+    for (k, (item, &color)) in ship.items.iter().zip(&colors).enumerate() {
         for (i, m) in item.markers.iter().enumerate() {
             // A landing on the track it leaves, an ascent on the one it
             // reaches; the rest on the item's own.

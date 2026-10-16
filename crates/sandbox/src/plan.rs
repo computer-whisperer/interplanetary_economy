@@ -1,8 +1,8 @@
 //! A mission plan in the sandbox (M1c.md, step 4 plan, item 4; step 7
 //! plan, item 2): its ships designed in the background, in parallel on a
-//! pool of their own (the UI's rebuilds use rayon's global pool, and
-//! would wait behind them), each item kept as it arrives; a ship edited
-//! designed again from where the edit takes effect.
+//! pool of their own at a lower priority (`background`), each item kept
+//! as it arrives; a ship edited designed again from where the edit takes
+//! effect.
 
 use crate::windows::Windows;
 use glam::DVec3;
@@ -57,6 +57,9 @@ pub struct Ship {
     pub failure: Option<String>,
     /// Its first leg's place in the plan's legs, counted in the file.
     pub first_leg: usize,
+    /// Another whenever its items change, unique in the process
+    /// ([`revision`]): what its lines are built for.
+    pub revision: u64,
 }
 
 /// A ship's design: its generation (each edit starts another; a
@@ -69,6 +72,13 @@ struct Design {
     generation: u64,
     live: Arc<AtomicU64>,
     checkpoints: Vec<Checkpoint>,
+}
+
+/// A ship's revision not given before in the process: one plan's ships'
+/// lines are never taken for another's.
+fn revision() -> u64 {
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    LAST.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 /// The fields legs are designed in, built once.
@@ -90,9 +100,6 @@ pub struct Loaded {
     pub windows: Windows,
     /// Sweeps of legs' durations, by ship and step.
     pub sweeps: HashMap<(usize, usize), Sweep>,
-    /// Changes whenever items arrive or a ship is edited (not when a
-    /// ship is only done).
-    pub generation: u64,
     pool: Arc<rayon::ThreadPool>,
     next_id: u64,
     sender: Sender<(u64, u64, Message)>,
@@ -162,6 +169,7 @@ impl Loaded {
                 done: false,
                 failure: None,
                 first_leg,
+                revision: revision(),
             })
             .collect();
         let designs = (0..plan.ships.len() as u64)
@@ -172,12 +180,7 @@ impl Loaded {
                 checkpoints: Vec::new(),
             })
             .collect();
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .thread_name(|i| format!("design {i}"))
-            .build()
-            .expect("a thread pool");
+        let pool = crate::background::pool("design");
         let (sender, receiver) = channel();
         let next_id = plan.ships.len() as u64;
         let mut loaded = Loaded {
@@ -187,7 +190,6 @@ impl Loaded {
             designs,
             windows: Windows::default(),
             sweeps: HashMap::new(),
-            generation: 0,
             pool: Arc::new(pool),
             next_id,
             sender,
@@ -278,6 +280,7 @@ impl Loaded {
         let shown = &mut self.ships[s];
         shown.name = self.plan.ships[s].name.clone();
         shown.items.retain(|i| i.step < keep);
+        shown.revision = revision();
         shown.done = false;
         shown.failure = shown.items.iter().find_map(|i| match &i.kind {
             ItemKind::Failed(why) => Some(why.clone()),
@@ -286,17 +289,15 @@ impl Loaded {
         for (shown, first) in self.ships.iter_mut().zip(first_legs(&self.plan)) {
             shown.first_leg = first;
         }
-        self.generation += 1;
         self.sweeps.retain(|&(ship, _), _| ship != s);
         self.design(s, from);
         self.windows.update(&self.plan, &self.pool);
     }
 
-    /// Renames ship `s`: nothing to design again.
+    /// Renames ship `s`: nothing to design or draw again.
     pub fn rename(&mut self, s: usize, name: &str) {
         self.plan.ships[s].name = name.to_string();
         self.ships[s].name = name.to_string();
-        self.generation += 1;
     }
 
     /// Adds `ship` to the plan, last, and designs it.
@@ -315,6 +316,7 @@ impl Loaded {
             done: false,
             failure: None,
             first_leg: 0,
+            revision: revision(),
         });
         self.reshaped();
         self.design(self.ships.len() - 1, None);
@@ -342,7 +344,6 @@ impl Loaded {
             shown.first_leg = first;
         }
         self.sweeps.clear();
-        self.generation += 1;
         self.windows.update(&self.plan, &self.pool);
     }
 
@@ -481,8 +482,8 @@ impl Loaded {
                     }
                 }
                 ship.items.extend(items);
+                ship.revision = revision();
                 design.checkpoints.push(c);
-                self.generation += 1;
             }
             Message::Refused(why) => {
                 ship.failure = Some(why);

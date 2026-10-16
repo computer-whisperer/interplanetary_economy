@@ -19,7 +19,7 @@ use sandbox::frame::{self, Output, View};
 use sandbox::frames::Frame;
 use sandbox::labels::Target;
 use sandbox::look::{MAX_LIFT, MAX_NIGHT_LIGHTS};
-use sandbox::paths::{ORBIT_SETS, PLAN_SET};
+use sandbox::paths::{LOOP_SET, SHIP_SETS};
 use sandbox::plan::Loaded;
 use sandbox::settings::{self, CONTROLS, Lines, Settings, TOGGLES};
 
@@ -401,20 +401,21 @@ fn hidden_lines_are_left_out() {
     let moon = eph.lookup("moon").unwrap();
     app.camera = MapCamera::new(eph, moon);
     app.camera.set_altitude(eph, 40_000.0);
-    // The plan's paths, the bodies' orbits, the markers, and the events'
-    // and station orbits' labels.
+    // The station loops, the ships' paths, the bodies' orbits, the
+    // markers, and the events' and station orbits' labels.
     let seen = |app: &mut Shell| {
         app.update_paths();
         let scene = app.scene(1.0);
         app.place_labels(&scene, Some((1000, 700)), 1.0);
         let labeled =
             |f: fn(&Target) -> bool| app.anchors().iter().filter(|a| f(&a.target)).count();
+        let paths = |sets: &[std::sync::Arc<render::Paths>]| -> usize {
+            sets.iter().map(|s| s.paths.len()).sum()
+        };
         [
-            scene.paths[PLAN_SET].paths.len(),
-            scene.paths[ORBIT_SETS..]
-                .iter()
-                .map(|s| s.paths.len())
-                .sum(),
+            scene.paths[LOOP_SET].paths.len(),
+            paths(&scene.paths[SHIP_SETS..app.orbit_sets()]),
+            paths(&scene.paths[app.orbit_sets()..]),
             scene.markers.len(),
             labeled(|t| matches!(t, Target::Marker { .. })),
             labeled(|t| matches!(t, Target::Loop(_))),
@@ -428,7 +429,7 @@ fn hidden_lines_are_left_out() {
     let all = seen(&mut app);
     let ships = app.plan.as_ref().unwrap().ships.len();
     println!("near the Moon, all shown: {all:?}");
-    assert!(all[..4].iter().all(|&n| n > 0), "{all:?}");
+    assert!(all[..5].iter().all(|&n| n > 0), "{all:?}");
 
     app.settings.lines = lines(|l| l.ships = false);
     let no_ships = seen(&mut app);
@@ -439,12 +440,9 @@ fn hidden_lines_are_left_out() {
     println!(
         "no ships' paths {no_ships:?}, no station orbits {no_stations:?}, no bodies' orbits {no_orbits:?}"
     );
-    // The plan's set holds the station loops, then the ships' paths.
-    let loops = no_ships[0];
-    assert!(loops > 0 && loops < all[0]);
-    assert_eq!(no_ships, [loops, all[1], ships, 0, all[4]]);
-    assert_eq!(no_stations, [all[0] - loops, all[1], all[2], all[3], 0]);
-    assert_eq!(no_orbits, [all[0], 0, all[2], all[3], all[4]]);
+    assert_eq!(no_ships, [all[0], 0, all[2], ships, 0, all[5]]);
+    assert_eq!(no_stations, [0, all[1], all[2], all[3], all[4], 0]);
+    assert_eq!(no_orbits, [all[0], all[1], 0, all[3], all[4], all[5]]);
     app.settings.lines = Lines::default();
     assert_eq!(seen(&mut app), all);
 
@@ -454,6 +452,6 @@ fn hidden_lines_are_left_out() {
     app.settings.lines = lines(|l| l.stations = false);
     let no_stations = seen(&mut app);
     println!("focused on Earth: all {all:?}, no station orbits {no_stations:?}");
-    assert!(all[4] > 0, "the station orbits are labeled");
-    assert_eq!(no_stations[4], 0);
+    assert!(all[5] > 0, "the station orbits are labeled");
+    assert_eq!(no_stations[5], 0);
 }

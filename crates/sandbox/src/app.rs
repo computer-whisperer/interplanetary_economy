@@ -99,16 +99,23 @@ impl Stats {
     }
 }
 
-/// What the paths were last built for: rebuilt when it changes.
+/// What the paths were last built for: all built again when it changes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BuiltFor {
     frame: Frame,
     /// The focus, where the frame is centered on it.
     focus: Option<BodyId>,
-    generation: u64,
     /// Whether the ships' paths and the station orbits are shown.
     ships: bool,
     stations: bool,
+}
+
+/// A ship's lines and events as built, and the ship's revision and first
+/// leg (its colors) they were built for.
+struct ShipSet {
+    revision: u64,
+    first_leg: usize,
+    built: paths::Built,
 }
 
 pub struct Shell {
@@ -132,12 +139,16 @@ pub struct Shell {
     loop_names: Vec<String>,
     orbits: Orbits,
     built: Option<BuiltFor>,
-    paths: Arc<render::Paths>,
-    /// Each path's ship and item, where it is one's.
-    owners: HashMap<(usize, usize), usize>,
+    /// The reference loops' set, and each ship's (`paths::LOOP_SET`,
+    /// `SHIP_SETS`).
+    loop_set: Arc<render::Paths>,
+    ship_sets: Vec<ShipSet>,
+    /// The ships' events, in order.
     events: Vec<Event>,
-    /// Sorted marker times, for jumps.
+    /// Sorted marker times, for jumps, and the ships' revisions they were
+    /// taken at.
     event_times: Vec<Epoch>,
+    event_revisions: Vec<u64>,
     focus_open: bool,
     frame_open: bool,
     plan_open: bool,
@@ -195,10 +206,11 @@ impl Shell {
             loops: paths::loop_paths(loops),
             loop_names,
             built: None,
-            paths: Arc::default(),
-            owners: HashMap::new(),
+            loop_set: Arc::default(),
+            ship_sets: Vec::new(),
             events: Vec::new(),
             event_times: Vec::new(),
+            event_revisions: Vec::new(),
             focus_open: false,
             frame_open: false,
             plan_open: false,
@@ -491,7 +503,6 @@ impl Shell {
             self.plan = Some(restarted);
             self.leg = None;
             self.editor = None;
-            self.built = None;
             return;
         }
         for (s, ship) in before.ships.into_iter().enumerate() {
@@ -672,7 +683,6 @@ impl Shell {
         self.leg = None;
         self.editor = None;
         self.undo.clear();
-        self.built = None;
         self.timeline.refit();
         self.poll();
     }
@@ -729,9 +739,11 @@ impl Shell {
         self.followed = self.clock.t;
     }
 
-    /// Builds the paths and events, if the frame, its center, the plan or
-    /// the classes of lines shown changed since they were, and the bodies'
-    /// orbits whose windows moved.
+    /// Builds the lines and events again where they changed: all, if the
+    /// frame, its center or the classes of lines shown did; else each
+    /// ship's whose items or colors did (its own set, so that a ship's
+    /// new items or edit build and upload its lines alone); and the
+    /// bodies' orbits whose windows moved.
     pub fn update_paths(&mut self) {
         let lines = self.settings.lines;
         self.orbits
@@ -739,29 +751,88 @@ impl Shell {
         let key = BuiltFor {
             frame: self.frame,
             focus: (self.frame == Frame::Focus).then_some(self.camera.focus),
-            generation: self.plan.as_ref().map_or(0, |p| p.generation),
             ships: lines.ships,
             stations: lines.stations,
         };
-        if self.built == Some(key) {
-            return;
+        let mut changed = self.built != Some(key);
+        if changed {
+            // The loops are in their own frame: uploaded again only when
+            // shown or hidden.
+            if self.built.is_none_or(|b| b.stations != lines.stations) {
+                let loops = if lines.stations {
+                    self.loops.clone()
+                } else {
+                    Vec::new()
+                };
+                self.loop_set = Arc::new(render::Paths { paths: loops });
+            }
+            self.ship_sets.clear();
+            self.built = Some(key);
         }
         let ships = match &self.plan {
             Some(p) if lines.ships => &p.ships[..],
             _ => &[],
         };
-        let loops = if lines.stations { &self.loops[..] } else { &[] };
-        let built = paths::build(self.eph, &self.frame, self.camera.focus, loops, ships);
-        self.owners = built
-            .owners
-            .iter()
-            .enumerate()
-            .filter_map(|(p, o)| Some(((*o)?, p)))
-            .collect();
-        self.paths = Arc::new(render::Paths { paths: built.paths });
-        self.events = built.events;
-        self.event_times = self.plan.as_ref().map_or_else(Vec::new, Loaded::events);
-        self.built = Some(key);
+        if self.ship_sets.len() > ships.len() {
+            self.ship_sets.truncate(ships.len());
+            changed = true;
+        }
+        // A ship's set is kept where the ship at its place has the same
+        // revision (unique) and first leg: a ship moved by a removal is
+        // built again, its colors and events' place changed.
+        let (eph, frame, focus) = (self.eph, self.frame, self.camera.focus);
+        for (s, ship) in ships.iter().enumerate() {
+            let kept = self.ship_sets.get(s).is_some_and(|set| {
+                (set.revision, set.first_leg) == (ship.revision, ship.first_leg)
+            });
+            if kept {
+                continue;
+            }
+            changed = true;
+            let set = ShipSet {
+                revision: ship.revision,
+                first_leg: ship.first_leg,
+                built: paths::build(eph, &frame, focus, s, ship),
+            };
+            match self.ship_sets.get_mut(s) {
+                Some(old) => *old = set,
+                None => self.ship_sets.push(set),
+            }
+        }
+        if changed {
+            self.events = self
+                .ship_sets
+                .iter()
+                .flat_map(|set| set.built.events.iter().copied())
+                .collect();
+        }
+        // The markers' times, for jumps, whether the ships' lines are
+        // shown or not.
+        let ships = self.plan.as_ref().map_or(&[][..], |p| &p.ships[..]);
+        let revisions = ships.iter().map(|s| s.revision);
+        if !revisions.clone().eq(self.event_revisions.iter().copied()) {
+            self.event_revisions = revisions.collect();
+            self.event_times = self.plan.as_ref().map_or_else(Vec::new, Loaded::events);
+        }
+    }
+
+    /// The markers' times the next and previous keys jump between,
+    /// sorted.
+    pub fn event_times(&self) -> &[Epoch] {
+        &self.event_times
+    }
+
+    /// Where the bodies' orbits' sets start in the scene's
+    /// (`render::Scene::paths`), after the ships'.
+    pub fn orbit_sets(&self) -> usize {
+        paths::SHIP_SETS + self.ship_sets.len()
+    }
+
+    /// Ship `s`'s item `k`'s line, if drawn.
+    fn item_line(&self, s: usize, k: usize) -> Option<&render::Path> {
+        let built = &self.ship_sets.get(s)?.built;
+        let p = built.items.iter().position(|&i| i == k)?;
+        built.set.paths.get(p)
     }
 
     /// The exposure the focus calls for now.
@@ -810,8 +881,9 @@ impl Shell {
             spheres: bodies::spheres(eph, &self.bodies, t, camera.eye),
             markers,
             sky: sky::loaded().map(|d| sky::sky(d, t)),
-            // By `paths::PLAN_SET` and `ORBIT_SETS`.
-            paths: std::iter::once(self.paths.clone())
+            // By `paths::LOOP_SET`, `SHIP_SETS` and `Self::orbit_sets`.
+            paths: std::iter::once(self.loop_set.clone())
+                .chain(self.ship_sets.iter().map(|set| set.built.set.clone()))
                 .chain(self.orbits.paths().iter().cloned())
                 .collect(),
             poses,
@@ -844,9 +916,8 @@ impl Shell {
                 .as_ref()
                 .is_some_and(|track| on_track(self.eph, track, t).is_some())
         })?;
-        self.owners
-            .get(&(s, k))
-            .and_then(|&p| self.paths.paths[p].at(t.seconds()))
+        self.item_line(s, k)
+            .and_then(|line| line.at(t.seconds()))
             .map(|p| view.to_world(p))
             .or_else(|| position(self.eph, &ship.items[k..=k], t, true))
     }
@@ -925,15 +996,21 @@ impl Shell {
         let seen = self.seen.as_ref()?;
         pick::marked(at, &seen.placed, &seen.anchors)
             .or_else(|| {
-                let (s, k) = pick::line(
-                    at,
-                    &seen.view,
-                    &self.paths,
-                    &seen.poses,
-                    seen.now,
-                    &self.owners,
-                    &seen.balls,
-                )?;
+                let lines: Vec<_> = self
+                    .ship_sets
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(s, set)| {
+                        let built = &set.built;
+                        built
+                            .items
+                            .iter()
+                            .map(move |&k| (s, k))
+                            .zip(&built.set.paths)
+                    })
+                    .collect();
+                let (s, k) =
+                    pick::line(at, &seen.view, &lines, &seen.poses, seen.now, &seen.balls)?;
                 Some(Pick::Item(s, k))
             })
             .or_else(|| pick::body(at, &seen.anchors))

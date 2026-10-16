@@ -1,7 +1,8 @@
 //! Sets of paths on the GPU (M1c.md, step 4 plan, item 1; step 6 plan,
-//! item 3): each set uploaded when the scene holds another, apart from the
-//! others (a plan's paths are large and change rarely, the bodies' orbits
-//! small and often), and culled and cut each frame.
+//! item 3; step 8): each set uploaded when the scene holds another, apart
+//! from the others (a ship's paths are large and change when its design
+//! does, the bodies' orbits small and often), and culled and cut each
+//! frame.
 
 use crate::Storage;
 use crate::paths::{self, Paths, Pose};

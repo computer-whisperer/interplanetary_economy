@@ -21,8 +21,8 @@ step 8, the gate (step 8 plan, at the end).
     - The bodies' orbits were one set of paths, prepared again whenever
       any orbit's window moved: every frame at a month a second
       (Phobos's step is half an hour), ~62,000 small bodies' samples
-      with it. Now a set each (`paths::ORBIT_SETS`): 5.87 ms without a
-      plan, 5.67 with it.
+      with it. Now a set each (from `Shell::orbit_sets`): 5.87 ms
+      without a plan, 5.67 with it.
     - Of the rest, `queue.submit` seemed to take ~2.2 ms a frame in the
       kernel (`DRM_IOCTL_AMDGPU_CS`, ~1.1 ms a call). That was a second
       sandbox rendering at the same time (found 2026-10-16 with a preload
@@ -48,8 +48,44 @@ step 8, the gate (step 8 plan, at the end).
       the 6900 XT and cross between GPUs: the 18.5 and 50 ms frames of
       steps 2 and 4.
   - Item 5, frames while the Mars plan designs (all cores): 6.8–7.7 ms
-    on average, 95% 12.5–15 ms, the longest 79–107 ms; after it, the
+    on average, 95% 12.5–15 ms, the longest 79–107 ms (up to 203 in
+    later runs, 13 frames over 25 ms of work a run); after it, the
     longest 65–72 ms.
+    - Each time items arrived, every ship's lines were built again on
+      the main thread (4–126 ms) and the renderer prepared and uploaded
+      them all (14–68 ms): ~980,000 samples, 96% of them the 18–24 days
+      each ship waits in LEO (2,900 samples a day, below), only a
+      revolution of which is drawn at a time. Even with designing done,
+      a rebuild took ~60 ms, so an edit stalled the view too.
+    - Now each ship's lines are a set of their own (`paths::SHIP_SETS`),
+      built again when its items change (`plan::Ship::revision`, unique
+      in the process) or its colors do (its first leg's place); the
+      frame, its center or the lines shown build all. Alone, a ship's
+      set of ~60,000 samples builds in 1.7 ms and prepares in 2.0.
+    - Beside designs at the same priority, a ship's build still took
+      33–67 ms: the design pool has a thread per core, and the main
+      thread's parallel work runs on rayon's global pool. The design
+      pool, and reading the bodies' maps (on the global pool before, a
+      task per body, which ran to its end ahead of the view's work at
+      start), now run on pools 10 nice steps below the thread that starts
+      them (`background`, Linux).
+    - Measured again (9 runs, load average 8–12 from other work on the
+      machine where recorded): frames while designing every 4.5–5.1 ms
+      on average (95% 7.5–8.3), 0–3 over 25 ms of work a run (0 in four
+      of seven), the longest 12–65 ms; after designing, the longest
+      9.0–12.5 ms (five runs).
+    - Left: a change of frame or focus builds every ship's set again,
+      ~60 ms with this plan (the LEO waits' samples).
+  - Item 5, each leg designed alone: LEO to the DRO takes 16.5–16.9 s
+    (35 s of CPU), over the 10 s; M1a left it open (M1a.md, gate: cold
+    designs 5–32 s between stations, "LEO to the DRO" open). Where the
+    time goes (`legs::plan`): seeds 0.2 s, the 8 starts 1.5 s, then
+    continuation (`Leg::frontier`) from the starts' 6–8 days to the 9
+    asked for, 10.7 and 14.9 s for the two chains that reach the cheap
+    family (both to 3,383.8 m/s). Steps of 0.125 days fail (0.15–0.25 s
+    each), halved ones succeed (0.6–1.5 s, each a whole design), and the
+    size doubles back to fail again: ~16 of each over the day. Asked for
+    8.0 days, the leg takes 7.2 s; 8.5 days, 17.4 s.
 
 - Step 7, part 8: leaving a low orbit from the ship's own orbit (from
   M1b; how decided 2026-10-15: small plane offsets paid at once, large
