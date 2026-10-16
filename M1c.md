@@ -101,6 +101,19 @@ step 8, the gate (step 8 plan, at the end).
     each), halved ones succeed (0.6–1.5 s, each a whole design), and the
     size doubles back to fail again: ~16 of each over the day. Asked for
     8.0 days, the leg takes 7.2 s; 8.5 days, 17.4 s.
+    - Tried (2026-10-16), neither kept. Seeds drawn within half a day of
+      9 days design in 2.8 s, but into another family: 3,549.0 m/s,
+      against 3,383.8 from the 8-day starts (165 m/s more; Artemis I's
+      344 after leaving LEO would go from 15% below to 34% above). Not
+      growing a step back to a size that failed left 4 failures where
+      there were ~15, and took 17.1–17.7 s: the successful steps are the
+      cost, each a whole design (10–33 iterations, 0.3–1.5 s), ~18 of
+      them over the day.
+    - Left open, as in M1a (decided 2026-10-16): item 5 fails on this
+      leg. What would cut it is cheaper steps (each predicted from the
+      two before, the optimizer's state carried), or designing the
+      intermediate durations only to feasibility; both change the
+      planner every leg uses.
 
 - Step 7, part 8: leaving a low orbit from the ship's own orbit (from
   M1b; how decided 2026-10-15: small plane offsets paid at once, large
