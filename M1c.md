@@ -70,9 +70,10 @@ low orbit from the ship's own orbit), then step 8, the gate.
     planets are fixed by the planets, not by the ship, so shifting them
     with the start is wrong for the legs that can be pinned.
   - Goals within a system (fastest under a Δv, arrive by): its options
-    are a handful of durations, and designs of several at once land
-    hundreds of m/s apart (part 5), so a goal over them would pick
-    noise; a sweep, then a click, does the job.
+    are a handful of durations, and designs of several at once landed
+    hundreds of m/s apart (part 5), so a goal over them would have
+    picked noise; a sweep, then a click, does the job. (Since then each
+    duration is designed alone, so this could be tried again.)
 
 - Step 7, part 6: editing. As planned (step 7 plan, item 6); where it
   differs or adds:
@@ -139,8 +140,14 @@ low orbit from the ship's own orbit), then step 8, the gate.
     together in one call, 983–1,259 m/s (and 0.5 days 682 against 962
     alone). So a leg's offered durations are not its frontier, and
     pinning one can fly it hundreds of m/s from where it was shown.
-    Sweeps design each duration alone for that reason. Not fixed in
-    `legs::plan` (M1a's autopilot); raised.
+    Sweeps design each duration alone for that reason. Decided
+    2026-10-15: the planner designs each offered duration alone too
+    (`Planner::within`, a call of `legs::plan` per duration, in
+    parallel), so an option is what pinning it flies (checked from the
+    NRHO to low lunar orbit at 0.5, 2 and 4 days: 683.8, 681.1, 702.6
+    m/s, the same pinned; offered together, 2 days had not been).
+    `legs::plan` keeps its shared seeding for M1a's gate (stations'
+    legs, the cheapest of 6–14 days), its doc saying so.
   - Checks: the Mars leg's porkchop drawn; a cell clicked three
     quarters across pins it and the leg flies at its date (to the
     minute) and duration; unpinned, it flies as before; a duration

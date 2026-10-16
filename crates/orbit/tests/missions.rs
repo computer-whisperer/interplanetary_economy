@@ -574,6 +574,56 @@ to = "moon-south-pole"
     assert!((leg.end.0 - leg.start.0 - 0.5).abs() < 1e-6);
 }
 
+/// Each duration a leg within a system offers is designed alone, so its
+/// option is what pinning it flies, and the cheapest flies. (Designed in
+/// one call, from the NRHO to low lunar orbit, 2 and 4 days cost hundreds
+/// of m/s more than alone, and pinned they flew cheaper than offered.)
+#[test]
+fn offered_durations_fly_as_pinned() {
+    let world = World::standard();
+    let src = r#"
+name = "x"
+[[ship]]
+name = "s"
+start = { at = "nrho", epoch = "2045-03-01" }
+[[ship.leg]]
+to = "llo"
+days = [0.5, 2.0, 4.0]
+"#;
+    let mut plan = Plan::parse(src, world.eph, Places::standard()).unwrap();
+    let leg = fly(&world, &plan, "s")
+        .into_iter()
+        .find(|i| i.kind == ItemKind::Leg)
+        .unwrap();
+    assert_eq!(leg.options.len(), 3);
+    let cheapest = leg
+        .options
+        .iter()
+        .filter_map(|c| c.dv)
+        .fold(f64::MAX, f64::min);
+    assert_eq!(leg.dv, cheapest);
+    for option in &leg.options {
+        let Step::Go(go) = &mut plan.ships[0].steps[0] else {
+            unreachable!()
+        };
+        go.pin = Some(Pin {
+            depart: None,
+            days: Some(option.days),
+        });
+        let pinned = fly(&world, &plan, "s")
+            .into_iter()
+            .find(|i| i.kind == ItemKind::Leg)
+            .unwrap();
+        println!(
+            "{} days: offered {:.1} m/s, pinned {:.1}",
+            option.days,
+            option.dv.unwrap() * 1e3,
+            pinned.dv * 1e3
+        );
+        assert_eq!(Some(pinned.dv), option.dv, "{} days", option.days);
+    }
+}
+
 /// A plan stopped by a failure goes on from before the failed leg; a
 /// small body's leg whose ship is ready before its orbit is known (2040)
 /// but whose window opens after is designed, not a panic.

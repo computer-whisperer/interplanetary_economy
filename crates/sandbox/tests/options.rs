@@ -285,8 +285,7 @@ fn a_cell_picked_flies_there() {
     h.draw(&mut app);
     h.draw(&mut app);
     h.shot(&mut app, "sweep");
-    // The longest: where designs of several durations at once land
-    // hundreds of m/s from one alone.
+    // The longest.
     let i = options.iter().rposition(|c| c.dv.is_some()).unwrap();
     let point =
         h.ui.rect_of_key(&swept_key(i))

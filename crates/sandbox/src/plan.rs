@@ -346,11 +346,10 @@ impl Loaded {
     }
 
     /// Designs ship `s`'s leg at `step` at each of `durations` in the
-    /// background, each alone (as pinning it would: the autopilot's
-    /// designs of several durations at once depend on which are asked
-    /// for), from where the ship is before it (going on from a
-    /// checkpoint, as an edit would), to show them beside the leg's own
-    /// options; the plan is left as it is.
+    /// background, each as pinning it would design it (a station visited
+    /// before it is followed for that duration), from where the ship is
+    /// before it (going on from a checkpoint, as an edit would), to show
+    /// them beside the leg's own options; the plan is left as it is.
     pub fn sweep(&mut self, s: usize, step: usize, durations: Vec<f64>) {
         let design = &self.designs[s];
         let from = resume_from(&design.checkpoints, step).cloned();

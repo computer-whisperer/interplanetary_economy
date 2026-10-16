@@ -1135,15 +1135,20 @@ impl<'w> Planner<'w> {
             window: None,
         };
         for (k, &(o, c)) in windows.iter().enumerate() {
-            let designs = legs::plan(
-                field,
-                light,
-                o,
-                from,
-                to,
-                (0.0, (c.0 - o.0) * DAY),
-                &durations,
-            );
+            // Each duration designed alone: designed in one call, durations
+            // share seeds drawn over all of them, and a duration's design
+            // depends on which others are asked for (from the NRHO to low
+            // lunar orbit, 1.65–4 days cost 675–692 m/s alone and up to
+            // 1,259 together). Alone, an option is what pinning it flies.
+            let designs: Vec<Option<Design>> = durations
+                .par_iter()
+                .map(|&d| {
+                    let window = (0.0, (c.0 - o.0) * DAY);
+                    legs::plan(field, light, o, from, to, window, &[d])
+                        .pop()
+                        .flatten()
+                })
+                .collect();
             let options = offered
                 .iter()
                 .zip(&designs)

@@ -1070,7 +1070,10 @@ const PLAN_MARGIN: f64 = 0.25 * SECONDS_PER_DAY;
 /// two low orbits. The cheapest are designed at their own durations, then
 /// carried by continuation to each requested one (the cheapest, and those
 /// nearest each duration); for each, the cheapest design reached. Designs
-/// leave within the window. Between a low orbit and a moon of its planet
+/// leave within the window. Durations asked for together share seeds drawn
+/// over all of them, so a duration's design depends on the others asked
+/// for (by hundreds of m/s from the NRHO to low lunar orbit); the mission
+/// planner asks for each alone. Between a low orbit and a moon of its planet
 /// (Phobos), seeds are Lambert arcs about the planet. Small bodies
 /// elsewhere and escapes are `interplanetary`'s: none for them.
 pub fn plan(
