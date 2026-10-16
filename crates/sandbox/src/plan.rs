@@ -13,7 +13,7 @@ use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::track::Track;
 use rayon::prelude::*;
 use sim::game::{Game, world};
-use sim::log::Log;
+use sim::log::{Log, Mode};
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -81,10 +81,12 @@ fn first_legs(plan: &Plan) -> Vec<usize> {
 }
 
 impl Loaded {
-    /// Reads the plan at `path` and starts designing it.
+    /// Reads the plan at `path` and starts designing it: a career game's
+    /// log opens as a sandbox log.
     pub fn open(path: &Path) -> Result<Loaded, String> {
         let pool = Arc::new(crate::background::pool("design"));
-        Ok(Loaded::of(Game::open(path, pool.clone())?, pool))
+        let game = Game::open(path, Some(Mode::Sandbox), pool.clone())?;
+        Ok(Loaded::of(game, pool))
     }
 
     /// An empty plan named `name`, to be saved at `path`.

@@ -111,3 +111,19 @@ fn a_plan_saved_reads_back() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A career game's log opens in the sandbox as a sandbox log, and can be
+/// edited there (found in review: an edit had panicked).
+#[test]
+fn a_career_log_opens_in_the_sandbox() {
+    let path = sandbox::data_dir().join("scenarios/llo-round-trip-replanned.toml");
+    let mut plan = Loaded::open(&path).unwrap();
+    plan.wait();
+    assert_eq!(plan.game().mode(), sim::log::Mode::Sandbox);
+    let mut ship = plan.plan().ships[0].clone();
+    ship.steps.pop();
+    plan.edit(0, ship);
+    plan.wait();
+    assert!(plan.game().log().replans.is_empty(), "folded into the ship");
+    assert!(!plan.game().log().to_toml().contains("mode = \"career\""));
+}

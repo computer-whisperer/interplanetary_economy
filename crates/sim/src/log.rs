@@ -110,8 +110,18 @@ struct ReplanFile {
 /// `t` rounded up to the minute, as a log writes it: actions are made at
 /// whole minutes, so that a log read back is the game it was.
 pub fn minute(t: Epoch) -> Epoch {
-    let up = Epoch((t.0 * 1_440.0).ceil() / 1_440.0);
-    up.stamp().parse().expect("a stamp reads back")
+    // A minute's time read back lands within rounding of a whole minute,
+    // either side (past 2044, f64 days hold a minute to ~4e-9 of one).
+    let m = t.0 * 1_440.0;
+    let up = if (m - m.round()).abs() < 1e-6 {
+        m.round()
+    } else {
+        m.ceil()
+    };
+    Epoch(up / 1_440.0)
+        .stamp()
+        .parse()
+        .expect("a stamp reads back")
 }
 
 fn date(s: &str) -> Result<Epoch, String> {
@@ -427,10 +437,23 @@ dv = [600.0, 750.0]
         );
     }
 
-    /// A time rounded up to the minute is a minute's time, and stays one.
+    /// A time rounded up to the minute is a minute's time, and stays one:
+    /// every minute of a day in 2045 and in 2075, read from its stamp.
     #[test]
     fn minutes_read_back() {
-        for t in [9_000.0, 9_000.000_1, 9_000.5 + 1e-9, 12_345.678_9] {
+        for day in [Epoch::from_ymd(2045, 6, 1), Epoch::from_ymd(2075, 12, 30)] {
+            for k in 0..1_440 {
+                let m = Epoch(day.0 + k as f64 / 1_440.0).stamp().parse().unwrap();
+                assert_eq!(minute(m), m, "{}", m.stamp());
+            }
+        }
+        for t in [
+            9_000.0,
+            9_000.000_1,
+            9_000.5 + 1e-9,
+            12_345.678_9,
+            20_000.123_4,
+        ] {
             let m = minute(Epoch(t));
             assert!(m.0 >= t - 1e-9, "{t}: {}", m.0);
             assert!(m.0 - t < 1.0 / 1_440.0 + 1e-9);

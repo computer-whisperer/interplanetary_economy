@@ -102,9 +102,6 @@ pub enum Ended {
     Done(Option<String>),
     /// A step's design was not to be had (`fetch` gave none).
     Waiting,
-    /// A re-plan cannot take effect where the ship is: it changes a step
-    /// whose leg had begun, or needs a longer station visit than was built.
-    Refused(String),
 }
 
 /// Where re-plan `r` takes effect, at checkpoint `c` of a ship with
@@ -118,6 +115,12 @@ fn holds(c: &Checkpoint, steps: &[Step], r: &Replan) -> bool {
     c.next() <= r.from && go.is_none_or(|g| r.from <= g)
 }
 
+/// `steps` with re-plan `r` applied.
+pub fn apply(steps: &mut Vec<Step>, r: &Replan) {
+    steps.truncate(r.from);
+    steps.extend(r.steps.iter().cloned());
+}
+
 /// Finds a step's design by its key, or makes it with the function given
 /// (`None`: not to be had now).
 pub type Fetch<'a> = dyn FnMut(Key, &dyn Fn() -> Designed) -> Option<Arc<Designed>> + 'a;
@@ -126,12 +129,20 @@ pub type Fetch<'a> = dyn FnMut(Key, &dyn Fn() -> Designed) -> Option<Arc<Designe
 /// they were made), taking each step's design from `fetch(key, step)`,
 /// which finds it or designs it (`None`: not to be had now). Each step of
 /// the ship's design as it stands goes to `out`, in order, with its key.
+///
+/// A re-plan takes effect at the checkpoint before the step that holds
+/// its first step replaced: there, if the ship arrived after it was made;
+/// at the time it was made, if the ship was staying there then. One that
+/// cannot (the step's leg had begun, or a station's visit was built
+/// shorter than the new steps need) goes to `refused` with its place in
+/// `replans` and why, and the ship flies on as before it.
 pub fn walk(
     world: &World,
     ship: &Ship,
     replans: &[&Replan],
     fetch: &mut Fetch,
     out: &mut dyn FnMut(Key, &Arc<Designed>),
+    refused: &mut dyn FnMut(usize, String),
 ) -> Ended {
     let mut ship = ship.clone();
     let mut key = start_key(&ship);
@@ -150,10 +161,29 @@ pub fn walk(
         Designed::Start(Err(why)) => return Ended::Done(Some(why.clone())),
         _ => unreachable!("a start's key designs a start"),
     };
-    let mut pending = replans.iter().peekable();
+    let mut pending: Vec<(usize, &Replan)> = replans.iter().copied().enumerate().collect();
     loop {
-        // Re-plans taking effect here.
-        while let Some(r) = pending.next_if(|r| holds(&c, &ship.steps, r)) {
+        // Re-plans taking effect here: the last made that holds here (as
+        // the steps stood when it was made), and those before it. One of
+        // those that does not hold here changed only steps after this
+        // step's leg, which the last replaces: it is passed over.
+        let mut standing = ship.steps.clone();
+        let mut last = None;
+        for (j, (_, r)) in pending.iter().enumerate() {
+            if holds(&c, &standing, r) {
+                last = Some(j);
+            }
+            apply(&mut standing, r);
+        }
+        let here: Vec<(usize, &Replan)> = match last {
+            Some(last) => pending.drain(..=last).collect(),
+            None => Vec::new(),
+        };
+        for (i, r) in here {
+            if !holds(&c, &ship.steps, r) {
+                continue;
+            }
+            let (mut at, mut at_key) = (c.clone(), key);
             if c.since().0 < r.at.0 {
                 // The ship was here before the re-plan: it is staying if
                 // the step from here had not left by then.
@@ -171,23 +201,30 @@ pub fn walk(
                             },
                         );
                         if left <= r.at.0 {
-                            return Ended::Refused(format!(
-                                "a re-plan made {} changes a step whose leg had begun",
-                                r.at.stamp()
-                            ));
+                            refused(
+                                i,
+                                format!(
+                                    "a re-plan made {} changes a step whose leg had begun",
+                                    r.at.stamp()
+                                ),
+                            );
+                            continue;
                         }
                         items.iter().find(|i| i.kind == ItemKind::Stay).cloned()
                     }
                     _ => None,
                 };
-                c = c.staying(r.at, stay.as_ref());
-                key = staying_key(key, r.at);
+                at = c.staying(r.at, stay.as_ref());
+                // The step replaced made the stay, which fixes a free plane.
+                at_key = staying_key(old, r.at);
             }
-            ship.steps.truncate(r.from);
-            ship.steps.extend(r.steps.iter().cloned());
-            if let Some(why) = Planner::resume(world, &ship, c.clone()).outstays() {
-                return Ended::Refused(why);
+            let mut edited = ship.clone();
+            apply(&mut edited.steps, r);
+            if let Some(why) = Planner::resume(world, &edited, at.clone()).outstays() {
+                refused(i, why);
+                continue;
             }
+            (ship, c, key) = (edited, at, at_key);
         }
         let k = step_key(key, &ship, c.next());
         let Some(designed) = fetch(k, &step(world, &ship, &c)) else {

@@ -4,7 +4,7 @@
 //! take what the cache has and design the rest; an edit or an undo walks
 //! again, and finds what it did not change in the cache.
 
-use crate::designs::{Cache, Designed, Ended, Key, walk};
+use crate::designs::{Cache, Designed, Ended, Key, apply, walk};
 use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, minute};
 use orbit::mission::{Checkpoint, Item, ItemKind, Plan, Ship, Step, World, resume_point};
@@ -37,6 +37,9 @@ pub struct ShipDesign {
     /// Designed to its end; and why it stops, if it does.
     pub done: bool,
     pub failure: Option<String>,
+    /// Its re-plans that could not take effect where the ship was (it
+    /// flies on as before each): their places among its re-plans, and why.
+    pub refused: Vec<(usize, String)>,
     /// Another whenever its items change, unique in the process: what
     /// views of them are built for.
     pub revision: u64,
@@ -89,6 +92,9 @@ enum Event {
     Used(Key),
     /// The `n`th step of the design as it stands.
     Shown(usize, Key, Arc<Designed>),
+    /// A re-plan that could not take effect: its place among the ship's
+    /// re-plans, and why.
+    Refused(usize, String),
     Ended(Ended),
     Panicked(String),
 }
@@ -120,13 +126,14 @@ impl Drop for Game {
     }
 }
 
-/// `ship` with `replans` (its own, in order) applied in turn: its steps as
-/// they stand.
-fn standing(ship: &Ship, replans: &[&Replan]) -> Ship {
+/// `ship` with `replans` (its own, in order) applied in turn, but those
+/// `refused`: its steps as they stand.
+fn standing(ship: &Ship, replans: &[&Replan], refused: &[(usize, String)]) -> Ship {
     let mut ship = ship.clone();
-    for r in replans {
-        ship.steps.truncate(r.from);
-        ship.steps.extend(r.steps.iter().cloned());
+    for (i, r) in replans.iter().enumerate() {
+        if !refused.iter().any(|(j, _)| *j == i) {
+            apply(&mut ship.steps, r);
+        }
     }
     ship
 }
@@ -138,14 +145,25 @@ impl Game {
         Game::in_mode(log, mode, pool)
     }
 
-    /// `log` played in `mode`: a career game's log opens in the sandbox.
-    pub fn in_mode(log: Log, mode: Mode, pool: Arc<rayon::ThreadPool>) -> Game {
+    /// `log` played in `mode`. A career game's log opens in the sandbox as
+    /// a sandbox log (its re-plans kept as they were made); a sandbox
+    /// log played in career starts from its start, else its first ship's.
+    pub fn in_mode(mut log: Log, mode: Mode, pool: Arc<rayon::ThreadPool>) -> Game {
         let (sender, receiver) = channel();
+        let first = log
+            .plan
+            .ships
+            .iter()
+            .map(|s| s.epoch)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
         let now = log
             .setup
             .now
             .or(log.setup.start)
-            .unwrap_or(Epoch(f64::NEG_INFINITY));
+            .or(first)
+            .unwrap_or(Epoch::from_ymd(2040, 1, 1));
+        log.setup.mode = mode;
+        log.setup.now = (mode == Mode::Career).then_some(now);
         let mut game = Game {
             plan: log.plan.clone(),
             log,
@@ -164,12 +182,18 @@ impl Game {
         game
     }
 
-    /// Reads the log at `path` and starts designing it.
-    pub fn open(path: &Path, pool: Arc<rayon::ThreadPool>) -> Result<Game, String> {
+    /// Reads the log at `path` and starts designing it, in `mode` (else
+    /// its own).
+    pub fn open(
+        path: &Path,
+        mode: Option<Mode>,
+        pool: Arc<rayon::ThreadPool>,
+    ) -> Result<Game, String> {
         let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let log = Log::parse(&src, world().eph, Places::standard())
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut game = Game::new(log, pool);
+        let mode = mode.unwrap_or(log.setup.mode);
+        let mut game = Game::in_mode(log, mode, pool);
         game.path = Some(path.to_path_buf());
         Ok(game)
     }
@@ -243,24 +267,24 @@ impl Game {
     /// whose inputs changed designed again (from the cache where its steps
     /// did not change); the others go on as they were.
     fn reshaped(&mut self) {
+        // What the walks have sent first: the keys they took are kept.
+        self.poll();
         let mut old: Vec<ShipDesign> = std::mem::take(&mut self.ships);
-        self.plan = self.log.plan.clone();
-        for ship in &mut self.plan.ships {
-            let mine: Vec<&Replan> = self
-                .log
-                .replans
-                .iter()
-                .filter(|r| r.ship == ship.id)
-                .collect();
-            *ship = standing(ship, &mine);
-        }
         for k in 0..self.log.plan.ships.len() {
             let inputs = self.inputs(k);
             let ship = match old.iter().position(|s| s.inputs == inputs) {
-                Some(j) => old.swap_remove(j),
+                Some(j) => {
+                    let mut kept = old.swap_remove(j);
+                    kept.name.clone_from(&self.log.plan.ships[k].name);
+                    kept
+                }
                 None => self.design(k),
             };
             self.ships.push(ship);
+        }
+        self.plan = self.log.plan.clone();
+        for k in 0..self.ships.len() {
+            self.stand(k);
         }
         for s in old {
             s.live.store(false, Ordering::Relaxed);
@@ -275,6 +299,19 @@ impl Game {
             .copied()
             .collect();
         self.cache.retain(|k| keep.contains(&k));
+    }
+
+    /// Ship `k` of the plan as it stands: the log's, with its re-plans
+    /// but those refused.
+    fn stand(&mut self, k: usize) {
+        let ship = &self.log.plan.ships[k];
+        let mine: Vec<&Replan> = self
+            .log
+            .replans
+            .iter()
+            .filter(|r| r.ship == ship.id)
+            .collect();
+        self.plan.ships[k] = standing(ship, &mine, &self.ships[k].refused);
     }
 
     /// What ship `k` of the log is designed from, hashed: the ship (its
@@ -307,6 +344,7 @@ impl Game {
             name: first.name.clone(),
             done: false,
             failure: None,
+            refused: Vec::new(),
             revision: revision(),
             steps: Vec::new(),
             inputs: self.inputs(k),
@@ -314,7 +352,7 @@ impl Game {
             live: Arc::new(AtomicBool::new(true)),
         };
         let cache = self.cache.clone();
-        let mut used = Vec::new();
+        let (mut used, mut refused) = (Vec::new(), Vec::new());
         let ended = walk(
             world(),
             first,
@@ -326,16 +364,13 @@ impl Game {
             &mut |key, designed| {
                 ship.steps.push((key, designed.clone()));
             },
+            &mut |i, why| refused.push((i, why)),
         );
-        ship.used = used;
+        (ship.used, ship.refused) = (used, refused);
         match ended {
             Ended::Done(failure) => {
                 ship.done = true;
                 ship.failure = failure;
-            }
-            Ended::Refused(why) => {
-                ship.done = true;
-                ship.failure = Some(why);
             }
             Ended::Waiting => {
                 self.spawn(&ship, first.clone(), replans.into_iter().cloned().collect())
@@ -366,14 +401,16 @@ impl Game {
                         if !live.load(Ordering::Relaxed) {
                             return None;
                         }
-                        let designed = cache.get(key).unwrap_or_else(|| cache.put(key, design()));
+                        // Said before it is kept: the game polls before it
+                        // lets designs go, so none is let go in between.
                         send(Event::Used(key));
-                        Some(designed)
+                        Some(cache.get(key).unwrap_or_else(|| cache.put(key, design())))
                     },
                     &mut |key, designed| {
                         send(Event::Shown(n, key, designed.clone()));
                         n += 1;
                     },
+                    &mut |i, why| send(Event::Refused(i, why)),
                 )
             }));
             send(match walked {
@@ -414,9 +451,10 @@ impl Game {
     /// An event from the walk whose flag is `live`, if it is a ship's
     /// current one; `true` if the ship's design changed.
     fn take(&mut self, live: &Arc<AtomicBool>, event: Event) -> bool {
-        let Some(ship) = self.ships.iter_mut().find(|s| Arc::ptr_eq(&s.live, live)) else {
+        let Some(k) = self.ships.iter().position(|s| Arc::ptr_eq(&s.live, live)) else {
             return false;
         };
+        let ship = &mut self.ships[k];
         match event {
             Event::Used(key) => {
                 if !ship.used.contains(&key) {
@@ -440,10 +478,11 @@ impl Game {
                 ship.revision = revision();
                 true
             }
-            Event::Ended(Ended::Refused(why)) => {
-                ship.done = true;
-                ship.failure = Some(why);
-                ship.revision = revision();
+            Event::Refused(i, why) => {
+                if !ship.refused.iter().any(|(j, _)| *j == i) {
+                    ship.refused.push((i, why));
+                    self.stand(k);
+                }
                 true
             }
             Event::Ended(Ended::Waiting) => false,
@@ -585,7 +624,8 @@ impl Game {
         };
         // Walked with what the cache has, the re-plan is decided where the
         // ship is (in career, its designs to now are done). One whose step
-        // is not designed yet takes effect after now.
+        // is not designed yet takes effect after now; if it then cannot,
+        // it is passed over (`ShipDesign::refused`).
         let mine: Vec<&Replan> = self
             .log
             .replans
@@ -594,14 +634,20 @@ impl Game {
             .chain(std::iter::once(&replan))
             .collect();
         let cache = self.cache.clone();
-        let ended = walk(
+        let mut refused = None;
+        walk(
             world(),
             &self.log.plan.ships[k],
             &mine,
             &mut |key, _| cache.get(key),
             &mut |_, _| {},
+            &mut |i, why| {
+                if i == mine.len() - 1 {
+                    refused = Some(why);
+                }
+            },
         );
-        if let Ended::Refused(why) = ended {
+        if let Some(why) = refused {
             return Err(why);
         }
         self.now = at;

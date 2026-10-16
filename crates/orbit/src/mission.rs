@@ -859,18 +859,28 @@ impl Checkpoint {
     /// earlier, their waits counted from its arrival. In a low orbit whose
     /// plane was still free, `stay` (the stay designed from here, which
     /// the ship has flown until now) fixes the plane, and the ship leaves
-    /// from that orbit.
+    /// from that orbit. With no stay flown (no leg was to leave), its stay
+    /// begins at now, its plane chosen then, and its waits count from
+    /// then.
     pub fn staying(&self, now: Epoch, stay: Option<&Item>) -> Checkpoint {
         let mut c = self.clone();
         c.not_before = Epoch(c.not_before.0.max(now.0));
-        if let Here::Low { orbit, coast: None } = &c.here
-            && let Some(track) = stay.and_then(|i| i.track.as_ref())
-            && let (Some(&t), Some(&s)) = (track.times.first(), track.states.first())
-        {
-            c.here = Here::Low {
-                orbit: *orbit,
-                coast: Some((track.epoch.plus_days(t / DAY), s)),
-            };
+        if let Here::Low { orbit, coast: None } = &c.here {
+            match stay
+                .and_then(|i| i.track.as_ref())
+                .and_then(|t| Some((t, *t.times.first()?, *t.states.first()?)))
+            {
+                Some((track, t, s)) => {
+                    c.here = Here::Low {
+                        orbit: *orbit,
+                        coast: Some((track.epoch.plus_days(t / DAY), s)),
+                    };
+                }
+                None => {
+                    c.since = Epoch(c.since.0.max(now.0));
+                    c.ready = Epoch(c.ready.0.max(now.0));
+                }
+            }
         }
         c
     }

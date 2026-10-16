@@ -34,7 +34,8 @@ below), and the four decisions below, each as recommended.
     step reads.
   - A sandbox edit of a ship with re-plans folds them into its steps.
   - A re-plan whose step is not yet designed when it is made is
-    accepted, and refused (as the ship's failure) once designed.
+    accepted, and passed over once designed if it cannot take effect
+    (below, the review).
   - Tests: the game designs what the planner does; 1 and 24 threads
     give the same hashes; an edit designs from the step it changes on
     (two designs for the sortie's wait: the step and the end after
@@ -69,6 +70,39 @@ below), and the four decisions below, each as recommended.
   every leg; its design times were taken on a loaded machine (load
   average ~20 from other work) and are not comparable to M1c's (LEO to
   the DRO 22.5 s against 16.5).
+- Review (a sub-agent, 2026-10-16), each finding checked against the
+  code and fixed, with a test:
+  - A re-plan made later whose first step replaced comes earlier was
+    passed over while an earlier one waited for its checkpoint. Now the
+    last made that takes effect at a checkpoint is applied there, with
+    those before it (one of which that does not take effect there only
+    changed steps the last replaces).
+  - A re-plan that cannot take effect (its leg had begun, or a station
+    visit built shorter) is passed over: the ship flies on as before
+    it (`ShipDesign::refused`), and the plan as it stands leaves it
+    out. It had stopped the ship for good, and every later re-plan
+    with it.
+  - A career log opened in the sandbox app ran in career, and an edit
+    panicked. The sandbox opens it as a sandbox log.
+  - Undoing a rename left the new name on the kept ship.
+  - `minute` added a minute to about one minute in eight read back
+    past 2044 (f64 days hold a minute to ~4e-9 of one there), so career's
+    now crept a minute on each save.
+  - `sim run` did not print a failure no item says (a refused start, a
+    panic), nor re-plans passed over.
+  - A design kept could be let go between being made and its walk
+    saying so; walks now say a key before keeping it, and the game
+    polls before letting designs go.
+  - A ship with no legs in a free-plane orbit, re-planned in career,
+    had its plane chosen backward to its start: what it does now
+    begins at now.
+  - The key after a re-plan made while the ship stayed chained from
+    the step before it; it chains from the replaced step, whose stay
+    fixes a free plane (not reachable before, by how the cache is
+    used).
+  - Left as they are: undo keeps the designs of the last 64 ships
+    replaced, so an undo further back designs again; two walks can
+    design the same step at once (both count in `designs_made`).
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
@@ -104,6 +138,8 @@ Decided 2026-10-16, after the classic career/sandbox split:
   - Career reveals hidden information with time and surveys: grades,
     deposit sizes, the launch price ahead. The sandbox knows
     everything.
+  - A career game's log opens in the sandbox as a sandbox log, its
+    re-plans kept as made; anything in it may then change.
 - **Economy components land in the sandbox first.** Each is watched
   and edited there before career relies on it. Which ones the sandbox
   runs, and which as settings (losses, say), is decided component by
@@ -552,7 +588,9 @@ matters.
      - A re-plan whose visit fits in the reference already built
        resumes there as it is.
      - One that needs a longer visit is refused until step 3's
-       continuous references.
+       continuous references. (After the review: refused when made;
+       passed over, the ship flying on as before, if found only once
+       designed.)
    - `orbit::mission` gains the checkpoint at a time within a stay,
      the not-before constraint, and public times on `Checkpoint`.
 4. **Designs by their inputs** (`sim::designs`).
@@ -583,7 +621,8 @@ matters.
        key, and designs again when keys differ. With no economy yet,
        they never differ.
    - **The cache** keeps the designs reachable from the current log
-     and the undo history, and a bounded number of others. The game
+     and the undo history, and a bounded number of others. (As built:
+     the designs of the last 64 ships replaced.) The game
      owns undo now: a history of logs. An undo, a re-added ship or an
      unchanged ship in a re-run designs nothing.
 5. **The loop** (`sim::game`).

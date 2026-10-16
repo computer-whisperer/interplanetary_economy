@@ -281,3 +281,129 @@ fn every_scenario_holds() {
     }
     assert!(ran > 0);
 }
+
+/// The low lunar orbit round trip in career, from `now`.
+fn round_trip_in_career(now: &str) -> Log {
+    let all = parse(&mission("published.toml"));
+    let mut log = Log::sandbox(all.plan.clone());
+    log.plan
+        .ships
+        .retain(|s| s.name == "Low lunar orbit round trip");
+    log.setup.mode = Mode::Career;
+    log.setup.now = Some(now.parse().unwrap());
+    log
+}
+
+/// A leg to `to` of `days`.
+fn go(to: &str, days: f64) -> Step {
+    let Step::Go(mut go) = parse(&mission("published.toml")).plan.ships[0].steps[0].clone() else {
+        panic!("a leg")
+    };
+    go.to = orbit::mission::Spot::named(to, Places::standard()).unwrap();
+    go.days = vec![days];
+    go.note = None;
+    Step::Go(go)
+}
+
+/// Two re-plans while the ship waits in LEO: the first changes its leg
+/// home (taking effect in low lunar orbit), the second, made later, its
+/// leg out and everything after. The second takes effect in LEO, before
+/// the first would have (found in review: it had been passed over).
+#[test]
+fn a_later_replan_takes_effect_where_it_holds() {
+    let mut game = Game::new(round_trip_in_career("2045-03-01T12:00"), pool(24));
+    game.wait();
+    let id = game.ships()[0].id;
+    game.replan(id, 1, vec![go("leo", 4.0)]).unwrap();
+    game.wait();
+    game.advance("2045-03-02T00:00".parse().unwrap());
+    game.replan(id, 0, vec![go("llo", 4.0), go("leo", 3.5)])
+        .unwrap();
+    game.wait();
+    let legs: Vec<f64> = game.ships()[0]
+        .items()
+        .filter(|i| i.kind == ItemKind::Leg)
+        .map(|i| i.end.0 - i.start.0)
+        .collect();
+    assert_eq!(legs.len(), 2);
+    assert!(
+        (legs[0] - 4.0).abs() < 1e-6 && (legs[1] - 3.5).abs() < 1e-6,
+        "{legs:?}"
+    );
+    assert!(game.ships()[0].refused.is_empty());
+    let text = game.log().to_toml();
+    let mut again = Game::new(parse(&text), pool(24));
+    again.wait();
+    assert_eq!(hashes(&again), hashes(&game));
+}
+
+/// A re-plan in the log that cannot take effect (its leg had begun) is
+/// passed over: the ship flies on as before it, and a later re-plan still
+/// takes effect.
+#[test]
+fn a_replan_passed_over_does_not_stop_the_ship() {
+    let mut log = round_trip_in_career("2045-03-04T00:00");
+    let id = log.plan.ships[0].id;
+    log.replans.push(sim::log::Replan {
+        ship: id,
+        at: "2045-03-04T00:00".parse().unwrap(),
+        from: 0,
+        steps: vec![go("llo", 4.0), go("leo", 3.5)],
+    });
+    let mut game = Game::new(log, pool(24));
+    game.wait();
+    let ship = &game.ships()[0];
+    assert_eq!(ship.refused.len(), 1, "{:?}", ship.refused);
+    assert!(
+        ship.refused[0]
+            .1
+            .ends_with("changes a step whose leg had begun")
+    );
+    assert!(ship.failure.is_none() && ship.done);
+    let Step::Go(out) = &game.plan().ships[0].steps[0] else {
+        panic!("a leg")
+    };
+    assert_eq!(out.days, vec![3.5], "the plan as it stands leaves it out");
+    game.replan(id, 1, vec![go("leo", 4.0)]).unwrap();
+    game.wait();
+    let home = game.ships()[0]
+        .items()
+        .filter(|i| i.kind == ItemKind::Leg)
+        .nth(1)
+        .unwrap()
+        .clone();
+    assert!((home.end.0 - home.start.0 - 4.0).abs() < 1e-6);
+}
+
+/// A ship in LEO with no legs has flown nothing: re-planned, what it does
+/// begins at now, and every day before now is as it was.
+#[test]
+fn a_ship_with_no_legs_begins_its_stay_at_now() {
+    let mut log = round_trip_in_career("2045-03-10T00:00");
+    log.plan.ships[0].steps.clear();
+    let mut game = Game::new(log, pool(24));
+    game.wait();
+    assert_eq!(game.ships()[0].items().count(), 0);
+    let start = Epoch::from_ymd(2045, 3, 1);
+    let before = game.day_hashes(start, 9);
+    let id = game.ships()[0].id;
+    game.replan(id, 0, vec![go("llo", 3.5)]).unwrap();
+    game.wait();
+    assert_eq!(game.day_hashes(start, 9), before);
+    // Its plane free from now, it leaves at once.
+    let first = game.ships()[0].items().next().unwrap().clone();
+    assert_eq!(first.start, game.now(), "{:?} {}", first.kind, first.label);
+}
+
+/// Renamed, then undone: the old name is back, in the plan and the ship.
+#[test]
+fn an_undone_rename_takes_the_old_name() {
+    let mut game = Game::new(parse(SORTIE), pool(24));
+    game.wait();
+    let id = game.ships()[0].id;
+    game.rename(id, "Other");
+    assert_eq!(game.ships()[0].name, "Other");
+    assert!(game.undo());
+    assert_eq!(game.ships()[0].name, "Lander");
+    assert_eq!(game.plan().ships[0].name, "Lander");
+}

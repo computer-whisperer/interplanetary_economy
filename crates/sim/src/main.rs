@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
+use orbit::mission::ItemKind;
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::game::{Game, world};
@@ -64,8 +65,13 @@ fn run(file: &PathBuf, alone: bool, tracks: Option<PathBuf>) -> Result<()> {
             if let Some(totals) = report::totals(&items) {
                 println!("{totals}");
             }
-            if let Some(why) = ship.failure.as_ref().filter(|_| items.is_empty()) {
+            // A failure no item says: a refused start, a panic.
+            let said = items.iter().any(|i| matches!(i.kind, ItemKind::Failed(_)));
+            if let Some(why) = ship.failure.as_ref().filter(|_| !said) {
                 println!("  FAILED   {why}");
+            }
+            for (i, why) in &ship.refused {
+                println!("  re-plan {} of this ship not flown: {why}", i + 1);
             }
             if let Some(dir) = &tracks {
                 let out = dir.join(format!("ship-{}.csv", ship.id));
