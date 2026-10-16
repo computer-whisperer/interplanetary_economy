@@ -7,7 +7,8 @@
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{
-    Checkpoint, Item, ItemKind, MarkerKind, Pin, Plan, Planner, Step, World, check, resume_from,
+    Checkpoint, Item, ItemKind, MarkerKind, Pin, Plan, Planner, Step, World, check, legs_value,
+    parse_legs, resume_from,
 };
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -90,8 +91,8 @@ fn assert_round_trip(p: &Plan) {
     assert_eq!(back.ships.len(), p.ships.len());
     for (a, b) in p.ships.iter().zip(&back.ships) {
         assert_eq!(
-            (&a.name, &a.start.label, a.epoch),
-            (&b.name, &b.start.label, b.epoch)
+            (a.id, &a.name, &a.start.label, a.epoch),
+            (b.id, &b.name, &b.start.label, b.epoch)
         );
         assert_eq!(a.steps.len(), b.steps.len());
         for (x, y) in a.steps.iter().zip(&b.steps) {
@@ -107,6 +108,66 @@ fn assert_round_trip(p: &Plan) {
             }
         }
     }
+}
+
+/// Ships without an id get the next ones after the largest given, and
+/// two ships may not share one. The sim engine's tables come back as
+/// they were written, and legs written as a value read back as the same
+/// steps.
+#[test]
+fn ids_and_the_engines_tables() {
+    let src = r#"
+        name = "ids"
+        [game]
+        mode = "career"
+        [[ship]]
+        name = "a"
+        start = { at = "leo", epoch = "2045-03-01" }
+        [[ship]]
+        id = 7
+        name = "b"
+        start = { at = "leo", epoch = "2045-03-01" }
+        [[ship.leg]]
+        to = "nrho"
+        days = [5.0]
+        [[ship.leg]]
+        wait = 2
+        [[ship]]
+        name = "a"
+        start = { at = "leo", epoch = "2045-03-01" }
+        [[replan]]
+        ship = 7
+        at = "2045-03-02T00:00"
+    "#;
+    let (eph, places) = (Ephemeris::standard(), Places::standard());
+    let plan = Plan::parse(src, eph, places).unwrap();
+    let ids: Vec<u64> = plan.ships.iter().map(|s| s.id).collect();
+    assert_eq!(ids, [8, 7, 9]);
+    assert_eq!(plan.next_id(), 10);
+    assert_eq!(plan.game.as_ref().unwrap()["mode"].as_str(), Some("career"));
+    assert_eq!(plan.replans.len(), 1);
+    assert_round_trip(&plan);
+    let back = Plan::parse(&plan.to_toml(), eph, places).unwrap();
+    assert_eq!(back.game, plan.game);
+    assert_eq!(back.replans, plan.replans);
+
+    let steps = &plan.ships[1].steps;
+    let again = parse_legs(legs_value(steps), eph, places).unwrap();
+    assert_eq!(format!("{again:?}"), format!("{steps:?}"));
+    let bad = toml::Value::try_from(vec![toml::toml! { wait = -1 }]).unwrap();
+    assert_eq!(
+        parse_legs(bad, eph, places).unwrap_err(),
+        "leg 1: a wait is a number of days, not negative"
+    );
+
+    let dup = src.replace(
+        "[[ship]]\n        name = \"a\"",
+        "[[ship]]\n        id = 7\n        name = \"a\"",
+    );
+    assert_eq!(
+        Plan::parse(&dup, eph, places).unwrap_err(),
+        "two ships have id 7"
+    );
 }
 
 #[test]

@@ -145,6 +145,8 @@ impl Loaded {
             name: name.to_string(),
             ships: Vec::new(),
             header: String::new(),
+            game: None,
+            replans: Vec::new(),
         });
         loaded.path = Some(path);
         loaded

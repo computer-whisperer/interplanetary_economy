@@ -306,10 +306,12 @@ pub fn first_change(old: &Ship, new: &Ship) -> Option<Option<usize>> {
         .map(Some)
 }
 
-/// A new ship: leaving LEO at `t`, to the midnight before, with no legs.
-pub fn new_ship(name: String, t: Epoch, places: &Places) -> Ship {
+/// A new ship, `id`: leaving LEO at `t`, to the midnight before, with no
+/// legs.
+pub fn new_ship(id: u64, name: String, t: Epoch, places: &Places) -> Ship {
     let (y, m, d) = t.ymd();
     Ship {
+        id,
         name,
         start: Spot::named("leo", places).expect("LEO is a place"),
         epoch: Epoch::from_ymd(y, m, d.floor() as u32),

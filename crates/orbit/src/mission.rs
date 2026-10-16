@@ -91,10 +91,16 @@ pub struct Plan {
     /// The comments its file opens with, kept when it is written out
     /// (the rest of its comments are not).
     pub header: String,
+    /// Its `[game]` table and `[[replan]]` entries, which the sim engine
+    /// reads (M1b.md, step 1 plan, part 2): kept as written.
+    pub game: Option<toml::Table>,
+    pub replans: Vec<toml::Table>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Ship {
+    /// Its own in the plan: names change and can repeat.
+    pub id: u64,
     pub name: String,
     pub start: Spot,
     pub epoch: Epoch,
@@ -190,13 +196,19 @@ impl Go {
 #[serde(deny_unknown_fields)]
 struct PlanFile {
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    game: Option<toml::Table>,
     #[serde(default)]
     ship: Vec<ShipFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    replan: Vec<toml::Table>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ShipFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<u64>,
     name: String,
     start: StartFile,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -241,7 +253,13 @@ struct PinFile {
 impl Plan {
     pub fn parse(src: &str, eph: &Ephemeris, places: &Places) -> Result<Plan, String> {
         let file: PlanFile = toml::from_str(src).map_err(|e| e.to_string())?;
-        let date = |s: &str| s.parse::<Epoch>();
+        let mut ids: Vec<u64> = file.ship.iter().filter_map(|s| s.id).collect();
+        ids.sort_unstable();
+        if let Some(w) = ids.windows(2).find(|w| w[0] == w[1]) {
+            return Err(format!("two ships have id {}", w[0]));
+        }
+        // Ships without an id get the next ones after the largest.
+        let mut next = ids.last().map_or(0, |&id| id + 1);
         let ships = file
             .ship
             .into_iter()
@@ -249,76 +267,15 @@ impl Plan {
                 let name = ship.name;
                 let fail = |e: String| format!("ship {name:?}: {e}");
                 let start = spot(&ship.start.at, eph, places).map_err(fail)?;
-                let epoch = date(&ship.start.epoch).map_err(fail)?;
-                let steps = ship
-                    .leg
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, leg)| {
-                        let fail = |e: String| format!("ship {name:?}, leg {}: {e}", i + 1);
-                        match (leg.to, leg.wait) {
-                            (None, Some(days)) => {
-                                if leg.days.is_some()
-                                    || leg.window.is_some()
-                                    || leg.pin.is_some()
-                                    || leg.aero
-                                {
-                                    return Err(fail("a wait takes no other keys".into()));
-                                }
-                                if !days.is_finite() || days < 0.0 {
-                                    return Err(fail(
-                                        "a wait is a number of days, not negative".into(),
-                                    ));
-                                }
-                                Ok(Step::Wait(days))
-                            }
-                            (Some(to), None) => Ok(Step::Go(Go {
-                                to: spot(&to, eph, places).map_err(fail)?,
-                                days: match leg.days {
-                                    Some(d) if d.iter().any(|&d| !d.is_finite() || d <= 0.0) => {
-                                        return Err(fail(
-                                            "durations are positive numbers of days".into(),
-                                        ));
-                                    }
-                                    d => d.unwrap_or_default(),
-                                },
-                                window: leg
-                                    .window
-                                    .map(|[a, b]| {
-                                        let (a, b) = (date(&a)?, date(&b)?);
-                                        if a.0 > b.0 {
-                                            return Err(format!(
-                                                "the window opens {a}, after it closes"
-                                            ));
-                                        }
-                                        Ok((a, b))
-                                    })
-                                    .transpose()
-                                    .map_err(fail)?,
-                                pin: leg
-                                    .pin
-                                    .map(|p| {
-                                        if p.depart.is_none() && p.days.is_none() {
-                                            return Err("a pin has `depart`, `days` or both".into());
-                                        }
-                                        if p.days.is_some_and(|d| !d.is_finite() || d <= 0.0) {
-                                            return Err("a pin's days are a positive number".into());
-                                        }
-                                        Ok(Pin {
-                                            depart: p.depart.as_deref().map(date).transpose()?,
-                                            days: p.days,
-                                        })
-                                    })
-                                    .transpose()
-                                    .map_err(fail)?,
-                                aero: leg.aero,
-                                note: leg.note,
-                            })),
-                            _ => Err(fail("a leg has `to` or `wait`".into())),
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let epoch = ship.start.epoch.parse::<Epoch>().map_err(fail)?;
+                let steps = steps(ship.leg, eph, places)
+                    .map_err(|(i, e)| format!("ship {name:?}, leg {}: {e}", i + 1))?;
+                let id = ship.id.unwrap_or_else(|| {
+                    next += 1;
+                    next - 1
+                });
                 Ok(Ship {
+                    id,
                     name,
                     start,
                     epoch,
@@ -341,7 +298,14 @@ impl Plan {
             name: file.name,
             ships,
             header,
+            game: file.game,
+            replans: file.replan,
         })
+    }
+
+    /// An id no ship of the plan has.
+    pub fn next_id(&self) -> u64 {
+        self.ships.iter().map(|s| s.id + 1).max().unwrap_or(0)
     }
 
     /// The plan as a file, which [`Plan::parse`] reads back as this plan
@@ -349,39 +313,21 @@ impl Plan {
     pub fn to_toml(&self) -> String {
         let file = PlanFile {
             name: self.name.clone(),
+            game: self.game.clone(),
             ship: self
                 .ships
                 .iter()
                 .map(|ship| ShipFile {
+                    id: Some(ship.id),
                     name: ship.name.clone(),
                     start: StartFile {
                         at: ship.start.source.clone(),
                         epoch: ship.epoch.stamp(),
                     },
-                    leg: ship
-                        .steps
-                        .iter()
-                        .map(|step| match step {
-                            Step::Wait(days) => LegFile {
-                                wait: Some(*days),
-                                ..LegFile::default()
-                            },
-                            Step::Go(go) => LegFile {
-                                to: Some(go.to.source.clone()),
-                                days: (!go.days.is_empty()).then(|| go.days.clone()),
-                                window: go.window.map(|(a, b)| [a.stamp(), b.stamp()]),
-                                pin: go.pin.map(|p| PinFile {
-                                    depart: p.depart.map(Epoch::stamp),
-                                    days: p.days,
-                                }),
-                                aero: go.aero,
-                                note: go.note.clone(),
-                                ..LegFile::default()
-                            },
-                        })
-                        .collect(),
+                    leg: legs(&ship.steps),
                 })
                 .collect(),
+            replan: self.replans.clone(),
         };
         let body = toml::to_string(&file).expect("a plan serializes");
         match self.header.is_empty() {
@@ -389,6 +335,112 @@ impl Plan {
             false => format!("{}\n{body}", self.header),
         }
     }
+}
+
+/// Steps as a plan's legs (`[[ship.leg]]`) are written: a TOML array
+/// of tables, which [`parse_legs`] reads back.
+pub fn legs_value(steps: &[Step]) -> toml::Value {
+    toml::Value::try_from(legs(steps)).expect("legs serialize")
+}
+
+/// Steps from legs as a plan writes them (`[[ship.leg]]`): an array of
+/// tables.
+pub fn parse_legs(
+    value: toml::Value,
+    eph: &Ephemeris,
+    places: &Places,
+) -> Result<Vec<Step>, String> {
+    let legs: Vec<LegFile> = value.try_into().map_err(|e| e.to_string())?;
+    steps(legs, eph, places).map_err(|(i, e)| format!("leg {}: {e}", i + 1))
+}
+
+fn legs(steps: &[Step]) -> Vec<LegFile> {
+    steps
+        .iter()
+        .map(|step| match step {
+            Step::Wait(days) => LegFile {
+                wait: Some(*days),
+                ..LegFile::default()
+            },
+            Step::Go(go) => LegFile {
+                to: Some(go.to.source.clone()),
+                days: (!go.days.is_empty()).then(|| go.days.clone()),
+                window: go.window.map(|(a, b)| [a.stamp(), b.stamp()]),
+                pin: go.pin.map(|p| PinFile {
+                    depart: p.depart.map(Epoch::stamp),
+                    days: p.days,
+                }),
+                aero: go.aero,
+                note: go.note.clone(),
+                ..LegFile::default()
+            },
+        })
+        .collect()
+}
+
+/// A ship's legs as steps; else the leg that is wrong (from 0), and why.
+fn steps(
+    legs: Vec<LegFile>,
+    eph: &Ephemeris,
+    places: &Places,
+) -> Result<Vec<Step>, (usize, String)> {
+    let date = |s: &str| s.parse::<Epoch>();
+    legs.into_iter()
+        .enumerate()
+        .map(|(i, leg)| {
+            let fail = |e: String| (i, e);
+            match (leg.to, leg.wait) {
+                (None, Some(days)) => {
+                    if leg.days.is_some() || leg.window.is_some() || leg.pin.is_some() || leg.aero {
+                        return Err(fail("a wait takes no other keys".into()));
+                    }
+                    if !days.is_finite() || days < 0.0 {
+                        return Err(fail("a wait is a number of days, not negative".into()));
+                    }
+                    Ok(Step::Wait(days))
+                }
+                (Some(to), None) => Ok(Step::Go(Go {
+                    to: spot(&to, eph, places).map_err(fail)?,
+                    days: match leg.days {
+                        Some(d) if d.iter().any(|&d| !d.is_finite() || d <= 0.0) => {
+                            return Err(fail("durations are positive numbers of days".into()));
+                        }
+                        d => d.unwrap_or_default(),
+                    },
+                    window: leg
+                        .window
+                        .map(|[a, b]| {
+                            let (a, b) = (date(&a)?, date(&b)?);
+                            if a.0 > b.0 {
+                                return Err(format!("the window opens {a}, after it closes"));
+                            }
+                            Ok((a, b))
+                        })
+                        .transpose()
+                        .map_err(fail)?,
+                    pin: leg
+                        .pin
+                        .map(|p| {
+                            if p.depart.is_none() && p.days.is_none() {
+                                return Err("a pin has `depart`, `days` or both".into());
+                            }
+                            if p.days.is_some_and(|d| !d.is_finite() || d <= 0.0) {
+                                return Err("a pin's days are a positive number".into());
+                            }
+                            Ok(Pin {
+                                depart: p.depart.as_deref().map(date).transpose()?,
+                                days: p.days,
+                            })
+                        })
+                        .transpose()
+                        .map_err(fail)?,
+                    aero: leg.aero,
+                    note: leg.note,
+                })),
+                _ => Err(fail("a leg has `to` or `wait`".into())),
+            }
+        })
+        .collect()
 }
 
 /// `YYYY-MM-DD HH:MM`, to the nearest minute.

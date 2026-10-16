@@ -1382,7 +1382,8 @@ impl App for Shell {
         {
             self.undo.push(plan.plan.clone());
             let name = format!("Ship {}", plan.plan.ships.len() + 1);
-            plan.add_ship(editor::new_ship(name, self.clock.t, Places::standard()));
+            let id = plan.plan.next_id();
+            plan.add_ship(editor::new_ship(id, name, self.clock.t, Places::standard()));
             let s = plan.plan.ships.len() - 1;
             self.editor = Some(Editor {
                 ship: s,
