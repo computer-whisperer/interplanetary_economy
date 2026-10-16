@@ -23,14 +23,27 @@ step 8, the gate (step 8 plan, at the end).
       (Phobos's step is half an hour), ~62,000 small bodies' samples
       with it. Now a set each (`paths::ORBIT_SETS`): 5.87 ms without a
       plan, 5.67 with it.
-    - Of the rest, `queue.submit` took ~2.2 ms a frame, in the kernel
-      (`DRM_IOCTL_AMDGPU_CS`, ~1.1 ms a call; system time 2.0 ms a
-      frame): validating the buffer objects a submission uses. With
-      `RADV_PERFTEST=localbos` (buffers always valid) it takes ~0.05 ms
-      and a frame's work 1.9 ms, yet frames still come every 5.8 ms.
-    - The compositor caps it: vkcube on the same GPU and output runs
+    - Of the rest, `queue.submit` seemed to take ~2.2 ms a frame in the
+      kernel (`DRM_IOCTL_AMDGPU_CS`, ~1.1 ms a call). That was a second
+      sandbox rendering at the same time (found 2026-10-16 with a preload
+      probe timing each submission). Alone, a submission takes
+      0.06–0.08 ms, two a frame (vkcube's 0.023). With two sandboxes at
+      once, the later one's take 0.9–1.1 ms. The 6900 XT here has no
+      resizable BAR, so 256 MiB of its VRAM is CPU-visible, and RADV puts
+      each command buffer's chunks there (80 KiB of commands, 16 KiB of
+      uploads). A frame is ~48 command buffers (wgpu makes two a pass,
+      most of them the glare's chain), so a submission carries ~96, and
+      two such processes move them in and out of that window at every
+      submission. With `RADV_PERFTEST=nosam` (the chunks in system
+      memory) or `localbos`, two at once stay at 0.03–0.06 ms. Smaller
+      wgpu staging blocks (`MemoryHints::MemoryUsage`, the sandbox's
+      share of the window from 83 MiB to 14) did not help, and vkcube
+      beside the sandbox does not cause it.
+    - The compositor caps it: alone, frames come every 4.6–5.9 ms by run,
+      a frame's work ~1.9 ms; vkcube on the same GPU and output runs
       ~196 frames a second; prism's own frames on DP-1 take 2.3 ms
-      (peak 3.5), 19% of them a vblank late.
+      (peak 3.5), 19% of them a vblank late. Known to the user, and being
+      worked on in prism (2026-10-16).
     - Windows the compositor puts on the Radeon VII's outputs render on
       the 6900 XT and cross between GPUs: the 18.5 and 50 ms frames of
       steps 2 and 4.
