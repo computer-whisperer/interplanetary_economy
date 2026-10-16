@@ -16,7 +16,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// The fields legs are designed in, built once.
 static WORLD: LazyLock<World> = LazyLock::new(World::standard);
@@ -48,9 +48,11 @@ pub struct ShipDesign {
     /// A hash of what it is designed from: the log's ship (its name
     /// aside) and its re-plans.
     inputs: Key,
-    /// Every key its walk took, shown or not (a re-plan's decision reads
-    /// the step it replaced).
-    used: Vec<Key>,
+    /// Every key its walks took, shown or not (a re-plan's decision reads
+    /// the step it replaced): shared with its walk in the background,
+    /// which adds a key before it keeps a design, so that designs are let
+    /// go only when no walk of a ship has taken them.
+    used: Arc<Mutex<HashSet<Key>>>,
     live: Arc<AtomicBool>,
 }
 
@@ -87,9 +89,6 @@ fn revision() -> u64 {
 
 /// What a ship's walk reports.
 enum Event {
-    /// A key it took, part of the design or not (a re-plan's decision
-    /// reads the step it replaced).
-    Used(Key),
     /// The `n`th step of the design as it stands.
     Shown(usize, Key, Arc<Designed>),
     /// A re-plan that could not take effect: its place among the ship's
@@ -267,8 +266,6 @@ impl Game {
     /// whose inputs changed designed again (from the cache where its steps
     /// did not change); the others go on as they were.
     fn reshaped(&mut self) {
-        // What the walks have sent first: the keys they took are kept.
-        self.poll();
         let mut old: Vec<ShipDesign> = std::mem::take(&mut self.ships);
         for k in 0..self.log.plan.ships.len() {
             let inputs = self.inputs(k);
@@ -288,15 +285,15 @@ impl Game {
         }
         for s in old {
             s.live.store(false, Ordering::Relaxed);
-            self.kept.push_front(s.used);
+            self.kept
+                .push_front(s.used.lock().unwrap().iter().copied().collect());
         }
         self.kept.truncate(KEPT_DESIGNS);
         let keep: HashSet<Key> = self
             .ships
             .iter()
-            .flat_map(|s| s.used.iter())
-            .chain(self.kept.iter().flatten())
-            .copied()
+            .flat_map(|s| s.used.lock().unwrap().iter().copied().collect::<Vec<_>>())
+            .chain(self.kept.iter().flatten().copied())
             .collect();
         self.cache.retain(|k| keep.contains(&k));
     }
@@ -348,17 +345,17 @@ impl Game {
             revision: revision(),
             steps: Vec::new(),
             inputs: self.inputs(k),
-            used: Vec::new(),
+            used: Arc::default(),
             live: Arc::new(AtomicBool::new(true)),
         };
         let cache = self.cache.clone();
-        let (mut used, mut refused) = (Vec::new(), Vec::new());
+        let (used, mut refused) = (ship.used.clone(), Vec::new());
         let ended = walk(
             world(),
             first,
             &replans,
             &mut |key, _| {
-                used.push(key);
+                used.lock().unwrap().insert(key);
                 cache.get(key)
             },
             &mut |key, designed| {
@@ -366,7 +363,7 @@ impl Game {
             },
             &mut |i, why| refused.push((i, why)),
         );
-        (ship.used, ship.refused) = (used, refused);
+        ship.refused = refused;
         match ended {
             Ended::Done(failure) => {
                 ship.done = true;
@@ -383,7 +380,7 @@ impl Game {
     /// the cache lacks while `ship` is live; it reports each key it takes,
     /// and each step of the design as it stands.
     fn spawn(&self, ship: &ShipDesign, first: Ship, replans: Vec<Replan>) {
-        let live = ship.live.clone();
+        let (live, used) = (ship.live.clone(), ship.used.clone());
         let (cache, sender) = (self.cache.clone(), self.sender.clone());
         self.pool.spawn(move || {
             let send = |e| {
@@ -401,9 +398,9 @@ impl Game {
                         if !live.load(Ordering::Relaxed) {
                             return None;
                         }
-                        // Said before it is kept: the game polls before it
-                        // lets designs go, so none is let go in between.
-                        send(Event::Used(key));
+                        // Taken before it is kept, so that the game does
+                        // not let it go in between.
+                        used.lock().unwrap().insert(key);
                         Some(cache.get(key).unwrap_or_else(|| cache.put(key, design())))
                     },
                     &mut |key, designed| {
@@ -456,12 +453,6 @@ impl Game {
         };
         let ship = &mut self.ships[k];
         match event {
-            Event::Used(key) => {
-                if !ship.used.contains(&key) {
-                    ship.used.push(key);
-                }
-                false
-            }
             // Steps the ship has (from the cache, when it was edited) come
             // again first.
             Event::Shown(n, key, designed) => {

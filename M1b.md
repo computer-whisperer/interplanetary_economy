@@ -91,8 +91,10 @@ below), and the four decisions below, each as recommended.
   - `sim run` did not print a failure no item says (a refused start, a
     panic), nor re-plans passed over.
   - A design kept could be let go between being made and its walk
-    saying so; walks now say a key before keeping it, and the game
-    polls before letting designs go.
+    saying so. Each ship's keys taken are now shared with its walk,
+    which adds a key before keeping a design. (A first fix polled the
+    walks before letting designs go; the sandbox's tests caught it
+    rebuilding a ship's lines on another's removal.)
   - A ship with no legs in a free-plane orbit, re-planned in career,
     had its plane chosen backward to its start: what it does now
     begins at now.
