@@ -1,0 +1,55 @@
+# The low lunar orbit round trip (data/missions/published.toml) in career,
+# re-planned halfway through its wait in LEO: its leg to the Moon takes 4
+# days, not 3.5. It keeps the orbit it flew until then and leaves from it,
+# and its legs cost what the re-plan's design did when it was made (M1b.md,
+# step 1 plan, parts 3 and 8).
+
+name = "Low lunar orbit round trip, re-planned in LEO"
+
+[game]
+mode = "career"
+now = "2045-03-02T00:08"
+
+[[ship]]
+id = 0
+name = "Low lunar orbit round trip"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+
+[[ship.leg]]
+to = "leo"
+days = [3.5]
+
+[[replan]]
+ship = 0
+at = "2045-03-02T00:08"
+from = 0
+
+[[replan.leg]]
+to = "llo"
+days = [4.0]
+
+[[replan.leg]]
+to = "leo"
+days = [3.5]
+
+# Still in LEO at the re-plan.
+[[check]]
+ship = 0
+at = "2045-03-02T00:08"
+place = "leo"
+
+# 4,121.1 m/s from its own orbit when designed (2026-10-16).
+[[check]]
+ship = 0
+step = 0
+dv = [4100.0, 4140.0]
+
+# 4,050.5 m/s, 12.9 days later when the planes align.
+[[check]]
+ship = 0
+step = 1
+dv = [4030.0, 4070.0]

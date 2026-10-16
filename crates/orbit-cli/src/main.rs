@@ -1,7 +1,6 @@
 //! `orbit`: inspect the game's orbital mechanics from the command line.
 
 mod gate;
-mod mission;
 mod porkchop_png;
 mod routes;
 
@@ -84,14 +83,6 @@ enum Cmd {
         /// Plan cold at every n-th departure date only.
         #[arg(long, default_value_t = 1)]
         every: usize,
-    },
-    /// Design each ship of a mission plan (M1c.md), printing each leg's Δv
-    /// and duration as it is designed.
-    Mission {
-        file: PathBuf,
-        /// Write each ship's sampled path as CSV here.
-        #[arg(long)]
-        tracks: Option<PathBuf>,
     },
     /// The route graph (M1a.md, step 11) from gate sweeps' cold plans.
     Routes {
@@ -227,7 +218,6 @@ fn main() -> Result<()> {
             },
             &out,
         ),
-        Cmd::Mission { file, tracks } => mission::run(&file, tracks.as_deref()),
         Cmd::Routes { sweeps, out } => routes::run(&sweeps, &out),
     }
 }

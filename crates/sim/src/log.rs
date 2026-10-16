@@ -43,6 +43,20 @@ pub struct Replan {
     pub steps: Vec<Step>,
 }
 
+/// A scenario's check (M1b.md, step 1 plan, part 8).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Check {
+    /// Ship `ship` is staying at `place` (as the plan names it) at `at`.
+    At { ship: u64, at: Epoch, place: String },
+    /// The leg of ship `ship`'s step `step` costs from `dv[0]` to `dv[1]`
+    /// m/s.
+    Dv {
+        ship: u64,
+        step: usize,
+        dv: [f64; 2],
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct Log {
     /// Its name, header and ships as first given. Its `game` and
@@ -52,6 +66,8 @@ pub struct Log {
     pub setup: Setup,
     /// In the order they were made.
     pub replans: Vec<Replan>,
+    /// What a scenario expects of the game.
+    pub checks: Vec<Check>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -65,6 +81,20 @@ struct GameFile {
     start: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     now: Option<String>,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CheckFile {
+    ship: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    place: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dv: Option<[f64; 2]>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -93,10 +123,12 @@ impl Log {
     pub fn sandbox(mut plan: Plan) -> Log {
         plan.game = None;
         plan.replans.clear();
+        plan.checks.clear();
         Log {
             plan,
             setup: Setup::default(),
             replans: Vec::new(),
+            checks: Vec::new(),
         }
     }
 
@@ -132,10 +164,42 @@ impl Log {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let checks = std::mem::take(&mut plan.checks)
+            .into_iter()
+            .enumerate()
+            .map(|(i, table)| {
+                let fail = |e: String| format!("check {}: {e}", i + 1);
+                let c: CheckFile = table.try_into().map_err(|e| fail(format!("{e}")))?;
+                match c {
+                    CheckFile {
+                        ship,
+                        at: Some(at),
+                        place: Some(place),
+                        step: None,
+                        dv: None,
+                    } => Ok(Check::At {
+                        ship,
+                        at: date(&at).map_err(fail)?,
+                        place,
+                    }),
+                    CheckFile {
+                        ship,
+                        at: None,
+                        place: None,
+                        step: Some(step),
+                        dv: Some(dv),
+                    } => Ok(Check::Dv { ship, step, dv }),
+                    _ => Err(fail(
+                        "a check has `at` and `place`, or `step` and `dv`".into(),
+                    )),
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let log = Log {
             plan,
             setup,
             replans,
+            checks,
         };
         log.check()?;
         Ok(log)
@@ -180,6 +244,12 @@ impl Log {
             }
             *n = r.from + r.steps.len();
         }
+        for (i, c) in self.checks.iter().enumerate() {
+            let (Check::At { ship, .. } | Check::Dv { ship, .. }) = c;
+            if !steps.iter().any(|(id, _)| id == ship) {
+                return Err(format!("check {}: no ship has id {ship}", i + 1));
+            }
+        }
         Ok(())
     }
 
@@ -214,6 +284,29 @@ impl Log {
                         leg: (!r.steps.is_empty()).then(|| legs_value(&r.steps)),
                     })
                     .expect("a re-plan serializes"),
+                )
+            })
+            .collect();
+        plan.checks = self
+            .checks
+            .iter()
+            .map(|c| {
+                table(
+                    toml::Value::try_from(match c {
+                        Check::At { ship, at, place } => CheckFile {
+                            ship: *ship,
+                            at: Some(at.stamp()),
+                            place: Some(place.clone()),
+                            ..CheckFile::default()
+                        },
+                        Check::Dv { ship, step, dv } => CheckFile {
+                            ship: *ship,
+                            step: Some(*step),
+                            dv: Some(*dv),
+                            ..CheckFile::default()
+                        },
+                    })
+                    .expect("a check serializes"),
                 )
             })
             .collect();
@@ -256,6 +349,16 @@ wait = 3
 [[replan.leg]]
 to = "llo"
 days = [0.5]
+
+[[check]]
+ship = 2
+at = "2045-03-03"
+place = "leo"
+
+[[check]]
+ship = 2
+step = 2
+dv = [600.0, 750.0]
 "#;
 
     fn parse(src: &str) -> Result<Log, String> {
@@ -275,6 +378,15 @@ days = [0.5]
         assert_eq!(back.to_toml(), text);
         assert_eq!(back.setup, log.setup);
         assert_eq!(back.replans[0].at, log.replans[0].at);
+        assert_eq!(back.checks, log.checks);
+        assert_eq!(
+            log.checks[1],
+            Check::Dv {
+                ship: 2,
+                step: 2,
+                dv: [600.0, 750.0]
+            }
+        );
     }
 
     #[test]
@@ -303,6 +415,11 @@ days = [0.5]
         );
         let no_ship = CAREER.replace("ship = 2\nat", "ship = 5\nat");
         assert_eq!(parse(&no_ship).unwrap_err(), "replan 1: no ship has id 5");
+        let half = CAREER.replace("step = 2\ndv", "dv");
+        assert_eq!(
+            parse(&half).unwrap_err(),
+            "check 2: a check has `at` and `place`, or `step` and `dv`"
+        );
         let past_the_end = CAREER.replace("from = 1", "from = 2");
         assert_eq!(
             parse(&past_the_end).unwrap_err(),

@@ -58,6 +58,17 @@ below), and the four decisions below, each as recommended.
   checks; the crew rotation draws as before (9,343 m/s over 51.5
   days). Designs are now held twice, in the engine's cache and in the
   views (M1c held them once), until step 2's lighter stays.
+- Part 8: `sim run LOG` designs a log to its end, prints each ship's
+  items, the state hashed on the first of each month, and a scenario's
+  checks (`[[check]]`: a ship staying at a place at a date, a step's
+  leg's Δv within bounds), exiting nonzero when one fails; `--alone`
+  designs each ship alone, one after another. `orbit mission` is
+  deleted. The first scenario, `data/scenarios/llo-round-trip-replanned.toml`,
+  re-plans the low lunar orbit round trip in LEO in career; a test runs
+  every scenario. The published plan run `--alone` gives M1c's Δv on
+  every leg; its design times were taken on a loaded machine (load
+  average ~20 from other work) and are not comparable to M1c's (LEO to
+  the DRO 22.5 s against 16.5).
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

@@ -3405,6 +3405,8 @@ dependencies = [
 name = "sim"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "orbit",
  "rayon",
  "serde",

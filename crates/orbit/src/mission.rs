@@ -91,10 +91,12 @@ pub struct Plan {
     /// The comments its file opens with, kept when it is written out
     /// (the rest of its comments are not).
     pub header: String,
-    /// Its `[game]` table and `[[replan]]` entries, which the sim engine
-    /// reads (M1b.md, step 1 plan, part 2): kept as written.
+    /// Its `[game]` table, `[[replan]]` and `[[check]]` entries, which the
+    /// sim engine reads (M1b.md, step 1 plan, parts 2 and 8): kept as
+    /// written.
     pub game: Option<toml::Table>,
     pub replans: Vec<toml::Table>,
+    pub checks: Vec<toml::Table>,
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +204,8 @@ struct PlanFile {
     ship: Vec<ShipFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     replan: Vec<toml::Table>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    check: Vec<toml::Table>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -300,6 +304,7 @@ impl Plan {
             header,
             game: file.game,
             replans: file.replan,
+            checks: file.check,
         })
     }
 
@@ -328,6 +333,7 @@ impl Plan {
                 })
                 .collect(),
             replan: self.replans.clone(),
+            check: self.checks.clone(),
         };
         let body = toml::to_string(&file).expect("a plan serializes");
         match self.header.is_empty() {

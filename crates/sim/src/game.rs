@@ -6,8 +6,8 @@
 
 use crate::designs::{Cache, Designed, Ended, Key, walk};
 use crate::hash::Fixed;
-use crate::log::{Log, Mode, Replan, minute};
-use orbit::mission::{Checkpoint, Item, Plan, Ship, Step, World, resume_point};
+use crate::log::{Check, Log, Mode, Replan, minute};
+use orbit::mission::{Checkpoint, Item, ItemKind, Plan, Ship, Step, World, resume_point};
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use std::collections::{HashSet, VecDeque};
@@ -182,6 +182,7 @@ impl Game {
             header: String::new(),
             game: None,
             replans: Vec::new(),
+            checks: Vec::new(),
         });
         let mut game = Game::new(log, pool);
         game.path = Some(path);
@@ -630,6 +631,46 @@ impl Game {
     pub fn resume_point(&self, s: usize, step: usize) -> Option<Option<Checkpoint>> {
         let checkpoints: Vec<Checkpoint> = self.ships[s].checkpoints().cloned().collect();
         resume_point(&self.plan.ships[s], &checkpoints, step).map(|c| c.cloned())
+    }
+
+    /// Whether `check` holds, saying what the game has either way.
+    pub fn check(&self, check: &Check) -> Result<String, String> {
+        let (Check::At { ship, .. } | Check::Dv { ship, .. }) = check;
+        let d = self
+            .index(*ship)
+            .map(|s| &self.ships[s])
+            .ok_or(format!("no ship has id {ship}"))?;
+        match check {
+            Check::At { at, place, .. } => {
+                let item = d.items().rfind(|i| i.start.0 <= at.0 && at.0 <= i.end.0);
+                let line = format!(
+                    "{} on {}: {}",
+                    d.name,
+                    at.stamp(),
+                    item.map_or("not designed there", |i| i.label.as_str())
+                );
+                match item
+                    .is_some_and(|i| i.kind == ItemKind::Stay && i.label == format!("at {place}"))
+                {
+                    true => Ok(line),
+                    false => Err(format!("{line}, not at {place}")),
+                }
+            }
+            Check::Dv { step, dv, .. } => {
+                let Some(leg) = d
+                    .items()
+                    .find(|i| i.step == *step && i.kind == ItemKind::Leg)
+                else {
+                    return Err(format!("{}, step {step}: no leg", d.name));
+                };
+                let m = leg.dv * 1e3;
+                let line = format!("{}, step {step}: {m:.1} m/s", d.name);
+                match (dv[0]..=dv[1]).contains(&m) {
+                    true => Ok(line),
+                    false => Err(format!("{line}, not {:.1}–{:.1}", dv[0], dv[1])),
+                }
+            }
+        }
     }
 
     /// The state at the start of each of `days` days from `from`, hashed

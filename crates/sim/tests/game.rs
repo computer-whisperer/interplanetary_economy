@@ -252,3 +252,32 @@ fn a_longer_station_visit_is_refused() {
     game.wait();
     assert!(game.ships()[0].failure.is_none());
 }
+
+/// Every scenario in `data/scenarios/` runs headless, and its checks hold
+/// (M1b.md, step 1 plan, part 8).
+#[test]
+fn every_scenario_holds() {
+    let dir = format!("{}/../../data/scenarios", env!("CARGO_MANIFEST_DIR"));
+    let mut ran = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "toml") {
+            continue;
+        }
+        let log = parse(&std::fs::read_to_string(&path).unwrap());
+        assert!(
+            !log.checks.is_empty(),
+            "{}: a scenario checks",
+            path.display()
+        );
+        let games = sim::run::run(&log, false, &pool(24));
+        for c in sim::run::checks(&log, &games) {
+            match c {
+                Ok(held) => println!("{}: held: {held}", path.display()),
+                Err(failed) => panic!("{}: {failed}", path.display()),
+            }
+        }
+        ran += 1;
+    }
+    assert!(ran > 0);
+}

@@ -1,9 +1,11 @@
 # Interplanetary economy
 
 A game about developing the solar system's economy under real orbital
-mechanics. Design: [DESIGN.md](DESIGN.md). Current milestone: the creative sandbox
-and the 3D map view ([M1c.md](M1c.md)); done: the n-body sandbox and
-autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
+mechanics. Design: [DESIGN.md](DESIGN.md). Current milestone: the sim
+engine, one for the sandbox and for career ([M1b.md](M1b.md)); done: the
+creative sandbox and the 3D map view ([M1c.md](M1c.md)), the n-body
+sandbox and autopilot ([M1a.md](M1a.md)) and the M2 kill-test
+([M2.md](M2.md)).
 
 ## Layout
 
@@ -20,6 +22,12 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   mission plans: chains of legs, each designed from where and when the
   last arrived, with paths sampled for drawing (`mission`, `track`).
 - `crates/orbit-cli` — the `orbit` command for inspecting all of the above.
+- `crates/sim` — the sim engine ([M1b.md](M1b.md)), one for the sandbox
+  and for career: a game's log (a mission plan, with career's re-plans
+  and a scenario's checks), each ship's design walked step by step and
+  kept by its inputs, so that an edit or an undo designs only what it
+  changed, and each mode's rules; the `sim` command runs a log
+  headless.
 - `crates/render` — the map view's renderer ([M1c.md](M1c.md)): a scene
   drawn in linear HDR (the sky's stars and Milky Way; bodies with their
   maps, atmospheres, rings and eclipses; points; markers; paths' lines
@@ -30,7 +38,7 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
   UI on [damascene](https://github.com/computer-whisperer/damascene)
   0.8, HDR output where the compositor offers it; the bodies turned by
   their rotation models, with their orbits drawn; mission plans designed
-  in the background and played back, in fixed or rotating frames; their
+  in the background by the sim engine and played back, in fixed or rotating frames; their
   brightness held to published phase curves; labels, picking by click,
   the plan's panel, and settings.
 - `crates/plan` — the M2 kill-test optimizer ([M2.md](M2.md)): a linear
@@ -41,7 +49,8 @@ autopilot ([M1a.md](M1a.md)) and the M2 kill-test ([M2.md](M2.md)).
 - `data/` — game data: JPL's DE440 ephemeris for 2025–2080 (`de440.bin`),
   the candidate asteroids, Phobos and Deimos (`moons.toml`), the Earth–Moon
   periodic-orbit families (`orbits.toml`), the places ships go
-  (`places.toml`), mission plans (`missions/`), the route graph the
+  (`places.toml`), mission plans (`missions/`), scenarios run as tests
+  (`scenarios/`), the route graph the
   autopilot measured (`routes.toml`, written by `orbit routes`), the
   economy (`economy.toml`, with sources), the bodies' rotation models
   (`rotation.toml`, IAU 2015) and maps (`bodies/`: color, relief,
@@ -100,16 +109,31 @@ cargo run --release -p orbit-cli -- calendar --from earth --max-v-inf 4
 cargo run --release -p orbit-cli -- porkchop earth mars --start 2041-06-01 --end 2042-03-01 --png pc.png
 cargo run --release -p orbit-cli -- gate OUT --every 12      # M1a's gate sweep (hours)
 cargo run --release -p orbit-cli -- routes OUT...            # data/routes.toml from sweeps
-cargo run --release -p orbit-cli -- mission data/missions/gateway-rotation.toml --tracks OUT
 ```
-
-`mission` designs each ship's legs in turn and prints each as it is
-designed (`--tracks` writes the sampled paths as CSV). The format is in
-[M1c.md](M1c.md), step 1 plan; places are in `data/places.toml`.
 
 Transfers are ranked by total excess speed (v∞ at departure plus v∞ at
 arrival). Units are km/s for speeds and days for time; dates are
 `YYYY-MM-DD` (TDB).
+
+## The `sim` command
+
+```sh
+cargo run --release -p sim -- run data/missions/gateway-rotation.toml --tracks OUT
+cargo run --release -p sim -- run data/missions/published.toml --alone
+cargo run --release -p sim -- run data/scenarios/llo-round-trip-replanned.toml
+```
+
+`run` designs a game's log to its end and prints each ship's items, the
+state hashed on the first of each month, and a scenario's checks; a
+check that fails exits nonzero. A log is a mission plan (its format in
+[M1c.md](M1c.md), step 1 plan; places in `data/places.toml`), with, for
+a game, a `[game]` table (`seed`, `mode = "career"`, `start`, `now`),
+`[[replan]]` entries (career's edits: a ship's steps from one of them
+on, made at a time) and `[[check]]` entries (a ship staying at a place
+at a date, or a step's leg's Δv within bounds, m/s); see
+[M1b.md](M1b.md), step 1 plan. `--alone` designs each ship alone, one
+after another, so that each item's design time is its own; `--tracks`
+writes the sampled paths as CSV.
 
 ## The `sandbox` command
 

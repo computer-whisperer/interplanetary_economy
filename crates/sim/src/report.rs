@@ -1,73 +1,14 @@
-//! `orbit mission FILE`: designs each ship of a mission plan (M1c.md, step
-//! 1), printing each item as it is designed, and optionally writing the
-//! sampled paths as CSV.
+//! Items as text and as CSV, for `sim run` (M1b.md, step 1 plan, part 8;
+//! M1c.md's `orbit mission`, which it replaces).
 
-use anyhow::{Context, Result, anyhow};
 use orbit::ephem::Ephemeris;
-use orbit::mission::{Item, ItemKind, MarkerKind, Plan, Planner, World, when};
-use orbit::places::Places;
+use orbit::mission::{Item, ItemKind, MarkerKind, when};
 use orbit::time::SECONDS_PER_DAY;
 use std::fmt::Write as _;
-use std::path::Path;
 
-pub fn run(file: &Path, tracks: Option<&Path>) -> Result<()> {
-    let eph = Ephemeris::standard();
-    let src = std::fs::read_to_string(file).with_context(|| file.display().to_string())?;
-    let plan = Plan::parse(&src, eph, Places::standard())
-        .map_err(|e| anyhow!("{}: {e}", file.display()))?;
-    let world = World::standard();
-    if let Some(dir) = tracks {
-        std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
-    }
-    println!("{}", plan.name);
-    for (s, ship) in plan.ships.iter().enumerate() {
-        println!(
-            "\n{} (from {}, {})",
-            ship.name, ship.start.label, ship.epoch
-        );
-        let mut planner = match Planner::new(&world, ship) {
-            Ok(p) => p,
-            Err(e) => {
-                println!("  FAILED   {e}");
-                continue;
-            }
-        };
-        let mut items: Vec<Item> = Vec::new();
-        while let Some(batch) = planner.step() {
-            for item in batch {
-                print!("{}", line(eph, &item));
-                items.push(item);
-            }
-        }
-        let dv: f64 = items.iter().map(|i| i.dv).sum();
-        let jumps = items
-            .iter()
-            .flat_map(|i| &i.markers)
-            .filter(|m| matches!(m.kind, MarkerKind::Jump { .. }))
-            .count();
-        let failed = items.iter().any(|i| matches!(i.kind, ItemKind::Failed(_)));
-        if let (Some(first), Some(last)) = (items.first(), items.last()) {
-            println!(
-                "  total {:.1} m/s over {:.1} days{}{}",
-                dv * 1e3,
-                last.end.0 - first.start.0,
-                if jumps > 0 {
-                    format!(", {jumps} junction(s) not flown")
-                } else {
-                    String::new()
-                },
-                if failed { ", stopped by a failure" } else { "" }
-            );
-        }
-        if let Some(dir) = tracks {
-            let out = dir.join(format!("ship-{}.csv", s + 1));
-            std::fs::write(&out, csv(eph, &items)).with_context(|| out.display().to_string())?;
-        }
-    }
-    Ok(())
-}
-
-fn line(eph: &Ephemeris, item: &Item) -> String {
+/// An item: what, when, how long and its Δv, and the time designing it
+/// took; then its burns, options, a jump and its note, where it has them.
+pub fn line(eph: &Ephemeris, item: &Item) -> String {
     let kind = match &item.kind {
         ItemKind::Leg => "leg",
         ItemKind::Stay => "stay",
@@ -143,9 +84,32 @@ fn line(eph: &Ephemeris, item: &Item) -> String {
     s
 }
 
+/// The ship's totals: Δv, days, junctions not flown, and a failure.
+pub fn totals(items: &[Item]) -> Option<String> {
+    let (first, last) = (items.first()?, items.last()?);
+    let dv: f64 = items.iter().map(|i| i.dv).sum();
+    let jumps = items
+        .iter()
+        .flat_map(|i| &i.markers)
+        .filter(|m| matches!(m.kind, MarkerKind::Jump { .. }))
+        .count();
+    let failed = items.iter().any(|i| matches!(i.kind, ItemKind::Failed(_)));
+    Some(format!(
+        "  total {:.1} m/s over {:.1} days{}{}",
+        dv * 1e3,
+        last.end.0 - first.start.0,
+        if jumps > 0 {
+            format!(", {jumps} junction(s) not flown")
+        } else {
+            String::new()
+        },
+        if failed { ", stopped by a failure" } else { "" }
+    ))
+}
+
 /// The items' samples: item, kind, center, Julian date (TDB), state km and
 /// km/s relative to the center, and the Moon's (for the Earth–Moon frame).
-fn csv(eph: &Ephemeris, items: &[Item]) -> String {
+pub fn csv(eph: &Ephemeris, items: &[Item]) -> String {
     let moon = eph.lookup("moon").expect("the Moon is in the ephemeris");
     let mut out = String::from("item,kind,center,jd,x,y,z,vx,vy,vz,mx,my,mz,mvx,mvy,mvz\n");
     for (i, item) in items.iter().enumerate() {
