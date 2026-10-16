@@ -8,7 +8,7 @@ use glam::DVec3;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{
     Checkpoint, Item, ItemKind, MarkerKind, Pin, Plan, Planner, Step, World, check, legs_value,
-    parse_legs, resume_from,
+    parse_legs, reads, resume_point,
 };
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -455,7 +455,7 @@ fn an_edit_goes_on_from_the_middle() {
 
     let mut edited = ship.clone();
     edited.steps[2] = Step::Wait(3.0);
-    let from = resume_from(&checkpoints, 2).unwrap();
+    let from = resume_point(ship, &checkpoints, 2).unwrap().unwrap();
     assert_eq!(from.next(), 2, "after the landing: on the surface");
     let mut planner = Planner::resume(&world, &edited, from.clone());
     let mut resumed: Vec<Item> = items.iter().filter(|i| i.step < 2).cloned().collect();
@@ -473,8 +473,9 @@ fn an_edit_goes_on_from_the_middle() {
     // An edit to the leg leaving a station goes on from before the leg
     // that reached it (its visit was built for the leg leaving); here, the
     // start.
-    assert!(resume_from(&checkpoints, 0).is_none());
-    assert_eq!(resume_from(&checkpoints, 1).map(Checkpoint::next), Some(1));
+    assert!(resume_point(ship, &checkpoints, 0).unwrap().is_none());
+    let from = resume_point(ship, &checkpoints, 1).unwrap();
+    assert_eq!(from.map(Checkpoint::next), Some(1));
 }
 
 /// A leg pinned (`pin`) flies at its date and duration, as the published
@@ -696,7 +697,7 @@ days = [0.5, 2.0, 8.0]
     }
 }
 
-/// A plan stopped by a failure goes on from before the failed leg; a
+/// A plan stopped by a failure is not reached by an edit after it; a
 /// small body's leg whose ship is ready before its orbit is known (2040)
 /// but whose window opens after is designed, not a panic.
 #[test]
@@ -730,7 +731,8 @@ window = ["2039-12-15", "2040-03-01"]
             .iter()
             .any(|i| matches!(i.kind, ItemKind::Leg | ItemKind::Failed(_)))
     );
-    // After a failure, an edit to the wait goes on from the start.
+    // After a failure, an edit to a later step does not reach it: the
+    // failed step's design reads only its own steps.
     let src = src.replace(
         r#"window = ["2039-12-15", "2040-03-01"]"#,
         r#"window = ["2035-01-01", "2035-01-02"]"#,
@@ -742,5 +744,6 @@ window = ["2039-12-15", "2040-03-01"]
         checkpoints.push(planner.checkpoint());
     }
     assert_eq!(checkpoints.len(), 2, "the start, and after the failed leg");
-    assert_eq!(resume_from(&checkpoints, 2).map(Checkpoint::next), Some(0));
+    assert_eq!(reads(&plan.ships[0], Some(0)), 2, "the wait and the leg");
+    assert!(resume_point(&plan.ships[0], &checkpoints, 2).is_none());
 }

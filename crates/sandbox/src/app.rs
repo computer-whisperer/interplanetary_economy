@@ -28,7 +28,7 @@ use damascene_core::widgets::{slider, text_input};
 use glam::{DVec3, Vec2};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::families::Catalog;
-use orbit::mission::{Item, ItemKind, Pin, Plan, Step};
+use orbit::mission::{Item, ItemKind, Pin, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use render::Timings;
@@ -166,8 +166,6 @@ pub struct Shell {
     /// The ship being edited, and the text fields' shared selection.
     pub editor: Option<Editor>,
     selection: Selection,
-    /// The plan before each change, for undo.
-    undo: Vec<Plan>,
     /// A drag moving the selected leg's departure: where it pressed, and
     /// how far it has gone, days.
     moving: Option<(f32, timeline::Movable)>,
@@ -222,7 +220,6 @@ impl Shell {
             pointer: None,
             editor: None,
             selection: Selection::default(),
-            undo: Vec::new(),
             moving: None,
             panel_open: true,
             seen: None,
@@ -270,11 +267,11 @@ impl Shell {
         else {
             return;
         };
-        let Some((from, to, aero)) = crate::windows::ends(&plan.plan, s, step) else {
+        let Some((from, to, aero)) = crate::windows::ends(plan.plan(), s, step) else {
             return;
         };
         self.options.porkchop(s, step, window, || {
-            let c = crate::plan::world()
+            let c = sim::game::world()
                 .crossing(&from.kind, &to.kind, aero)
                 .ok()?;
             Porkchop::compute(&c, window)
@@ -288,7 +285,7 @@ impl Shell {
         let Some(plan) = self.plan.as_ref() else {
             return;
         };
-        let mut ship = plan.plan.ships[s].clone();
+        let mut ship = plan.plan().ships[s].clone();
         let Some(Step::Go(go)) = ship.steps.get_mut(step) else {
             return;
         };
@@ -386,13 +383,13 @@ impl Shell {
         let Some(window) = self.leg_item((s, step)).and_then(|(_, i)| i.window) else {
             return;
         };
-        let Some((from, to, aero)) = crate::windows::ends(&plan.plan, s, step) else {
+        let Some((from, to, aero)) = crate::windows::ends(plan.plan(), s, step) else {
             return;
         };
-        let Ok(c) = crate::plan::world().crossing(&from.kind, &to.kind, aero) else {
+        let Ok(c) = sim::game::world().crossing(&from.kind, &to.kind, aero) else {
             return;
         };
-        let mut ship = plan.plan.ships[s].clone();
+        let mut ship = plan.plan().ships[s].clone();
         let Some(Step::Go(go)) = ship.steps.get_mut(step) else {
             return;
         };
@@ -408,9 +405,9 @@ impl Shell {
     fn options_section(&self, cx: &BuildCx) -> Option<El> {
         let (s, step) = self.leg?;
         let plan = self.plan.as_ref()?;
-        let (from, to, aero) = crate::windows::ends(&plan.plan, s, step)?;
+        let (from, to, aero) = crate::windows::ends(plan.plan(), s, step)?;
         let item = self.leg_item((s, step));
-        let go = match plan.plan.ships[s].steps.get(step) {
+        let go = match plan.plan().ships[s].steps.get(step) {
             Some(Step::Go(go)) => Some(go),
             _ => None,
         };
@@ -464,52 +461,40 @@ impl Shell {
     }
 
     /// Replaces ship `s` with `ship`, designing it again from where it
-    /// first changed (a new name alone is only a rename); the plan before
-    /// is kept for undo.
+    /// first changed (a new name alone is only a rename); the plan keeps
+    /// what it was for undo.
     pub fn change(&mut self, s: usize, ship: orbit::mission::Ship) {
         let Some(plan) = self.plan.as_mut() else {
             return;
         };
-        let Some(changed) = editor::first_change(&plan.plan.ships[s], &ship) else {
-            if ship.name != plan.plan.ships[s].name {
-                self.undo.push(plan.plan.clone());
-                plan.rename(s, &ship.name);
-            }
-            return;
-        };
         // Steps added or removed: the leg shown may be another now.
-        if ship.steps.len() != plan.plan.ships[s].steps.len()
+        if ship.steps.len() != plan.plan().ships[s].steps.len()
             && self.leg.is_some_and(|(ls, _)| ls == s)
         {
             self.leg = None;
         }
-        self.undo.push(plan.plan.clone());
-        plan.edit(s, ship, changed);
-        self.selected = None;
+        let renamed_only = {
+            let same = |x: &orbit::mission::Ship| format!("{:?}", (&x.start, x.epoch, &x.steps));
+            same(&plan.plan().ships[s]) == same(&ship)
+        };
+        plan.edit(s, ship);
+        if !renamed_only {
+            self.selected = None;
+        }
     }
 
-    /// Back to the plan before the last change: the ships changed
-    /// designed again from where they differ, or, if ships were added or
-    /// removed, the whole plan.
+    /// Back to the plan before the last change, its designs from the
+    /// cache.
     pub fn undo(&mut self) {
-        let (Some(plan), Some(before)) = (self.plan.as_mut(), self.undo.pop()) else {
+        let Some(plan) = self.plan.as_mut() else {
             return;
         };
-        self.selected = None;
-        if before.ships.len() != plan.plan.ships.len() {
-            let path = plan.path.clone();
-            let mut restarted = Loaded::start(before);
-            restarted.path = path;
-            self.plan = Some(restarted);
-            self.leg = None;
-            self.editor = None;
-            return;
-        }
-        for (s, ship) in before.ships.into_iter().enumerate() {
-            match editor::first_change(&plan.plan.ships[s], &ship) {
-                Some(changed) => plan.edit(s, ship, changed),
-                None if ship.name != plan.plan.ships[s].name => plan.rename(s, &ship.name),
-                None => {}
+        let ships = plan.plan().ships.len();
+        if plan.undo() {
+            self.selected = None;
+            if plan.plan().ships.len() != ships {
+                self.leg = None;
+                self.editor = None;
             }
         }
     }
@@ -532,7 +517,7 @@ impl Shell {
             return;
         };
         let s = ed.ship;
-        let result = editor::set(&plan.plan.ships[s], field, text);
+        let result = editor::set(&plan.plan().ships[s], field, text);
         match result {
             Ok(ship) => {
                 self.change(s, ship);
@@ -575,7 +560,7 @@ impl Shell {
         let Some(plan) = self.plan.as_ref() else {
             return false;
         };
-        let ship = plan.plan.ships[s].clone();
+        let ship = plan.plan().ships[s].clone();
         // Typing into a field.
         if let Some(f) = target.or(routed).filter(|f| f.typed()) {
             let ed = self.editor.as_mut().unwrap();
@@ -650,7 +635,6 @@ impl Shell {
             }
             Some(Field::RemoveShip) => {
                 if let Some(plan) = self.plan.as_mut() {
-                    self.undo.push(plan.plan.clone());
                     plan.remove_ship(s);
                 }
                 self.editor = None;
@@ -682,14 +666,13 @@ impl Shell {
         self.selected = None;
         self.leg = None;
         self.editor = None;
-        self.undo.clear();
         self.timeline.refit();
         self.poll();
     }
 
     /// Saves the plan to its file, saying so.
     fn save(&mut self) {
-        let Some(plan) = &self.plan else {
+        let Some(plan) = self.plan.as_mut() else {
             return;
         };
         self.toasts.push(match plan.save() {
@@ -1176,10 +1159,9 @@ impl Shell {
     fn plan_name(&self) -> String {
         match &self.plan {
             Some(p) => p
-                .path
-                .as_deref()
+                .path()
                 .and_then(|p| p.file_stem()?.to_str())
-                .unwrap_or(&p.plan.name)
+                .unwrap_or(&p.plan().name)
                 .to_string(),
             None => "None".to_string(),
         }
@@ -1221,16 +1203,16 @@ impl App for Shell {
                 column(
                     [
                         Some(panel::panel(
-                            &plan.plan.name,
+                            &plan.plan().name,
                             panel::rows(self.eph, &plan.ships, self.clock.t, self.selected),
                         )),
                         match &self.editor {
-                            Some(ed) if ed.ship < plan.plan.ships.len() => Some(column([
+                            Some(ed) if ed.ship < plan.plan().ships.len() => Some(column([
                                 divider(),
                                 editor::section(
                                     ed,
-                                    &plan.plan.ships[ed.ship],
-                                    &orbit::mission::check(self.eph, &plan.plan.ships[ed.ship]),
+                                    &plan.plan().ships[ed.ship],
+                                    &orbit::mission::check(self.eph, &plan.plan().ships[ed.ship]),
                                     &self.selection,
                                 ),
                             ])),
@@ -1380,11 +1362,10 @@ impl App for Shell {
         } else if event.is_click_or_activate(panel::ADD_SHIP_KEY)
             && let Some(plan) = self.plan.as_mut()
         {
-            self.undo.push(plan.plan.clone());
-            let name = format!("Ship {}", plan.plan.ships.len() + 1);
-            let id = plan.plan.next_id();
+            let name = format!("Ship {}", plan.plan().ships.len() + 1);
+            let id = plan.plan().next_id();
             plan.add_ship(editor::new_ship(id, name, self.clock.t, Places::standard()));
-            let s = plan.plan.ships.len() - 1;
+            let s = plan.plan().ships.len() - 1;
             self.editor = Some(Editor {
                 ship: s,
                 ..Editor::default()

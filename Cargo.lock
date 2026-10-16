@@ -3286,6 +3286,7 @@ dependencies = [
  "rayon",
  "render",
  "serde",
+ "sim",
  "toml",
  "wgpu",
  "winit",

@@ -1,55 +1,43 @@
 //! A mission plan in the sandbox (M1c.md, step 4 plan, item 4; step 7
-//! plan, item 2): its ships designed in the background, in parallel on a
-//! pool of their own at a lower priority (`background`), each item kept
-//! as it arrives; a ship edited designed again from where the edit takes
-//! effect.
+//! plan, item 2): a game of the sim engine (`sim::game`, M1b.md, step 1
+//! plan, part 7), its ships designed in the background on a pool of
+//! their own at a lower priority (`background`), with what the sandbox
+//! adds: each ship's view, its legs' window lanes, and sweeps of a leg's
+//! durations.
 
 use crate::windows::Windows;
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
-use orbit::mission::{
-    Checkpoint, Choice, Item, ItemKind, Marker, MarkerKind, Pin, Plan, Planner, Step, World,
-    resume_from,
-};
-use orbit::places::Places;
+use orbit::mission::{Choice, Item, ItemKind, Marker, MarkerKind, Pin, Plan, Planner, Step};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::track::Track;
 use rayon::prelude::*;
+use sim::game::{Game, world};
+use sim::log::Log;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, LazyLock};
 
 /// A sweep of a leg's durations (M1c.md, step 7 plan, item 5): designed
-/// for a ship's design's generation, the plan left as it is.
+/// for the ship as it was (its inputs), the plan left as it is.
 #[derive(Clone, Debug)]
 pub struct Sweep {
     /// Its own, so that an earlier sweep's result does not fill it.
     pub id: u64,
-    pub generation: u64,
+    /// The ship's inputs it was designed for (`ShipDesign::inputs`).
+    pub inputs: u64,
     pub durations: Vec<f64>,
     /// Each duration's design, once done; `Err` why none was.
     pub options: Option<Result<Vec<Choice>, String>>,
 }
 
-/// What a designer reports about a ship.
-enum Message {
-    /// A sweep of the leg at a step, by its id: its options.
-    Swept(usize, u64, Result<Vec<Choice>, String>),
-    /// It started: where it is before its first step.
-    Started(Checkpoint),
-    /// Items, and where the ship is after them.
-    Items(Vec<Item>, Checkpoint),
-    /// It could not start: why.
-    Refused(String),
-    Done,
-}
-
-/// A ship of the plan and what has been designed of it.
+/// A ship of the plan as the views show it: what has been designed of
+/// it.
 #[derive(Clone, Debug)]
 pub struct Ship {
+    pub id: u64,
     pub name: String,
     pub items: Vec<Item>,
     pub done: bool,
@@ -58,61 +46,25 @@ pub struct Ship {
     /// Its first leg's place in the plan's legs, counted in the file.
     pub first_leg: usize,
     /// Another whenever its items change, unique in the process
-    /// ([`revision`]): what its lines are built for.
+    /// (`ShipDesign::revision`): what its lines are built for.
     pub revision: u64,
 }
 
-/// A ship's design: its generation (each edit starts another; a
-/// designer of an older one stops after the step it is on, and what it
-/// sent is dropped), and where the ship is before each step designed.
-struct Design {
-    /// The ship's own, as messages name it: its place in the plan moves
-    /// as ships are added and removed.
-    id: u64,
-    generation: u64,
-    live: Arc<AtomicU64>,
-    checkpoints: Vec<Checkpoint>,
-}
-
-/// A ship's revision not given before in the process: one plan's ships'
-/// lines are never taken for another's.
-fn revision() -> u64 {
-    static LAST: AtomicU64 = AtomicU64::new(0);
-    LAST.fetch_add(1, Ordering::Relaxed) + 1
-}
-
-/// The fields legs are designed in, built once.
-static WORLD: LazyLock<World> = LazyLock::new(World::standard);
-
-/// The fields legs are designed and priced in.
-pub fn world() -> &'static World {
-    &WORLD
-}
+/// A sweep's result: ship and step swept, the sweep's id, its options.
+type Swept = (usize, usize, u64, Result<Vec<Choice>, String>);
 
 /// A plan being designed.
 pub struct Loaded {
-    /// The plan as edited, and the file it is saved to.
-    pub plan: Plan,
-    pub path: Option<PathBuf>,
+    game: Game,
     pub ships: Vec<Ship>,
-    designs: Vec<Design>,
     /// The windows of its legs between planets.
     pub windows: Windows,
     /// Sweeps of legs' durations, by ship and step.
     pub sweeps: HashMap<(usize, usize), Sweep>,
     pool: Arc<rayon::ThreadPool>,
-    next_id: u64,
-    sender: Sender<(u64, u64, Message)>,
-    receiver: Receiver<(u64, u64, Message)>,
-}
-
-impl Drop for Loaded {
-    /// Its designers and sweeps stop after the step they are on.
-    fn drop(&mut self) {
-        for d in &self.designs {
-            d.live.store(u64::MAX, Ordering::Relaxed);
-        }
-    }
+    next_sweep: u64,
+    sender: Sender<Swept>,
+    receiver: Receiver<Swept>,
 }
 
 /// Each ship's first leg's place in the plan's legs.
@@ -131,244 +83,174 @@ fn first_legs(plan: &Plan) -> Vec<usize> {
 impl Loaded {
     /// Reads the plan at `path` and starts designing it.
     pub fn open(path: &Path) -> Result<Loaded, String> {
-        let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let plan = Plan::parse(&src, Ephemeris::standard(), Places::standard())
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut loaded = Loaded::start(plan);
-        loaded.path = Some(path.to_path_buf());
-        Ok(loaded)
+        let pool = Arc::new(crate::background::pool("design"));
+        Ok(Loaded::of(Game::open(path, pool.clone())?, pool))
     }
 
     /// An empty plan named `name`, to be saved at `path`.
     pub fn empty(name: &str, path: PathBuf) -> Loaded {
-        let mut loaded = Loaded::start(Plan {
-            name: name.to_string(),
-            ships: Vec::new(),
-            header: String::new(),
-            game: None,
-            replans: Vec::new(),
-        });
-        loaded.path = Some(path);
-        loaded
+        let pool = Arc::new(crate::background::pool("design"));
+        Loaded::of(Game::empty(name, path, pool.clone()), pool)
     }
 
-    /// Writes the plan to its file: where, or why not.
-    pub fn save(&self) -> Result<PathBuf, String> {
-        let path = self.path.clone().ok_or("the plan has no file")?;
-        std::fs::write(&path, self.plan.to_toml())
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(path)
-    }
-
+    /// `plan` in the sandbox, not saved anywhere.
     pub fn start(plan: Plan) -> Loaded {
-        let ships = plan
-            .ships
-            .iter()
-            .zip(first_legs(&plan))
-            .map(|(s, first_leg)| Ship {
-                name: s.name.clone(),
-                items: Vec::new(),
-                done: false,
-                failure: None,
-                first_leg,
-                revision: revision(),
-            })
-            .collect();
-        let designs = (0..plan.ships.len() as u64)
-            .map(|id| Design {
-                id,
-                generation: 0,
-                live: Arc::new(AtomicU64::new(0)),
-                checkpoints: Vec::new(),
-            })
-            .collect();
-        let pool = crate::background::pool("design");
+        let pool = Arc::new(crate::background::pool("design"));
+        Loaded::of(Game::new(Log::sandbox(plan), pool.clone()), pool)
+    }
+
+    fn of(game: Game, pool: Arc<rayon::ThreadPool>) -> Loaded {
         let (sender, receiver) = channel();
-        let next_id = plan.ships.len() as u64;
         let mut loaded = Loaded {
-            plan,
-            path: None,
-            ships,
-            designs,
+            game,
+            ships: Vec::new(),
             windows: Windows::default(),
             sweeps: HashMap::new(),
-            pool: Arc::new(pool),
-            next_id,
+            pool,
+            next_sweep: 0,
             sender,
             receiver,
         };
-        for s in 0..loaded.ships.len() {
-            loaded.design(s, None);
-        }
-        loaded.windows.update(&loaded.plan, &loaded.pool);
+        loaded.shown();
+        loaded.windows.update(loaded.game.plan(), &loaded.pool);
         loaded
     }
 
-    /// Designs ship `s` in the background for its design's generation,
-    /// from `from` (else its start), sending each step's items as they
-    /// are ready. A ship whose design panics is refused; once the plan is
-    /// closed or the ship edited again, the designer stops after the step
-    /// it is on.
-    fn design(&self, s: usize, from: Option<Checkpoint>) {
-        let ship = self.plan.ships[s].clone();
-        let d = &self.designs[s];
-        let (id, generation, live) = (d.id, d.generation, d.live.clone());
-        let sender = self.sender.clone();
-        self.pool.spawn(move || {
-            let world = world();
-            let send = |m| {
-                live.load(Ordering::Relaxed) == generation
-                    && sender.send((id, generation, m)).is_ok()
-            };
-            let designed = catch_unwind(AssertUnwindSafe(|| {
-                let mut planner = match from {
-                    Some(c) => Planner::resume(world, &ship, c),
-                    None => match Planner::new(world, &ship) {
-                        Ok(p) => {
-                            if !send(Message::Started(p.checkpoint())) {
-                                return;
-                            }
-                            p
-                        }
-                        Err(why) => {
-                            send(Message::Refused(why));
-                            return;
-                        }
-                    },
-                };
-                // Superseded, it stops before its next step.
-                while live.load(Ordering::Relaxed) == generation {
-                    let Some(items) = planner.step() else {
-                        send(Message::Done);
-                        return;
-                    };
-                    if !send(Message::Items(items, planner.checkpoint())) {
-                        return;
-                    }
-                }
-            }));
-            if let Err(panic) = designed {
-                let why = panic
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| panic.downcast_ref::<&str>().copied())
-                    .unwrap_or("no message");
-                send(Message::Refused(format!("designing it panicked: {why}")));
-            }
-        });
+    /// The plan as it stands.
+    pub fn plan(&self) -> &Plan {
+        self.game.plan()
     }
 
-    /// Replaces ship `s` with `ship`, whose steps from `edited` on
-    /// changed (`None`: its start changed), and designs it again from
-    /// where that takes effect (`mission::resume_from`), keeping the items
-    /// before.
-    pub fn edit(&mut self, s: usize, ship: orbit::mission::Ship, edited: Option<usize>) {
-        let design = &mut self.designs[s];
-        let from = edited
-            .and_then(|e| resume_from(&design.checkpoints, e))
-            .cloned();
-        // From the start: none of the old design's checkpoints hold.
-        match &from {
-            Some(c) => {
-                let keep = c.next();
-                design.checkpoints.retain(|c| c.next() <= keep);
+    pub fn game(&self) -> &Game {
+        &self.game
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.game.path()
+    }
+
+    /// Writes the plan to its file: where, or why not.
+    pub fn save(&mut self) -> Result<PathBuf, String> {
+        self.game.save()
+    }
+
+    /// Each ship's view as the game has its design: views whose design
+    /// did not change are kept; `true` if any changed.
+    fn shown(&mut self) -> bool {
+        let firsts = first_legs(self.game.plan());
+        let mut old = std::mem::take(&mut self.ships);
+        let mut any = old.len() != self.game.ships().len();
+        for (d, first_leg) in self.game.ships().iter().zip(firsts) {
+            let kept = old
+                .iter()
+                .position(|v| v.id == d.id && v.revision == d.revision)
+                .map(|k| old.swap_remove(k));
+            let ship = match kept {
+                Some(mut v) => {
+                    v.name.clone_from(&d.name);
+                    v.first_leg = first_leg;
+                    v
+                }
+                None => {
+                    any = true;
+                    Ship {
+                        id: d.id,
+                        name: d.name.clone(),
+                        items: d.items().cloned().collect(),
+                        done: d.done,
+                        failure: d.failure.clone(),
+                        first_leg,
+                        revision: d.revision,
+                    }
+                }
+            };
+            self.ships.push(ship);
+        }
+        any
+    }
+
+    /// Replaces ship `s` with `ship`, designing it again from where it
+    /// first changed (a new name alone is only a rename); undoable.
+    pub fn edit(&mut self, s: usize, ship: orbit::mission::Ship) {
+        let id = self.ships[s].id;
+        let before = &self.game.plan().ships[s];
+        let same = |x: &orbit::mission::Ship| format!("{:?}", (&x.start, x.epoch, &x.steps));
+        if same(before) == same(&ship) {
+            if before.name != ship.name {
+                self.game.rename(id, &ship.name);
+                self.shown();
             }
-            None => design.checkpoints.clear(),
+            return;
         }
-        let keep = from.as_ref().map_or(0, Checkpoint::next);
-        design.generation += 1;
-        design.live.store(design.generation, Ordering::Relaxed);
-        self.plan.ships[s] = ship;
-        let shown = &mut self.ships[s];
-        shown.name = self.plan.ships[s].name.clone();
-        shown.items.retain(|i| i.step < keep);
-        shown.revision = revision();
-        shown.done = false;
-        shown.failure = shown.items.iter().find_map(|i| match &i.kind {
-            ItemKind::Failed(why) => Some(why.clone()),
-            _ => None,
-        });
-        for (shown, first) in self.ships.iter_mut().zip(first_legs(&self.plan)) {
-            shown.first_leg = first;
-        }
+        self.game
+            .edit(id, ship)
+            .expect("the sandbox edits any ship");
         self.sweeps.retain(|&(ship, _), _| ship != s);
-        self.design(s, from);
-        self.windows.update(&self.plan, &self.pool);
+        self.changed();
     }
 
     /// Renames ship `s`: nothing to design or draw again.
     pub fn rename(&mut self, s: usize, name: &str) {
-        self.plan.ships[s].name = name.to_string();
-        self.ships[s].name = name.to_string();
+        let id = self.ships[s].id;
+        self.game.rename(id, name);
+        self.shown();
     }
 
-    /// Adds `ship` to the plan, last, and designs it.
+    /// Adds `ship` to the plan, last, with an id of its own, and designs
+    /// it.
     pub fn add_ship(&mut self, ship: orbit::mission::Ship) {
-        self.plan.ships.push(ship);
-        self.designs.push(Design {
-            id: self.next_id,
-            generation: 0,
-            live: Arc::new(AtomicU64::new(0)),
-            checkpoints: Vec::new(),
-        });
-        self.next_id += 1;
-        self.ships.push(Ship {
-            name: String::new(),
-            items: Vec::new(),
-            done: false,
-            failure: None,
-            first_leg: 0,
-            revision: revision(),
-        });
-        self.reshaped();
-        self.design(self.ships.len() - 1, None);
+        self.game.add_ship(ship).expect("the sandbox adds any ship");
+        self.sweeps.clear();
+        self.changed();
     }
 
-    /// Removes ship `s`; its designer stops after the step it is on.
+    /// Removes ship `s`; its design stops after the step it is on.
     pub fn remove_ship(&mut self, s: usize) {
-        let design = self.designs.remove(s);
-        design.live.store(u64::MAX, Ordering::Relaxed);
-        self.plan.ships.remove(s);
-        self.ships.remove(s);
-        self.reshaped();
+        let id = self.ships[s].id;
+        self.game
+            .remove_ship(id)
+            .expect("the sandbox removes any ship");
+        self.sweeps.clear();
+        self.changed();
     }
 
-    /// After ships were added or removed: their names and first legs,
-    /// the sweeps (by index, all dropped) and the window lanes.
-    fn reshaped(&mut self) {
-        for ((shown, ship), first) in self
-            .ships
-            .iter_mut()
-            .zip(&self.plan.ships)
-            .zip(first_legs(&self.plan))
-        {
-            shown.name = ship.name.clone();
-            shown.first_leg = first;
+    /// Back to the plan before the last change, designs from the cache:
+    /// `false` if there was none.
+    pub fn undo(&mut self) -> bool {
+        if !self.game.undo() {
+            return false;
         }
         self.sweeps.clear();
-        self.windows.update(&self.plan, &self.pool);
+        self.changed();
+        true
+    }
+
+    /// After an edit: the views and the window lanes.
+    fn changed(&mut self) {
+        self.shown();
+        self.windows.update(self.game.plan(), &self.pool);
     }
 
     /// Designs ship `s`'s leg at `step` at each of `durations` in the
     /// background, each as pinning it would design it (a station visited
-    /// before it is followed for that duration), from where the ship is
-    /// before it (going on from a checkpoint, as an edit would), to show
-    /// them beside the leg's own options; the plan is left as it is.
+    /// before it is followed for that duration), from where an edit at
+    /// the step would design it from, to show them beside the leg's own
+    /// options; the plan is left as it is.
     pub fn sweep(&mut self, s: usize, step: usize, durations: Vec<f64>) {
-        let design = &self.designs[s];
-        let from = resume_from(&design.checkpoints, step).cloned();
-        let ship = self.plan.ships[s].clone();
+        let ship = self.game.plan().ships[s].clone();
         if !matches!(ship.steps.get(step), Some(Step::Go(_))) {
             return;
         }
-        let (id, generation, live) = (design.id, design.generation, design.live.clone());
-        let sweep_id = self.next_id;
-        self.next_id += 1;
+        let Some(from) = self.game.resume_point(s, step) else {
+            return;
+        };
+        let id = self.next_sweep;
+        self.next_sweep += 1;
         self.sweeps.insert(
             (s, step),
             Sweep {
-                id: sweep_id,
-                generation,
+                id,
+                inputs: self.game.ships()[s].inputs(),
                 durations: durations.clone(),
                 options: None,
             },
@@ -389,7 +271,7 @@ impl Loaded {
                     Some(c) => Planner::resume(world, &ship, c),
                     None => Planner::new(world, &ship)?,
                 };
-                while live.load(Ordering::Relaxed) == generation {
+                loop {
                     let items = planner.step().ok_or("the leg was not reached")?;
                     // The leg itself, not the stay before it.
                     let leg = |i: &&Item| {
@@ -410,38 +292,52 @@ impl Loaded {
                         });
                     }
                 }
-                Err("the ship was edited".to_string())
             };
             let swept = catch_unwind(AssertUnwindSafe(|| {
                 durations.par_iter().map(|&d| alone(d)).collect()
             }))
             .unwrap_or_else(|_| Err("sweeping it panicked".into()));
-            if live.load(Ordering::Relaxed) == generation {
-                let _ = sender.send((id, generation, Message::Swept(step, sweep_id, swept)));
-            }
+            let _ = sender.send((s, step, id, swept));
         });
     }
 
     /// Takes what has arrived; `true` if anything did.
     pub fn poll(&mut self) -> bool {
         let mut any = self.windows.poll();
-        while let Ok((s, generation, message)) = self.receiver.try_recv() {
-            any |= self.take(s, generation, message);
+        if self.game.poll() {
+            any |= self.shown();
+        }
+        while let Ok((s, step, id, options)) = self.receiver.try_recv() {
+            any |= self.swept(s, step, id, options);
         }
         any
+    }
+
+    /// A sweep's options, if the sweep is still wanted: the ship
+    /// unchanged since.
+    fn swept(
+        &mut self,
+        s: usize,
+        step: usize,
+        id: u64,
+        options: Result<Vec<Choice>, String>,
+    ) -> bool {
+        let Some(sweep) = self.sweeps.get_mut(&(s, step)) else {
+            return false;
+        };
+        let inputs = self.game.ships().get(s).map(|d| d.inputs());
+        if sweep.id != id || inputs != Some(sweep.inputs) {
+            return false;
+        }
+        sweep.options = Some(options);
+        true
     }
 
     /// Waits until every ship is designed, and every window lane
     /// computed.
     pub fn wait(&mut self) {
-        while !self.done() {
-            match self.receiver.recv() {
-                Ok((s, generation, message)) => {
-                    self.take(s, generation, message);
-                }
-                Err(_) => return,
-            }
-        }
+        self.game.wait();
+        self.shown();
         self.windows.wait();
     }
 
@@ -449,56 +345,17 @@ impl Loaded {
     pub fn wait_sweeps(&mut self) {
         while self.sweeps.values().any(|s| s.options.is_none()) {
             match self.receiver.recv() {
-                Ok((s, generation, message)) => {
-                    self.take(s, generation, message);
+                Ok((s, step, id, options)) => {
+                    self.swept(s, step, id, options);
                 }
                 Err(_) => return,
             }
         }
     }
 
-    /// Takes a message for the ship of `id`'s design of `generation`:
-    /// `false` if it is of an older one, or of a ship removed.
-    fn take(&mut self, id: u64, generation: u64, message: Message) -> bool {
-        let Some(s) = self.designs.iter().position(|d| d.id == id) else {
-            return false;
-        };
-        let (ship, design) = (&mut self.ships[s], &mut self.designs[s]);
-        if generation != design.generation {
-            return false;
-        }
-        match message {
-            Message::Started(c) => design.checkpoints.push(c),
-            Message::Swept(step, id, options) => {
-                if let Some(sweep) = self.sweeps.get_mut(&(s, step))
-                    && sweep.generation == generation
-                    && sweep.id == id
-                {
-                    sweep.options = Some(options);
-                }
-            }
-            Message::Items(items, c) => {
-                for item in &items {
-                    if let ItemKind::Failed(why) = &item.kind {
-                        ship.failure = Some(why.clone());
-                    }
-                }
-                ship.items.extend(items);
-                ship.revision = revision();
-                design.checkpoints.push(c);
-            }
-            Message::Refused(why) => {
-                ship.failure = Some(why);
-                ship.done = true;
-            }
-            Message::Done => ship.done = true,
-        }
-        true
-    }
-
     /// The first ship's start (2045-01-01 without ships).
     pub fn epoch(&self) -> Epoch {
-        self.plan
+        self.plan()
             .ships
             .iter()
             .map(|s| s.epoch)
@@ -507,7 +364,7 @@ impl Loaded {
     }
 
     pub fn done(&self) -> bool {
-        self.ships.iter().all(|s| s.done)
+        self.game.done()
     }
 
     /// From the first ship's start to the end of the last item designed.
@@ -536,21 +393,7 @@ impl Loaded {
 
     /// The status line's words: how many ships are designed, and failed.
     pub fn progress(&self) -> String {
-        let done = self.ships.iter().filter(|s| s.done).count();
-        let failed = self.ships.iter().filter(|s| s.failure.is_some()).count();
-        let mut s = if done == self.ships.len() {
-            format!("{}: {} ships designed", self.plan.name, done)
-        } else {
-            format!(
-                "{}: designing, {done} of {} ships",
-                self.plan.name,
-                self.ships.len()
-            )
-        };
-        if failed > 0 {
-            s.push_str(&format!(", {failed} failed"));
-        }
-        s
+        self.game.progress()
     }
 }
 

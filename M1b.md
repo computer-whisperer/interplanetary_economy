@@ -42,6 +42,22 @@ below), and the four decisions below, each as recommended.
     re-plan of a leg begun and any sandbox edit, and its log reads back
     with the same hashes in career and in the sandbox; a longer NRHO
     visit is refused.
+- Part 6 moves to step 2 (2026-10-16). Neither the economy's reader
+  nor keyed draws has a consumer in step 1, and the move is not
+  mechanical: M2's draw is interleaved with quantizing into its
+  periods (`EconomyFile::scenario`), so moving it means splitting a
+  raw draw from the periods. Step 2's ship classes are its first
+  consumer, and shape that split.
+- Part 7: the sandbox runs on the engine. `sandbox::plan::Loaded` is a
+  sandbox game with what the sandbox adds (views with their leg colors,
+  window lanes, duration sweeps); its design management, the app's
+  undo stack, `editor::first_change` and `mission::resume_from` are
+  deleted. A sweep designs from `mission::resume_point`, the first
+  checkpoint whose step reads the leg, and is kept while the ship's
+  inputs are unchanged. Every sandbox test passes, unchanged in what it
+  checks; the crew rotation draws as before (9,343 m/s over 51.5
+  days). Designs are now held twice, in the engine's cache and in the
+  views (M1c held them once), until step 2's lighter stays.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

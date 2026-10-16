@@ -279,7 +279,7 @@ fn an_edited_ship_is_designed_again() {
     plan.wait();
     let other = plan.ships[1].items.clone();
     let revisions = [plan.ships[0].revision, plan.ships[1].revision];
-    plan.edit(0, edited.ships[0].clone(), Some(2));
+    plan.edit(0, edited.ships[0].clone());
     // Only the edited ship's lines are built again.
     assert!(plan.ships[0].revision != revisions[0]);
     assert_eq!(plan.ships[1].revision, revisions[1]);
@@ -295,7 +295,7 @@ fn an_edited_ship_is_designed_again() {
 
     // Edited at once, while its first design is under way.
     let mut plan = Loaded::start(parse());
-    plan.edit(0, edited.ships[0].clone(), Some(2));
+    plan.edit(0, edited.ships[0].clone());
     plan.wait();
     assert_same(&plan.ships[0].items, &fresh.ships[0].items);
 }
@@ -329,7 +329,7 @@ fn an_edit_builds_its_own_ships_lines_alone() {
     assert!(before.iter().all(|set| !set.paths.is_empty()));
     let mut edited = parse().ships[0].clone();
     edited.steps[2] = Step::Wait(3.0);
-    app.plan.as_mut().unwrap().edit(0, edited, Some(2));
+    app.plan.as_mut().unwrap().edit(0, edited);
     let after = sets(&mut app);
     assert!(
         !Arc::ptr_eq(&after[0], &before[0]),
@@ -395,23 +395,23 @@ fn a_new_start_drops_the_old_checkpoints() {
     let mut plan = Loaded::start(Plan::parse(&src, eph, Places::standard()).unwrap());
     // From low lunar orbit, the first leg goes to low lunar orbit: change
     // it to the south pole's, so the plan designs.
-    let mut ship = plan.plan.ships[0].clone();
+    let mut ship = plan.plan().ships[0].clone();
     ship.steps.remove(0);
-    plan.edit(0, ship, Some(0));
+    plan.edit(0, ship);
     plan.wait();
     // The start to the NRHO, and the first leg there back.
     let mut fresh_plan = Plan::parse(SORTIE, eph, Places::standard()).unwrap();
-    let mut ship = plan.plan.ships[0].clone();
+    let mut ship = plan.plan().ships[0].clone();
     ship.start = fresh_plan.ships[0].start.clone();
     ship.steps.insert(0, fresh_plan.ships[0].steps[0].clone());
-    plan.edit(0, ship.clone(), None);
+    plan.edit(0, ship.clone());
     plan.wait();
     // Then the first leg's durations: the edit that resumed from the old
     // start (stepping back from the station's checkpoint onto it).
     if let Step::Go(go) = &mut ship.steps[0] {
         go.days = vec![1.0];
     }
-    plan.edit(0, ship.clone(), Some(0));
+    plan.edit(0, ship.clone());
     plan.wait();
     fresh_plan.ships[0] = ship;
     let mut fresh = Loaded::start(fresh_plan);

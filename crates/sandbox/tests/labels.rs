@@ -447,6 +447,7 @@ fn panel_rows_carry_dv_and_failures() {
     let why = "no design converged in the window";
     let ships = [
         Ship {
+            id: 1,
             name: "Refused".into(),
             items: Vec::new(),
             done: true,
@@ -455,6 +456,7 @@ fn panel_rows_carry_dv_and_failures() {
             revision: 0,
         },
         Ship {
+            id: 2,
             name: "Failed".into(),
             items: vec![
                 item(ItemKind::Leg, 3.1),
@@ -474,6 +476,7 @@ fn panel_rows_carry_dv_and_failures() {
         // item says why, so its row does (once nothing did: found in
         // review).
         Ship {
+            id: 3,
             name: "Panicked".into(),
             items: vec![item(ItemKind::Stay, 0.0), item(ItemKind::Leg, 3.1)],
             done: true,

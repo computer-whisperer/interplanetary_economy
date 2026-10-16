@@ -3,7 +3,7 @@
 //! edited plan does (M1b.md, step 1 plan, part 1): the engine keys
 //! designs by their inputs and compares states by their bits.
 
-use orbit::mission::{Checkpoint, Item, Plan, Planner, Ship, Step, World, reads, resume_from};
+use orbit::mission::{Checkpoint, Item, Plan, Planner, Ship, Step, World, reads, resume_point};
 use orbit::places::Places;
 use std::time::Instant;
 
@@ -159,7 +159,7 @@ fn designs_do_not_depend_on_the_threads() {
 
 /// The crew rotation's wait in the NRHO lengthened, its stay on the
 /// surface lengthened, and its last leg's duration changed: each going on
-/// from where `resume_from` says gives the bits a fresh design gives.
+/// from where `resume_point` says gives the bits a fresh design gives.
 #[test]
 fn going_on_from_a_checkpoint_is_a_fresh_design() {
     let world = World::standard();
@@ -179,7 +179,7 @@ fn going_on_from_a_checkpoint_is_a_fresh_design() {
     for (step, to) in edits {
         let mut edited = ship.clone();
         edited.steps[step] = to;
-        let from = resume_from(&checkpoints, step).cloned();
+        let from = resume_point(&ship, &checkpoints, step).unwrap().cloned();
         let mut resumed: Vec<Item> = match &from {
             Some(c) => items
                 .iter()

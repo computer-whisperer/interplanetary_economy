@@ -4,9 +4,6 @@
 
 use damascene_core::prelude::*;
 use damascene_wgpu::Runner;
-use orbit::ephem::Ephemeris;
-use orbit::mission::Plan;
-use orbit::places::Places;
 use orbit::time::Epoch;
 use sandbox::app::Shell;
 use sandbox::frame::{self, Output, View};
@@ -74,9 +71,9 @@ fn the_plan_menu_opens_plans() {
         .expect("the gateway rotation is offered");
     click(&mut app, &mut ui, option);
     let plan = app.plan.as_ref().expect("a plan is open");
-    assert_eq!(plan.plan.name, "Gateway crew rotation");
+    assert_eq!(plan.plan().name, "Gateway crew rotation");
     assert_eq!(
-        plan.path.as_deref(),
+        plan.path(),
         Some(dir.join("gateway-rotation.toml").as_path())
     );
     assert_eq!(app.clock.t, Epoch::from_ymd(2045, 3, 1));
@@ -92,15 +89,24 @@ fn a_plan_saved_reads_back() {
     assert_eq!(path, dir.join("new-plan.toml"));
     let mut plan = Loaded::empty("New plan", path.clone());
     plan.wait();
-    let src = std::fs::read_to_string(sandbox::data_dir().join("missions/gateway-rotation.toml"))
-        .unwrap();
-    plan.plan = Plan::parse(&src, Ephemeris::standard(), Places::standard()).unwrap();
     assert_eq!(plan.save().unwrap(), path);
     assert_eq!(new_plan_path(&dir), dir.join("new-plan-2.toml"));
     let back = Loaded::open(&path).unwrap();
-    assert_eq!(back.plan.to_toml(), plan.plan.to_toml());
+    assert_eq!(back.plan().to_toml(), plan.plan().to_toml());
+
+    // A plan with opening comments, opened and saved again.
+    let rotation = dir.join("rotation.toml");
+    std::fs::copy(
+        sandbox::data_dir().join("missions/gateway-rotation.toml"),
+        &rotation,
+    )
+    .unwrap();
+    let mut plan = Loaded::open(&rotation).unwrap();
+    assert_eq!(plan.save().unwrap(), rotation);
+    let back = Loaded::open(&rotation).unwrap();
+    assert_eq!(back.plan().to_toml(), plan.plan().to_toml());
     assert!(
-        back.plan.to_toml().starts_with("# A crew rotation"),
+        back.plan().to_toml().starts_with("# A crew rotation"),
         "the file's opening comments are kept"
     );
     std::fs::remove_dir_all(&dir).unwrap();

@@ -55,7 +55,7 @@ fn hashes(game: &Game) -> Vec<u64> {
     let end = game
         .ships()
         .iter()
-        .flat_map(|s| s.items.last())
+        .flat_map(|s| s.items().last())
         .map(|i| i.end.0)
         .fold(start, f64::max);
     game.day_hashes(Epoch(start), (end - start).ceil() as usize + 2)
@@ -97,7 +97,10 @@ fn a_game_designs_what_the_planner_does() {
     }
     let designed = &game.ships()[0];
     assert!(designed.done && designed.failure.is_none());
-    assert_eq!(shown(&designed.items), shown(&items));
+    assert_eq!(
+        shown(&designed.items().cloned().collect::<Vec<_>>()),
+        shown(&items)
+    );
     assert!(game.progress().ends_with("1 ships designed"));
 }
 
@@ -107,7 +110,10 @@ fn the_threads_change_nothing() {
     let mut many = Game::new(parse(SORTIE), pool(24));
     one.wait();
     many.wait();
-    assert_eq!(shown(&one.ships()[0].items), shown(&many.ships()[0].items));
+    assert_eq!(
+        shown(&one.ships()[0].items().cloned().collect::<Vec<_>>()),
+        shown(&many.ships()[0].items().cloned().collect::<Vec<_>>())
+    );
     assert_eq!(hashes(&one), hashes(&many));
 }
 
@@ -121,7 +127,7 @@ fn an_edit_designs_what_it_changed_and_an_undo_nothing() {
     let mut game = Game::new(parse(SORTIE), pool(24));
     game.wait();
     let (before, made) = (hashes(&game), game.designs_made());
-    let items = game.ships()[0].items.len();
+    let items = game.ships()[0].items().count();
 
     let mut ship = game.plan().ships[0].clone();
     ship.steps[2] = Step::Wait(3.0);
@@ -129,7 +135,7 @@ fn an_edit_designs_what_it_changed_and_an_undo_nothing() {
     let kept = &game.ships()[0];
     assert!(!kept.done);
     assert!(
-        !kept.items.is_empty() && kept.items.iter().all(|i| i.step < 2),
+        kept.items().count() > 0 && kept.items().all(|i| i.step < 2),
         "the steps before the edit, at once"
     );
     game.wait();
@@ -147,7 +153,7 @@ fn an_edit_designs_what_it_changed_and_an_undo_nothing() {
     assert!(game.undo());
     assert!(game.done(), "undone from the cache");
     assert_eq!(game.designs_made(), made);
-    assert_eq!(game.ships()[0].items.len(), items);
+    assert_eq!(game.ships()[0].items().count(), items);
     assert_eq!(hashes(&game), before);
 }
 
@@ -166,7 +172,7 @@ fn career_replans_from_now() {
         .retain(|s| s.name == "Low lunar orbit round trip");
     let mut sandbox = Game::new(log.clone(), pool(24));
     sandbox.wait();
-    let stay = sandbox.ships()[0].items[0].clone();
+    let stay = sandbox.ships()[0].items().next().unwrap().clone();
     assert_eq!(stay.kind, ItemKind::Stay);
     let now = Epoch(0.5 * (stay.start.0 + stay.end.0));
 
@@ -189,8 +195,7 @@ fn career_replans_from_now() {
     assert_eq!(after[..past], before[..past], "the past is kept");
     assert_ne!(after, before);
     let leg = game.ships()[0]
-        .items
-        .iter()
+        .items()
         .find(|i| i.kind == ItemKind::Leg)
         .unwrap()
         .clone();
@@ -224,8 +229,7 @@ fn a_longer_station_visit_is_refused() {
     let mut sandbox = Game::new(parse(&src), pool(24));
     sandbox.wait();
     let stay = sandbox.ships()[0]
-        .items
-        .iter()
+        .items()
         .find(|i| i.kind == ItemKind::Stay && i.label.contains("nrho"))
         .unwrap()
         .clone();

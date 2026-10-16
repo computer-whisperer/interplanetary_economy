@@ -4,11 +4,11 @@
 //! conics over the durations the planner's date search tries, across the
 //! ephemeris's span; computed once in the background, a lane at a time.
 
-use crate::plan::world;
 use orbit::mission::{Plan, Spot, Step};
 use orbit::places::PlaceKind;
 use orbit::time::Epoch;
 use rayon::prelude::*;
+use sim::game::world;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;

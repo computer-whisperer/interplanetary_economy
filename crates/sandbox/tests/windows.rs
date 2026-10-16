@@ -32,7 +32,7 @@ fn lanes_and_their_windows() {
     // Each leg between planets is in the lane of its ends; the rest in
     // none.
     let mut legs = 0;
-    for (s, ship) in plan.plan.ships.iter().enumerate() {
+    for (s, ship) in plan.plan().ships.iter().enumerate() {
         for (k, step) in ship.steps.iter().enumerate() {
             let Step::Go(go) = step else { continue };
             let between = go.to.label.starts_with("mars") || go.to.label == "2000-sg344";
@@ -57,7 +57,12 @@ fn lanes_and_their_windows() {
         (Epoch::from_ymd(2033, 4, 6), "Mars 2033, Type I"),
         (Epoch::from_ymd(2043, 11, 15), "Mars 2043, Type II"),
     ] {
-        let s = plan.plan.ships.iter().position(|s| s.name == ship).unwrap();
+        let s = plan
+            .plan()
+            .ships
+            .iter()
+            .position(|s| s.name == ship)
+            .unwrap();
         assert!(
             plan.windows.legs.contains_key(&(s, 0)),
             "{ship}'s leg is in a lane"

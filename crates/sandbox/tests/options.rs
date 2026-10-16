@@ -180,7 +180,7 @@ fn a_cell_picked_flies_there() {
     h.draw(&mut app);
     h.shot(&mut app, "hover");
     h.click(&mut app, at);
-    let go = match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
+    let go = match &app.plan.as_ref().unwrap().plan().ships[0].steps[0] {
         Step::Go(go) => go.clone(),
         _ => unreachable!(),
     };
@@ -248,7 +248,7 @@ fn a_cell_picked_flies_there() {
         .expect("the 2-day design converged");
     let point = h.ui.rect_of_key(&point_key(i)).expect("its point is drawn");
     h.click(&mut app, (point.x + point.w / 2.0, point.y + point.h / 2.0));
-    match &app.plan.as_ref().unwrap().plan.ships[1].steps[0] {
+    match &app.plan.as_ref().unwrap().plan().ships[1].steps[0] {
         Step::Go(go) => {
             assert_eq!(go.pin.and_then(|p| p.days), Some(2.0));
             assert_eq!(go.days, [0.5, 1.0, 2.0], "the offered durations stay");
@@ -269,9 +269,9 @@ fn a_cell_picked_flies_there() {
     h.draw(&mut app);
     let sweep = h.ui.rect_of_key(SWEEP_KEY).expect("a sweep button");
     h.click(&mut app, (sweep.x + sweep.w / 2.0, sweep.y + sweep.h / 2.0));
-    let before = app.plan.as_ref().unwrap().plan.to_toml();
+    let before = app.plan.as_ref().unwrap().plan().to_toml();
     app.plan.as_mut().unwrap().wait_sweeps();
-    assert_eq!(app.plan.as_ref().unwrap().plan.to_toml(), before);
+    assert_eq!(app.plan.as_ref().unwrap().plan().to_toml(), before);
     let swept = app.plan.as_ref().unwrap().sweeps[&(1, 0)].clone();
     let options = swept.options.clone().unwrap().unwrap();
     let converged: Vec<_> = options.iter().filter(|c| c.dv.is_some()).collect();
@@ -291,7 +291,7 @@ fn a_cell_picked_flies_there() {
         h.ui.rect_of_key(&swept_key(i))
             .expect("a swept point is drawn");
     h.click(&mut app, (point.x + point.w / 2.0, point.y + point.h / 2.0));
-    match &app.plan.as_ref().unwrap().plan.ships[1].steps[0] {
+    match &app.plan.as_ref().unwrap().plan().ships[1].steps[0] {
         Step::Go(go) => assert_eq!(go.pin.and_then(|p| p.days), Some(options[i].days)),
         _ => unreachable!(),
     }
@@ -403,7 +403,7 @@ fn goals_and_windows() {
     for e in events {
         app.on_event(e, &cx);
     }
-    let go = match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
+    let go = match &app.plan.as_ref().unwrap().plan().ships[0].steps[0] {
         Step::Go(go) => go.clone(),
         _ => unreachable!(),
     };
@@ -441,7 +441,7 @@ fn goals_and_windows() {
         h.ui.rect_of_key(LATER_KEY)
             .expect("the later window's button");
     h.click(&mut app, (later.x + later.w / 2.0, later.y + later.h / 2.0));
-    let go = match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
+    let go = match &app.plan.as_ref().unwrap().plan().ships[0].steps[0] {
         Step::Go(go) => go.clone(),
         _ => unreachable!(),
     };
@@ -478,7 +478,7 @@ fn goals_and_windows() {
     // was undone above).
     app.undo();
     app.undo();
-    match &app.plan.as_ref().unwrap().plan.ships[0].steps[0] {
+    match &app.plan.as_ref().unwrap().plan().ships[0].steps[0] {
         Step::Go(go) => assert!(go.depart().is_some() && go.window.is_none()),
         _ => unreachable!(),
     }
@@ -513,7 +513,7 @@ pin = { depart = "2032-01-01" }"#,
     assert_eq!(app.leg, Some((0, 0)), "a failed leg's options are shown");
 
     // Unpinned: designed again; no porkchop until it is.
-    let mut ship = app.plan.as_ref().unwrap().plan.ships[0].clone();
+    let mut ship = app.plan.as_ref().unwrap().plan().ships[0].clone();
     if let Step::Go(go) = &mut ship.steps[0] {
         go.pin = None;
     }

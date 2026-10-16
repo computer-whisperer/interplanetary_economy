@@ -282,30 +282,6 @@ pub fn press(ship: &Ship, field: Field, places: &Places) -> Option<Ship> {
     Some(ship)
 }
 
-/// Where `new` first differs from `old`: `None` if nowhere, `Some(None)`
-/// at its start, else at the step. A name alone is no difference.
-pub fn first_change(old: &Ship, new: &Ship) -> Option<Option<usize>> {
-    if old.start.source != new.start.source || old.epoch != new.epoch {
-        return Some(None);
-    }
-    let same = |a: &Step, b: &Step| match (a, b) {
-        (Step::Wait(x), Step::Wait(y)) => x == y,
-        (Step::Go(x), Step::Go(y)) => {
-            x.to.source == y.to.source
-                && x.days == y.days
-                && x.window == y.window
-                && x.pin == y.pin
-                && x.aero == y.aero
-        }
-        _ => false,
-    };
-    let common = old.steps.len().min(new.steps.len());
-    (0..common)
-        .find(|&i| !same(&old.steps[i], &new.steps[i]))
-        .or((old.steps.len() != new.steps.len()).then_some(common))
-        .map(Some)
-}
-
 /// A new ship, `id`: leaving LEO at `t`, to the midnight before, with no
 /// legs.
 pub fn new_ship(id: u64, name: String, t: Epoch, places: &Places) -> Ship {
@@ -546,6 +522,17 @@ window = ["2045-03-08", "2045-03-10"]
         }
         assert_eq!(Field::parse("edit:2:to:option:llo"), None);
         assert_eq!(Field::parse("plan"), None);
+    }
+
+    /// Where `t` first differs from `s` as the planner reads them: `None`
+    /// if nowhere, `Some(None)` at its start, else at the step.
+    fn first_change(s: &Ship, t: &Ship) -> Option<Option<usize>> {
+        if format!("{:?}", (&s.start, s.epoch)) != format!("{:?}", (&t.start, t.epoch)) {
+            return Some(None);
+        }
+        (0..s.steps.len().max(t.steps.len()))
+            .find(|&i| format!("{:?}", s.steps.get(i)) != format!("{:?}", t.steps.get(i)))
+            .map(Some)
     }
 
     /// Fields read what they set, and refuse what the plan's file would.

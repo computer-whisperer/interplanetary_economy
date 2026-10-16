@@ -7,7 +7,7 @@
 use crate::designs::{Cache, Designed, Ended, Key, walk};
 use crate::hash::Fixed;
 use crate::log::{Log, Mode, Replan, minute};
-use orbit::mission::{Item, Plan, Ship, Step, World};
+use orbit::mission::{Checkpoint, Item, Plan, Ship, Step, World, resume_point};
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use std::collections::{HashSet, VecDeque};
@@ -34,8 +34,6 @@ const KEPT_DESIGNS: usize = 64;
 pub struct ShipDesign {
     pub id: u64,
     pub name: String,
-    /// What the ship does, so far as it is designed.
-    pub items: Vec<Item>,
     /// Designed to its end; and why it stops, if it does.
     pub done: bool,
     pub failure: Option<String>,
@@ -51,6 +49,31 @@ pub struct ShipDesign {
     /// the step it replaced).
     used: Vec<Key>,
     live: Arc<AtomicBool>,
+}
+
+impl ShipDesign {
+    /// What the ship does, so far as it is designed.
+    pub fn items(&self) -> impl DoubleEndedIterator<Item = &Item> {
+        self.steps.iter().flat_map(|(_, d)| match &**d {
+            Designed::Step { items, .. } => items.as_slice(),
+            _ => &[],
+        })
+    }
+
+    /// A hash of what it is designed from, which changes only when the
+    /// ship (its name aside) or its re-plans do.
+    pub fn inputs(&self) -> Key {
+        self.inputs
+    }
+
+    /// Where the ship is before each step designed: its start's and each
+    /// step's checkpoint after it.
+    fn checkpoints(&self) -> impl Iterator<Item = &Checkpoint> {
+        self.steps.iter().filter_map(|(_, d)| match &**d {
+            Designed::Start(Ok(c)) | Designed::Step { after: c, .. } => Some(c),
+            _ => None,
+        })
+    }
 }
 
 /// A ship's revision not given before in the process.
@@ -281,7 +304,6 @@ impl Game {
         let mut ship = ShipDesign {
             id: first.id,
             name: first.name.clone(),
-            items: Vec::new(),
             done: false,
             failure: None,
             revision: revision(),
@@ -301,9 +323,6 @@ impl Game {
                 cache.get(key)
             },
             &mut |key, designed| {
-                if let Designed::Step { items, .. } = &**designed {
-                    ship.items.extend(items.iter().cloned());
-                }
                 ship.steps.push((key, designed.clone()));
             },
         );
@@ -409,9 +428,6 @@ impl Game {
             Event::Shown(n, key, designed) => {
                 if n != ship.steps.len() {
                     return false;
-                }
-                if let Designed::Step { items, .. } = &*designed {
-                    ship.items.extend(items.iter().cloned());
                 }
                 ship.steps.push((key, designed));
                 ship.revision = revision();
@@ -601,10 +617,19 @@ impl Game {
             .iter()
             .zip(&self.plan.ships)
             .filter(|(s, _)| !s.done)
-            .map(|(s, ship)| s.items.last().map_or(ship.epoch.0, |i| i.end.0))
+            .map(|(s, ship)| s.items().last().map_or(ship.epoch.0, |i| i.end.0))
             .fold(f64::INFINITY, f64::min);
         self.now = Epoch(self.now.0.max(t.0.min(reachable)));
         self.now
+    }
+
+    /// Where an edit at step `step` of ship `s` would design it again
+    /// from: the first step whose design reads it (`mission::reads`), or
+    /// the start (`Some(None)`); `None` if the ship is not designed that
+    /// far. What a sweep of a leg's durations designs from.
+    pub fn resume_point(&self, s: usize, step: usize) -> Option<Option<Checkpoint>> {
+        let checkpoints: Vec<Checkpoint> = self.ships[s].checkpoints().cloned().collect();
+        resume_point(&self.plan.ships[s], &checkpoints, step).map(|c| c.cloned())
     }
 
     /// The state at the start of each of `days` days from `from`, hashed
@@ -627,7 +652,7 @@ impl Game {
 
 /// Ship's state at `t`, hashed into `h`.
 fn state(h: &mut Fixed, ship: &ShipDesign, t: Epoch) {
-    let Some(item) = ship.items.iter().rfind(|i| i.start.0 <= t.0) else {
+    let Some(item) = ship.items().rfind(|i| i.start.0 <= t.0) else {
         h.str(if ship.done { "not yet" } else { "pending" });
         return;
     };
@@ -644,8 +669,7 @@ fn state(h: &mut Fixed, ship: &ShipDesign, t: Epoch) {
         }
     }
     let dv: f64 = ship
-        .items
-        .iter()
+        .items()
         .flat_map(|i| &i.markers)
         .filter(|m| m.t.0 <= t.0)
         .map(|m| m.dv)

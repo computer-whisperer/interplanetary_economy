@@ -175,7 +175,7 @@ impl Harness {
 }
 
 fn steps(app: &Shell) -> Vec<Step> {
-    app.plan.as_ref().unwrap().plan.ships[0].steps.clone()
+    app.plan.as_ref().unwrap().plan().ships[0].steps.clone()
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn ships_edited() {
     assert!(matches!(&steps(&app)[2], Step::Go(g) if g.to.label == "moon-south-pole"));
     h.click_key(&mut app, &Field::AddLeg.key());
     h.shot(&mut app, "problems");
-    let ship = &app.plan.as_ref().unwrap().plan.ships[0];
+    let ship = &app.plan.as_ref().unwrap().plan().ships[0];
     let problems = orbit::mission::check(eph, ship);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(problems[0].0, 3);
@@ -288,11 +288,11 @@ fn ships_edited() {
 
     // A ship added, edited at once; removed.
     h.click_key(&mut app, panel::ADD_SHIP_KEY);
-    assert_eq!(app.plan.as_ref().unwrap().plan.ships.len(), 2);
+    assert_eq!(app.plan.as_ref().unwrap().plan().ships.len(), 2);
     assert_eq!(app.editor.as_ref().map(|e| e.ship), Some(1));
     assert_eq!(app.plan.as_ref().unwrap().ships[1].name, "Ship 2");
     h.click_key(&mut app, &Field::RemoveShip.key());
-    assert_eq!(app.plan.as_ref().unwrap().plan.ships.len(), 1);
+    assert_eq!(app.plan.as_ref().unwrap().plan().ships.len(), 1);
     assert!(app.editor.is_none());
     app.plan.as_mut().unwrap().wait();
 }

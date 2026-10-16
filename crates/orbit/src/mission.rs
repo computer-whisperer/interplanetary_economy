@@ -897,22 +897,24 @@ pub fn reads(ship: &Ship, next: Option<usize>) -> usize {
     }
 }
 
-/// Of `checkpoints` (by their steps, ascending), the one to go on from
-/// after the ship's steps from `edited` on change: the last before the
-/// edit; but if the ship is in a station's orbit there, the one before
-/// (the visit was built long enough for the steps after it: its waits,
-/// and the next leg's window and durations); and none where the plan had
-/// stopped (a failure may have hung on the steps after it). `None`: from
-/// the start.
-pub fn resume_from(checkpoints: &[Checkpoint], edited: usize) -> Option<&Checkpoint> {
-    let mut k = checkpoints.iter().rposition(|c| c.next <= edited)?;
-    if matches!(checkpoints[k].here, Here::Station(_)) {
-        k = k.checked_sub(1)?;
+/// Of `checkpoints` (the start's, then each step's after it), the one an
+/// edit to `ship`'s steps from `edited` on goes on from: the first whose
+/// step reads `edited` ([`reads`]), so that a station's visit, built for
+/// the leg leaving it, is built again. `Some(None)`: from the start, whose
+/// design reads it. `None`: the ship does not get there (a step before
+/// failed, or the checkpoints stop short of it).
+pub fn resume_point<'c>(
+    ship: &Ship,
+    checkpoints: &'c [Checkpoint],
+    edited: usize,
+) -> Option<Option<&'c Checkpoint>> {
+    if edited < reads(ship, None) {
+        return Some(None);
     }
-    while checkpoints[k].stopped {
-        k = k.checked_sub(1)?;
-    }
-    Some(&checkpoints[k])
+    let c = checkpoints
+        .iter()
+        .find(|c| edited < reads(ship, Some(c.next)).max(c.next + 1))?;
+    (!c.stopped).then_some(Some(c))
 }
 
 /// A design a leg flies, and the reference of the ship's own low orbit it
