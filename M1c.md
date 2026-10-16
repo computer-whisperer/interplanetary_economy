@@ -1,10 +1,12 @@
 # M1c — Creative sandbox and the map view
 
-Status, 2026-10-16: steps 1–7 done (6 done before 5, its shape models
-left out; of step 6, part 9's spins and small bodies' maps open); now
-step 8, the gate (step 8 plan, at the end).
+Status, 2026-10-16: done; the gate passes for now (the user's verdict),
+with LEO to the DRO's design time and the Sun's disk on SDR open. Steps
+1–8 done (6 done before 5, its shape models left out; of step 6, part
+9's spins and small bodies' maps open). Next: M1b (DESIGN.md,
+Milestones).
 
-- Step 8, the gate as measured (2026-10-16), for the user's verdict:
+- Step 8, the gate as measured (2026-10-16); passes for now:
   1. Holds: the published plan flies and is drawn, its Δv as published.
   2. Stands: step 3's and 4's offscreen checks.
   3. Offscreen, frames fit 240 Hz at 4K at the 95th percentile (CPU

@@ -402,7 +402,9 @@ Around the map, minimal and information-dense:
     10% of published values, and re-planning a standing route's departure
     takes ≤ 0.1 s. Fail: fall back to tables computed once from the
     physics, without per-trip flights in the sandbox.
-- **M1c, creative sandbox and the map view.** See M1c.md. Mission plans
+- **M1c, creative sandbox and the map view.** Done (2026-10-16), see
+  M1c.md; the gate passes for now, with LEO to the DRO designing in
+  16.5 s (over 10 s) and the Sun's disk washed out on SDR open. Mission plans
   loaded into the sandbox, flown by the autopilot and played back in the
   3D map view, with no economy. Before M1b, so that the view the game
   centers on is built and stress-tested before the progression mechanics.
