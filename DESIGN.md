@@ -1,7 +1,8 @@
 # Interplanetary Economy — MVP Design Sketch
 
 Status: draft, 2026-10-12; n-body sandbox and the 3D map view 2026-10-13;
-the planning panels moved into M1c 2026-10-15.
+the planning panels moved into M1c 2026-10-15; sandbox and career modes
+2026-10-16.
 Working title TBD.
 
 ## Vision (full game, for context)
@@ -78,6 +79,23 @@ and contracts are a separable layer (M4).
   - sampled third-party demand
   - mission failures
   - (M4) firm behavior
+
+## Modes
+
+Decided 2026-10-16, after the classic career/sandbox split:
+
+- **Sandbox:** explore the orbital engine and run whatever missions and
+  space programs you like, changing anything at any time, including
+  what is behind the clock. It is where core UX and engine features are
+  iterated without game-balance concerns. M1c's creative mode is its
+  start.
+- **Career:** the game. The economy engine is locked down and temporally
+  consistent: plans and states before now can't be changed.
+- **One engine** runs both, as a requirement. A game is its setup and a
+  log of actions; the sandbox edits the log anywhere and re-runs from
+  the change, career only appends at now. Economy components land in
+  the sandbox first, and which of them run there is decided as each
+  lands (M1b.md, Modes).
 
 ## Map
 
@@ -416,7 +434,9 @@ Around the map, minimal and information-dense:
     to a low lunar orbit shows no jitter. A ship on every Mars window
     2040–2075 plays at a month per second at the display's refresh rate.
     HDR outputs use their headroom.
-- **M1b, headless sim core** on the sandbox. See M1b.md (draft).
+- **M1b, the sim engine,** one for sandbox and career (Modes); it also
+  runs headless. Economy components land in the sandbox first. See
+  M1b.md (draft).
   - Places, commodities, facilities, ships, rocket-equation costing,
     missions and standing routes flown by the autopilot.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.
