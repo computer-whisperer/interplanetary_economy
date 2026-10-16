@@ -416,7 +416,7 @@ Around the map, minimal and information-dense:
     to a low lunar orbit shows no jitter. A ship on every Mars window
     2040–2075 plays at a month per second at the display's refresh rate.
     HDR outputs use their headroom.
-- **M1b, headless sim core** on the sandbox.
+- **M1b, headless sim core** on the sandbox. See M1b.md (draft).
   - Places, commodities, facilities, ships, rocket-equation costing,
     missions and standing routes flown by the autopilot.
   - Budget, Standing, mandates, the traffic generator, the Access Cost Index.
