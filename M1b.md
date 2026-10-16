@@ -33,8 +33,8 @@ Decided 2026-10-16, after the classic career/sandbox split:
   - The sandbox may add, change or remove any action at any time. The
     engine re-runs from the earliest time the change affects.
   - Career adds actions only at now, taking effect at now or later.
-    For a ship, that is its first checkpoint after now: the end of the
-    leg in flight, or now if it is staying.
+    For a ship, that is now if it is staying (from where it is, its
+    orbit as flown), or the end of the leg in flight.
   - Career reveals hidden information with time and surveys: grades,
     deposit sizes, the launch price ahead. The sandbox knows
     everything.
@@ -186,15 +186,19 @@ Out:
     Cost Index come monthly, the appropriation yearly. Ties at one
     time break in a fixed order: by kind, then by id.
   - The engine runs as far ahead as its designs allow. In a window,
-    designs run on the background pool (`sandbox::background`) and the
-    clock can't pass a departure whose design isn't done. Headless, the
-    engine waits for them. Either way, the result doesn't depend on how
-    fast designs run.
-- **Keyed draws.** Each random draw is keyed by what it is for: the
-  world's draw by parameter, demand by category and month, a loss by
-  ship and step, survey noise by survey. Each comes from a ChaCha
-  stream seeded by the game's seed and its key. An edit then re-rolls
-  nothing it doesn't touch, in either mode.
+    designs run on the background pool (`sandbox::background`). In
+    career the clock can't pass a departure whose design isn't done; in
+    the sandbox it is free, as in M1c. Headless, the engine waits for
+    designs. Either way, the result doesn't depend on how fast designs
+    run.
+- **Keyed draws.** Each random draw made during play is keyed by what
+  it is for: demand by category and month, a loss by ship and step,
+  survey noise by survey. Each comes from a ChaCha stream seeded by a
+  fixed hash of the game's seed and its key. An edit then re-rolls
+  nothing it doesn't touch, in either mode. The world's draw, made once
+  at setup, stays M2's sequence, so M2's seeds give M2's worlds. A
+  draw per parameter was considered first and rejected for that
+  reason; no action can move a draw made at setup.
 - **Determinism.** The state is hashed each day, and tests compare the
   hashes. Checked first: that designs are bit-identical across thread
   counts. The fans collect in order and re-planning is serial, but
@@ -353,7 +357,7 @@ Out:
 - `sandbox::plan`'s design management (background designing,
   generations, re-planning an edit from its checkpoint) moves into
   the engine. It is deleted first and rebuilt there; the sandbox then
-  draws the engine's state and sends it actions.
+  sends the engine actions and draws its designs and state.
 - The reader of `data/economy.toml` and its draws move into the engine
   from `crates/plan` (`params`: `EconomyFile`, `Dist`, `Draw`), and
   `crates/plan` builds its periods from them.
@@ -419,3 +423,169 @@ own. Each economy component lands in the sandbox first (Modes, above).
    generator.**
 7. **Money, Standing, mandates, crew, losses and powers.**
 8. **The gate.**
+
+## Step 1 plan (2026-10-16): the engine
+
+The engine without an economy: the log, both modes' policies, designs
+reused by their inputs, the time-ordered loop with snapshots and the
+state hash, keyed draws, and the sandbox and a headless runner on it.
+Each part is committed on its own. Revised the same day after a review
+against the code (a sub-agent's); what changed is noted where it
+matters.
+
+1. **Designs bit-identical,** before anything is built on them.
+   - The published plan and the Mars plan are designed on a one-thread
+     pool and on 24 threads (`pool.install`). Their items (Δv, times,
+     markers, track samples) are compared bit for bit.
+   - A ship re-planned from a checkpoint is compared bit for bit with
+     a fresh design of the edited plan. M1c's test allows 1e-9; gate
+     item 2 needs equality.
+   - If either differs, the cause is fixed first. The parallel
+     reductions keep their order (rayon's `min_by`, ordered collects),
+     so differences are not expected.
+2. **The log** (`sim::log`).
+   - Setup: a seed (else the central draw), the mode, a start, and, in
+     career, now.
+   - Actions:
+     - a ship: its id, name, start, epoch and steps, as M1c's plans
+       have them;
+     - a re-plan: a ship's steps from one of them on, taking effect at
+       a time.
+   - Ships get stable ids, since names change and can repeat. A ship
+     without one gets one when the file is read, and it is written
+     out.
+   - The file is M1c's plan format with a `[game]` table and
+     `[[replan]]` entries. The engine reads those two, and `Plan`'s
+     parser reads the rest, from a table: `PlanFile` denies unknown
+     fields. A plan without them is a sandbox log, so `data/missions/`
+     reads unchanged.
+   - In the sandbox, editing a ship that has re-plans edits the steps
+     in effect where the edit lands. Removing a re-plan is an edit too.
+3. **Career's rule.**
+   - **A ship staying at now** is re-planned from now. Its last
+     checkpoint, the arrival, is before now: the stay before a leg
+     belongs to the leg's step.
+     - It resumes from a checkpoint made at now on its stay: a low
+       orbit as flown (its own orbit, `Here::Low` with its coast at
+       now), or a body or surface as it is.
+     - So a free plane is fixed by what was flown. A stay in one is
+       coasted back from the departure, so re-designing it from its
+       arrival would rewrite positions before now. Its departures are
+       then those from the ship's own orbit (M1c step 7, part 8).
+     - Waits count from the arrival, and departures are not before
+       now. That is a new constraint in the planner, recorded in the
+       re-plan and part of its key.
+     - The stay's item is cut at now, and what is before now is
+       unchanged.
+   - **A ship in flight** is re-planned from its leg's arrival.
+   - **Stations.** `resume_from` steps back from any station
+     checkpoint, because the visit's reference was built long enough
+     for the steps after it (`visit_until`). This covers a ship staying
+     in a station orbit, one flying to one, and one that started at
+     one.
+     - A re-plan whose visit fits in the reference already built
+       resumes there as it is.
+     - One that needs a longer visit is refused until step 3's
+       continuous references.
+   - `orbit::mission` gains the checkpoint at a time within a stay,
+     the not-before constraint, and public times on `Checkpoint`.
+4. **Designs by their inputs** (`sim::designs`).
+   - **Keys are chained.** Step k's design is keyed by a hash of step
+     k−1's key, k, and what step k reads.
+     - What it reads: the steps from its checkpoint through its leg,
+       through the next leg's for a leg to a station; labels and notes;
+       career's not-before; later steps add economic inputs, such as
+       when a depot can refuel the ship.
+     - The start's key covers its place, epoch, and the steps
+       `Planner::new` reads.
+     - An edit at step 10 keeps steps 0–9's keys, as M1c keeps their
+       items. Keying on all later steps, as first written, would have
+       designed whole ships again.
+     - A chain needs no hashing of checkpoints or references, and
+       keys for a log exist before its designs do.
+   - **A fixed hash** of our own over f64 bits, not std's, so that
+     keys, draws and state hashes replay across builds.
+   - `Item::seconds` (wall time) is left out of comparisons and hashes.
+   - **Requests run on the host's pool:** the sandbox's background
+     pool, or the default one headless.
+     - In the sandbox every ship is requested to its end, as M1c does.
+     - A request whose key the log no longer wants stops after the
+       step it is on, as generations stop now (an edit, a closed game).
+     - A panic in a design is caught and becomes the ship's failure,
+       as now.
+     - The loop uses a design when it reaches the step with the same
+       key, and designs again when keys differ. With no economy yet,
+       they never differ.
+   - **The cache** keeps the designs reachable from the current log
+     and the undo history, and a bounded number of others. The game
+     owns undo now: a history of logs. An undo, a re-added ship or an
+     unchanged ship in a re-run designs nothing.
+5. **The loop** (`sim::game`).
+   - It advances in time order through each ship's steps and a daily
+     tick (empty until step 2), and snapshots its state monthly.
+   - A change re-runs from the last snapshot before the earliest time
+     it affects:
+     - a sandbox edit: the time of the checkpoint it resumes from
+       (`resume_from`'s, stepping back at a station);
+     - a start changed: the earlier of the two epochs;
+     - a ship added or removed: its epoch;
+     - career: now.
+   - The clock: free in the sandbox, as in M1c. In career it can't
+     pass a departure whose design isn't done.
+   - The state hash covers each ship's state at the start of each day:
+     its place, position (by bits) and Δv so far. It hashes states,
+     not item records, so a stay cut at now hashes as before.
+   - Per ship: how far it is designed, whether it is done, and why it
+     failed (a refused start, a failed leg, a panic). Also the
+     status line's progress.
+   - The sandbox draws designs as they arrive, as M1c does; the
+     loop's state is what it has reached. The two can differ only
+     once ships share depots (step 3).
+6. **Keyed draws** (`sim::draw`).
+   - The world's draw stays M2's sequence (`ChaCha8Rng` seeded with
+     the seed, as `params::Draw::seeded`), drawn once at setup.
+   - Every later draw comes from a ChaCha stream seeded by the fixed
+     hash of the seed and its key; the central draw uses seed 0.
+   - `data/economy.toml`'s reader and draw (`params`: `EconomyFile`,
+     `Dist`, `Draw`) move here from `crates/plan`, which builds its
+     periods from them. Its conditional and lazy draws keep their
+     order.
+   - M2's tests use only the central draw, so a few seeds' world
+     parameters are captured before the move and checked after.
+7. **The sandbox on the engine.**
+   - Deleted: `Loaded`'s design management (generations, checkpoints,
+     messages, the restart on undo), and `editor::first_change`, which
+     only told `Loaded::edit` where an edit lands.
+   - Into the engine: the log's files (open, empty, save), `world()`,
+     each ship's status, `progress` and `wait`.
+   - The sandbox keeps:
+     - the view's ship (items, revision, first leg) and its helpers
+       (`event_time`, `position`, `on_track`, the span, the events);
+     - the plan files' list (`plans_in`, `new_plan_path`);
+     - the window lanes, which its own wait includes;
+     - duration sweeps. A sweep is requested from the engine, from the
+       checkpoint an edit at its step would resume from. It is shown
+       while the ship's key at that step is unchanged.
+   - The sandbox's tests move to the new API and pass, unchanged in
+     what they check.
+8. **Headless.**
+   - `sim run LOG` runs a log to its end and prints each ship's items
+     and the state hash monthly. It replaces `orbit mission FILE`,
+     which is deleted.
+   - A scenario is a log with checks: where a ship is at a date, a
+     leg's Δv within bounds. A failed check exits nonzero.
+   - `data/scenarios/` holds the first ones: the published plan in
+     career, with a re-plan at a date of a ship in LEO or low lunar
+     orbit. Most of that plan's ships touch a station, which refuses
+     longer visits until step 3.
+9. **Tests.**
+   - The same log gives the same hashes at 1 and 24 threads.
+   - A sandbox edit, re-run from a snapshot, gives the hashes of a
+     fresh run of the edited log.
+   - Career:
+     - an edit before now is refused;
+     - an edit at now leaves every state before now as it was;
+     - a ship parked in LEO, re-planned, keeps its positions before
+       now and leaves from its own orbit.
+   - A career log opened in the sandbox gives the same hashes.
+   - An undo designs nothing.
