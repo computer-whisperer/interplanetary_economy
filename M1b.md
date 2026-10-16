@@ -1,8 +1,17 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-16: plan. Decided: one engine for both modes, with
-economy components landing in the sandbox first (Modes, below), and
-the four decisions below, each as recommended. Nothing built.
+Status, 2026-10-16: step 1 under way. Decided: one engine for both
+modes, with economy components landing in the sandbox first (Modes,
+below), and the four decisions below, each as recommended.
+
+- Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
+  going on from a checkpoint gives a fresh design's bits
+  (`crates/orbit/tests/determinism.rs`, ~60 s). Ships: the crew
+  rotation (stations, the surface, an aerocapture), a Mars window, and
+  a ship that leaves low lunar orbit when the planes align and then
+  leaves LEO for Mars from its own orbit. Edits: three to the crew
+  rotation, two of them stepping back past a station visit. Nothing
+  needed fixing.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
