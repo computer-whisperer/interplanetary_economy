@@ -251,7 +251,7 @@ fn waiting_for_the_plane_or_jumping() {
     let items = fly(&world, &plan, "moon, then Mars");
     let legs: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::Leg).collect();
     assert_eq!(legs.len(), 3, "every leg flew");
-    // Ready on arrival in low lunar orbit, it left 13.3 days later.
+    // Ready on arrival in low lunar orbit, it left 18.3 days later.
     let waited = legs[1].start.0 - legs[0].end.0;
     assert!(waited > 10.0, "{waited} days");
     let note = legs[1].note.as_deref().unwrap();
@@ -585,7 +585,10 @@ to = "moon-south-pole"
 /// Each duration a leg within a system offers is designed alone, so its
 /// option is what pinning it flies, and the cheapest flies. (Designed in
 /// one call, from the NRHO to low lunar orbit, 2 and 4 days cost hundreds
-/// of m/s more than alone, and pinned they flew cheaper than offered.)
+/// of m/s more than alone, and pinned they flew cheaper than offered.) The
+/// station's visit is as long pinned as offered: sized by the longest
+/// duration designed, 8 days followed the NRHO longer than a pin of 0.5,
+/// which flew 111 m/s from its option (found in review).
 #[test]
 fn offered_durations_fly_as_pinned() {
     let world = World::standard();
@@ -596,7 +599,7 @@ name = "s"
 start = { at = "nrho", epoch = "2045-03-01" }
 [[ship.leg]]
 to = "llo"
-days = [0.5, 2.0, 4.0]
+days = [0.5, 2.0, 8.0]
 "#;
     let mut plan = Plan::parse(src, world.eph, Places::standard()).unwrap();
     let leg = fly(&world, &plan, "s")

@@ -1446,10 +1446,22 @@ fn carrier_of(field: &Field, met: Option<BodyId>) -> Option<BodyId> {
 /// The longest a leg within `field` leaving a low orbit waits for the
 /// planes to align ([`aligned`]), s: a period of the moon it is moved
 /// with ([`carrier`]; `met`, the body it meets, if one of the field's
-/// center's moons), as the Sun sees it at `t`. `None` without one.
+/// center's moons), as the Sun sees it at `t`, from the mean motions of
+/// the moon's and the planet's osculating orbits (by the rates at `t`,
+/// [`synodic_period`], the Moon's swung 26.8–32.9 days). `None` without
+/// one.
 pub fn wait_limit(field: &Field, met: Option<BodyId>, t: Epoch) -> Option<f64> {
-    let moon = carrier_of(field, met)?;
-    Some(synodic_period(field.ephemeris(), field.center()?, moon, t))
+    let eph = field.ephemeris();
+    let (planet, moon) = (field.center()?, carrier_of(field, met)?);
+    let (p, m) = (eph.barycentric(planet, t), eph.barycentric(moon, t));
+    let about = crate::kepler::State {
+        r: m.r - p.r,
+        v: m.v - p.v,
+    };
+    let monthly =
+        crate::kepler::Elements::from_state(about, eph.body(planet).gm + eph.body(moon).gm)?;
+    let yearly = eph.elements(planet, t).mean_motion;
+    Some(2.0 * std::f64::consts::PI / (monthly.mean_motion - yearly))
 }
 
 /// `path` (relative to `primary`) moved `dt` s later, each node carried with
@@ -1717,7 +1729,8 @@ pub fn own_orbit_seed(
         r.cross(v).normalize()
     };
     let theirs = normal(t0, &moved.path.states[0]);
-    let angle = angle_about(heads, theirs, normal(t0, &ship(t0.clamp(lo, hi))))?;
+    let near = t0.clamp(lo, hi);
+    let angle = angle_about(heads, theirs, normal(near, &ship(near)))?;
     let mut seed = turn_about(field, body, &moved.path, heads, angle);
     // The nearest pass: sampled, then sampled again about the best, to a
     // second.

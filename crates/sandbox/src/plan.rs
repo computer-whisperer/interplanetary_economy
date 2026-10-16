@@ -8,7 +8,8 @@ use crate::windows::Windows;
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{
-    Checkpoint, Choice, Item, ItemKind, Marker, MarkerKind, Plan, Planner, Step, World, resume_from,
+    Checkpoint, Choice, Item, ItemKind, Marker, MarkerKind, Pin, Plan, Planner, Step, World,
+    resume_from,
 };
 use orbit::places::Places;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -372,11 +373,14 @@ impl Loaded {
         let sender = self.sender.clone();
         self.pool.spawn(move || {
             let world = world();
-            // The leg designed at `days` alone: its one option.
+            // The leg pinned to `days`: its one option.
             let alone = |days: f64| -> Result<Choice, String> {
                 let mut ship = ship.clone();
                 if let Some(Step::Go(go)) = ship.steps.get_mut(step) {
-                    go.days = vec![days];
+                    go.pin = Some(Pin {
+                        depart: None,
+                        days: Some(days),
+                    });
                 }
                 let mut planner = match from.clone() {
                     Some(c) => Planner::resume(world, &ship, c),

@@ -43,17 +43,21 @@ orbit from the ship's own orbit) done; next, step 8, the gate.
     | Leg | Plane free | From its own orbit |
     |---|---|---|
     | LLO to LEO, published round trip (6.9° off) | 3,949.9 m/s | at once, +62.0 (the jump: 197) |
-    | LLO to LEO on arrival, 2033-04-07 (166° off) | 3,949.9 | waits 13.3 days, +11.0 |
-    | LLO to the NRHO | 697.1 | at once, +24.0 |
-    | LEO after an aerocapture, to the NRHO | 3,508.3 | waits 0.8 days, +58.3 |
-    | LEO after an aerocapture, to LLO | 3,951.0 | waits 4.8 days, +245.0 |
+    | LLO to LEO on arrival, 2033-04-02 (166° off) | 3,949.9 | 13.3 days after the free design, +29.7 |
+    | LLO to the NRHO | 696.1 | at once, +35.0 |
+    | LEO after an aerocapture, to the NRHO | 3,508.6 | 0.8 days after, +69.2 |
+    | LEO after an aerocapture, to LLO | 3,951.0 | 4.9 days after, +28.0 |
     | Low Mars orbit after an aerocapture, to Phobos (56° off) | 1,205.0 | at best +1,438: jumps |
-    | LEO to Mars on arrival (90° off) | 6,149.5 | +2,865 at once: jumps |
+    | LEO to Mars on arrival (91° off) | 6,149.7 | +2,773 at once: jumps |
 
-    LEO to LLO's second alignment, 10 days later, flies 3.9 m/s under
-    the free design; the first fair one is taken. Phobos orbits in
-    Mars's equator, so from a low orbit 56° off it takes a plane
-    change: real, and left reported.
+    (After the review's fixes below; before them the middle rows were
+    +11.0, +24.0, +58.3 and +245.) Passes next to each other about an
+    alignment differ by tens of m/s (the 166° case: +29.7, +51.3,
+    +128.5 two hours apart; +11.0 on the pass before), so which passes
+    are tried moves these: the review's change to the longest wait
+    moved the steps between tries. Phobos orbits in Mars's equator, so
+    from a low orbit 56° off it takes a plane change: real, and left
+    reported.
   - Tried and dropped: requiring the planes to match, rather than
     where the departure heads to lie in the ship's plane, found no
     alignment from LEO to LLO (43°) or to Phobos, and only 11° for the
@@ -77,6 +81,31 @@ orbit from the ship's own orbit) done; next, step 8, the gate.
     stay drawn): a stay is now drawn and picked a revolution about the
     clock (`render::Path::window`, from `Track::revolution`), its first
     or last when the clock is outside it.
+  - A review of this part, the drawing and the planning change (a
+    sub-agent, with runtime probes) found, fixed:
+    - Options were not what pinning flies where a station's visit is
+      sized by the longest duration designed: NRHO to low lunar orbit
+      offering 0.5 and 8 days showed 794.7 m/s for 0.5 days, and pinned
+      it flew 683.8. Visits are now sized by the durations offered and
+      the pinned one together (`Go::longest`), and sweeps pin each
+      duration; the test now offers 8 days and fails when undone.
+    - A seed whose departure was held inside its window turned into the
+      plane of the ship's orbit at the wrong time's Moon (at 70°:
+      −72.1° and −82.9° turns against −65.4°); now the same.
+    - Between planets a departure could leave up to a revolution before
+      the plan's window or pin; now not before it.
+    - About Phobos the tries about an alignment were minutes apart and
+      landed on one pass; there, the alignment alone is tried.
+    - The longest wait came from the Moon's rates at the moment: 26.8–
+      32.9 days; now from the mean motions, 28.9–29.6.
+    - A coast that failed while looking for alignments dropped the
+      design at once; now it keeps it.
+  - Costs: a leg offering five durations, leaving low lunar orbit for
+    LEO, re-plans in 3.3 s (after a 60-day stay, 4.6 s) on this
+    machine's 24 threads; on 4, 10.1 and 14.3 s (gate item 5 asks for
+    10 s on the development machine). The designs dominate: coasting
+    the stay once rather than for each design changed nothing
+    measurable, and parted the stay from the leg by 1.3 m; not kept.
 - Planning (decided 2026-10-15): each duration a leg within a system
   offers is designed alone, so an option is what pinning it flies (see
   part 5).

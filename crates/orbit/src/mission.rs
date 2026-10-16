@@ -64,7 +64,8 @@ const PLANE_MOST: f64 = 0.25;
 
 /// Times over the longest wait at which the planes' alignment is looked
 /// for; of those where they align, the first this many are tried, each
-/// moved by these fractions of the longest wait.
+/// moved by these fractions of the longest wait (unless the smallest is
+/// under a revolution of the ship's orbit).
 const ALIGN_SAMPLES: usize = 400;
 const ALIGN_TIMES: usize = 2;
 const ALIGN_STEPS: [f64; 5] = [-1.0 / 120.0, -1.0 / 240.0, 0.0, 1.0 / 240.0, 1.0 / 120.0];
@@ -165,6 +166,18 @@ impl Go {
             Some(d) => vec![d],
             None => self.days.clone(),
         }
+    }
+
+    /// The longest duration it may be designed at, days: of those offered
+    /// and the pinned one, so that pinning an option leaves what is built
+    /// around the leg (a station's visit, which its durations bound) as
+    /// it was.
+    pub fn longest(&self) -> f64 {
+        self.days
+            .iter()
+            .copied()
+            .chain(self.pin.and_then(|p| p.days))
+            .fold(0.0, f64::max)
     }
 
     /// The pinned departure, if any.
@@ -1100,7 +1113,7 @@ impl<'w> Planner<'w> {
         let eph = world.eph;
         let (field, light) = world.system(system)?;
         let offered = go.durations();
-        let longest = offered.iter().copied().fold(0.0, f64::max);
+        let longest = go.longest();
         // The window: a revolution of the station left or reached, else
         // the defaults.
         let default_days = match (&self.here, &go.to.kind) {
@@ -1329,7 +1342,7 @@ impl<'w> Planner<'w> {
             design,
             own,
             note: own_note,
-        } = self.leave(&leg, free, (self.ready, Epoch(f64::INFINITY)), None);
+        } = self.leave(&leg, free, (open, Epoch(f64::INFINITY)), None);
         if let Some(last) = tried.last_mut() {
             last.depart = design.departure_epoch();
             last.dv = Some(design.dv);
@@ -1371,7 +1384,7 @@ impl<'w> Planner<'w> {
             match step {
                 Step::Wait(days) => t = t.plus_days(*days),
                 Step::Go(go) => {
-                    let longest = go.durations().iter().copied().fold(0.0, f64::max);
+                    let longest = go.longest();
                     let tries = 1.0 + (WITHIN_TRIES - 1) as f64 / 4.0;
                     let close = match go.window {
                         Some((_, close)) => Epoch(close.0.max(t.0)),
@@ -1597,7 +1610,10 @@ impl<'w> Planner<'w> {
         let departure = free.burns[0].dv.length();
         let more = |d: &Design| d.dv - free.dv;
         // `free` moved `dt` s later, leaving within `bounds` and a
-        // revolution of where it was moved to.
+        // revolution of where it was moved to. (The ship's orbit is coasted
+        // from where it arrived each time, as its stay is: coasted from a
+        // state found on the way, the two parted by 1.3 m over 18 days,
+        // and it saved no measurable time.)
         let design = |dt: f64, bounds: (Epoch, Epoch)| -> Option<(Design, Reference)> {
             let around = left.plus_days(dt / DAY);
             let lo = Epoch(bounds.0.0.max(around.0 - period / DAY));
@@ -1652,13 +1668,21 @@ impl<'w> Planner<'w> {
             let times: Vec<Epoch> = (0..=ALIGN_SAMPLES)
                 .map(|k| left.plus_days((latest.0 - left.0) * k as f64 / ALIGN_SAMPLES as f64))
                 .collect();
-            let states = coast_to(field, coast.0, coast.1, &times)?;
+            // A coast that fails leaves the leg to what it found at once.
+            let states = coast_to(field, coast.0, coast.1, &times).unwrap_or_default();
             let samples: Vec<(Epoch, [f64; 6])> = times.into_iter().zip(states).collect();
+            // Steps shorter than a revolution of the ship's orbit all land
+            // on its same pass (about Phobos, whose period is hours): the
+            // time the planes align alone.
+            let steps: &[f64] = match limit * ALIGN_STEPS[3] < period {
+                true => &[0.0],
+                false => &ALIGN_STEPS,
+            };
             later = legs::aligned(field, orbit.body, &leg.to, free, &samples, ALIGN_TIMES)
                 .into_iter()
                 .map(|(k, _)| {
                     let dt = (samples[k].0.0 - left.0) * DAY;
-                    ALIGN_STEPS
+                    steps
                         .par_iter()
                         .map(|step| dt + step * limit)
                         .filter(|&dt| dt > 0.0)
