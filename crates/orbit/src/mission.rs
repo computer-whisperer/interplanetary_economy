@@ -833,6 +833,7 @@ pub struct Checkpoint {
     label: String,
     since: Epoch,
     ready: Epoch,
+    not_before: Epoch,
     stopped: bool,
 }
 
@@ -840,6 +841,32 @@ impl Checkpoint {
     /// The step it goes on from.
     pub fn next(&self) -> usize {
         self.next
+    }
+
+    /// When the ship reached where it is.
+    pub fn since(&self) -> Epoch {
+        self.since
+    }
+
+    /// This checkpoint, with the ship staying where it is until at least
+    /// `now` (M1b.md, step 1 plan, part 3): the steps from here leave no
+    /// earlier, their waits counted from its arrival. In a low orbit whose
+    /// plane was still free, `stay` (the stay designed from here, which
+    /// the ship has flown until now) fixes the plane, and the ship leaves
+    /// from that orbit.
+    pub fn staying(&self, now: Epoch, stay: Option<&Item>) -> Checkpoint {
+        let mut c = self.clone();
+        c.not_before = Epoch(c.not_before.0.max(now.0));
+        if let Here::Low { orbit, coast: None } = &c.here
+            && let Some(track) = stay.and_then(|i| i.track.as_ref())
+            && let (Some(&t), Some(&s)) = (track.times.first(), track.states.first())
+        {
+            c.here = Here::Low {
+                orbit: *orbit,
+                coast: Some((track.epoch.plus_days(t / DAY), s)),
+            };
+        }
+        c
     }
 }
 
@@ -915,6 +942,8 @@ pub struct Planner<'w> {
     /// When the ship reached where it is, and when it may leave.
     since: Epoch,
     ready: Epoch,
+    /// No step leaves before this (career's now when it was re-planned).
+    not_before: Epoch,
     stopped: bool,
 }
 
@@ -930,6 +959,7 @@ impl<'w> Planner<'w> {
             label: ship.start.label.clone(),
             since: ship.epoch,
             ready: ship.epoch,
+            not_before: Epoch(f64::NEG_INFINITY),
             stopped: false,
         };
         p.here = match &ship.start.kind {
@@ -957,6 +987,7 @@ impl<'w> Planner<'w> {
             label: self.label.clone(),
             since: self.since,
             ready: self.ready,
+            not_before: self.not_before,
             stopped: self.stopped,
         }
     }
@@ -974,13 +1005,40 @@ impl<'w> Planner<'w> {
             label: checkpoint.label,
             since: checkpoint.since,
             ready: checkpoint.ready,
+            not_before: checkpoint.not_before,
             stopped: checkpoint.stopped,
         }
+    }
+
+    /// Why the ship cannot go on from here as its steps now are, if it
+    /// cannot: in a station's orbit, the steps need a longer visit than
+    /// the orbit was built for. A planner going on from a checkpoint
+    /// `resume_from` would have stepped back from meets this; M1b's step
+    /// 3 makes each station one orbit.
+    pub fn outstays(&self) -> Option<String> {
+        let (Here::Station(visit), PlaceKind::Station { family, period }) =
+            (&self.here, &self.place)
+        else {
+            return None;
+        };
+        let revolution = self.member_days(family, *period).ok()?;
+        let until = self.visit_until(self.next, self.ready, revolution);
+        let built = visit.reference.end().plus_days(-VISIT_MARGIN_DAYS);
+        (until.0 > built.0).then(|| {
+            format!(
+                "{}'s orbit was built for a visit until {}, and the steps from here need one until {}",
+                visit.label,
+                when(built),
+                when(until)
+            )
+        })
     }
 
     /// The next items: a stay and the leg or event after it, or a failure
     /// (after which there are none). `None` when the plan is done.
     pub fn step(&mut self) -> Option<Vec<Item>> {
+        // Checked where the planner stands, before the waits.
+        let mut refused = self.outstays();
         while !self.stopped {
             let i = self.next;
             self.next += 1;
@@ -989,7 +1047,12 @@ impl<'w> Planner<'w> {
                 Step::Wait(days) => self.ready = self.ready.plus_days(days),
                 Step::Go(go) => {
                     let clock = Instant::now();
-                    return Some(match self.go(&go) {
+                    self.ready = Epoch(self.ready.0.max(self.not_before.0));
+                    let gone = match refused.take() {
+                        Some(why) => Err(why),
+                        None => self.go(&go),
+                    };
+                    return Some(match gone {
                         Ok(mut items) => {
                             if let Some(i) = items.iter_mut().rfind(|i| i.kind != ItemKind::Capture)
                             {
@@ -1436,6 +1499,7 @@ impl<'w> Planner<'w> {
             match step {
                 Step::Wait(days) => t = t.plus_days(*days),
                 Step::Go(go) => {
+                    let t = Epoch(t.0.max(self.not_before.0));
                     let longest = go.longest();
                     let tries = 1.0 + (WITHIN_TRIES - 1) as f64 / 4.0;
                     let close = match go.window {
