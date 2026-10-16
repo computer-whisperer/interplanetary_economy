@@ -143,6 +143,7 @@ fn scene(camera: Camera, pose: Pose, samples: Vec<Sample>, now: f64) -> Scene {
                 future: [1.0, 1.0, 0.0],
                 past: [0.0, 1.0, 1.0],
                 gap: 0.0,
+                window: None,
             }],
         })],
         poses: vec![pose],
@@ -493,6 +494,7 @@ fn past_meets_future_100_days_in() {
             future: [0.0; 3],
             past: [0.0; 3],
             gap: 0.0,
+            window: None,
         }
         .at(now)
         .unwrap(),
@@ -552,6 +554,7 @@ fn long_segments_up_close() {
             future: [1.0, 1.0, 0.0],
             past: [0.0, 1.0, 1.0],
             gap: 0.0,
+            window: None,
         };
         // 30% into the middle segment, looking along the curve from
         // beside it.
@@ -664,6 +667,7 @@ fn two_million_segments_gpu_time() {
                 future: [0.3, 0.6, 1.0],
                 past: [0.1, 0.2, 0.35],
                 gap: 0.0,
+                window: None,
             }
         })
         .collect();

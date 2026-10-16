@@ -199,6 +199,7 @@ impl Orbits {
                             future: color,
                             past: color.map(|c| c * PAST_DIM),
                             gap: GAP,
+                            window: None,
                         }
                     })
                     .collect(),

@@ -142,6 +142,7 @@ fn item_path(
         future: color,
         past: scaled(color, PAST_DIM),
         gap: 0.0,
+        window: track.revolution,
     })
 }
 
@@ -155,6 +156,7 @@ pub fn loop_paths(loops: Vec<Vec<Sample>>) -> Vec<Path> {
             future: LOOP_COLOR,
             past: LOOP_COLOR,
             gap: 0.0,
+            window: None,
         })
         .collect()
 }

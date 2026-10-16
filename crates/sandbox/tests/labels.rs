@@ -362,10 +362,18 @@ fn a_line_over_a_disk_is_picked() {
                         || q.y > r.y + r.h + 5.0
                 })
         };
+        // What is drawn of it: a revolution about the clock.
+        let drawn = line.drawn(t.seconds());
+        let (from, to) = (line.samples[drawn.start].t, line.samples[drawn.end].t);
+        assert!(
+            to - from < 3.0 * 3_600.0,
+            "{} h drawn",
+            (to - from) / 3_600.0
+        );
         let on_line: Vec<Vec2> = (0..=2000)
             .filter_map(|i| {
-                let at = Epoch(stay.start.0 + (stay.end.0 - stay.start.0) * f64::from(i) / 2000.0);
-                let p = scene.poses[VIEW_POSE].to_world(line.at(at.seconds())?);
+                let at = from + (to - from) * f64::from(i) / 2000.0;
+                let p = scene.poses[VIEW_POSE].to_world(line.at(at)?);
                 let q = view.project(p)?.as_vec2();
                 (!labels::hidden(view.camera.eye, p, &balls, None)).then_some(q)
             })

@@ -103,6 +103,10 @@ pub struct Path {
     /// The radius of the gap left where the path is at the scene's moment,
     /// in line widths; 0 for none.
     pub gap: f32,
+    /// How long about the scene's moment it is drawn and picked, s, kept
+    /// within its span ([`Path::drawn`]): a revolution of a long stay in
+    /// orbit rather than every one. `None`: all of it.
+    pub window: Option<f64>,
 }
 
 /// The cubic Hermite curve at `u` between samples `a` and `b`, relative to
@@ -135,7 +139,8 @@ impl Path {
 
     /// How near the line comes to `at` (pixels from the top-left corner,
     /// y down) on a viewport of `size` pixels seen by `camera`, the path
-    /// placed by `pose`: along the Hermite curve it is drawn along, in f64,
+    /// placed by `pose`, as drawn at `now` ([`Path::drawn`]): along the
+    /// Hermite curve it is drawn along, in f64,
     /// within a quarter pixel, counting only parts whose middle (in the
     /// world) is `shown`. `None` where it comes no nearer than `within`
     /// pixels, or is behind the eye.
@@ -147,11 +152,13 @@ impl Path {
     /// |(x, y)| / z off the view's axis, moves δ (1 + |(x, y)| / z) / z on
     /// the screen, and the curve may come nearer the eye than the chord by
     /// its bow (along the chord, |(x, y)| / z is largest at an end).
+    #[allow(clippy::too_many_arguments)]
     pub fn near(
         &self,
         pose: &Pose,
         camera: &Camera,
         size: (u32, u32),
+        now: f64,
         at: DVec2,
         within: f64,
         shown: impl Fn(DVec3) -> bool,
@@ -159,7 +166,8 @@ impl Path {
         let px_per_radian = 1.0 / camera.pixel_angle(size.1);
         let mut best = f64::INFINITY;
         let mut parts: Vec<(f64, f64)> = Vec::new();
-        for i in 1..self.samples.len() {
+        let drawn = self.drawn(now);
+        for i in drawn.start + 1..=drawn.end {
             let (a, b) = (&self.samples[i - 1], &self.samples[i]);
             if b.t <= a.t {
                 continue;
@@ -207,6 +215,28 @@ impl Path {
             }
         }
         (best <= within).then_some(best)
+    }
+
+    /// The segments drawn and picked at `now` (s on the scene's time
+    /// axis), by their first samples: all, or those within half the
+    /// window of a moment, `now` kept far enough inside the span for the
+    /// whole window (so before or after it, its first or last part).
+    pub fn drawn(&self, now: f64) -> Range<usize> {
+        let s = &self.samples;
+        let all = 0..s.len().saturating_sub(1);
+        let (Some(window), Some(first), Some(last)) = (self.window, s.first(), s.last()) else {
+            return all;
+        };
+        if last.t - first.t <= window {
+            return all;
+        }
+        let half = 0.5 * window;
+        let moment = now.clamp(first.t + half, last.t - half);
+        let from = s
+            .partition_point(|x| x.t <= moment - half)
+            .saturating_sub(1);
+        let to = s.partition_point(|x| x.t < moment + half).min(s.len() - 1);
+        from..to
     }
 
     /// Where the path is at `t`: the segment (by its first sample) and the
@@ -408,6 +438,21 @@ fn run(s: &[Sample], first: usize, local: usize) -> Run {
     }
 }
 
+impl Run {
+    /// The run cut to `drawn` (segments, by their first samples in its
+    /// path), its bounds kept; `None` if none of it is drawn.
+    fn within(&self, drawn: &Range<usize>) -> Option<Run> {
+        let (from, to) = (self.local as usize, (self.local + self.segments) as usize);
+        let (a, b) = (from.max(drawn.start), to.min(drawn.end));
+        (a < b).then(|| Run {
+            first: self.first + (a - from) as u32,
+            local: a as u32,
+            segments: (b - a) as u32,
+            ..*self
+        })
+    }
+}
+
 /// How a run is drawn from the eye.
 enum Cut {
     Hidden,
@@ -515,23 +560,30 @@ impl Prepared {
         let levels = level(MAX_PIECES) + 1;
         let (mut chunks, mut parts) = (vec![Vec::new(); levels], vec![Vec::new(); levels]);
         let mut out = Visible::default();
+        let drawn: Vec<Range<usize>> = paths.paths.iter().map(|p| p.drawn(now)).collect();
         for c in &self.chunks {
             let path = &paths.paths[c.path];
             let Some(pose) = poses.get(path.pose) else {
                 continue;
             };
-            match cut(&c.run, pose, None) {
+            let Some(run) = c.run.within(&drawn[c.path]) else {
+                continue;
+            };
+            match cut(&run, pose, None) {
                 Cut::Hidden => {}
                 Cut::Gpu(n) if n < PARTS_FROM => {
-                    chunks[level(n)].push([c.run.first, c.run.segments | n << 16]);
+                    chunks[level(n)].push([run.first, run.segments | n << 16]);
                 }
                 _ => {
                     for p in &self.parts[c.parts.clone()] {
-                        match cut(p, pose, Some(path)) {
+                        let Some(p) = p.within(&drawn[c.path]) else {
+                            continue;
+                        };
+                        match cut(&p, pose, Some(path)) {
                             Cut::Hidden => {}
                             Cut::Gpu(n) => parts[level(n)].push([p.first, p.segments | n << 16]),
                             Cut::Cpu => {
-                                place(&mut out.pieces, path, c.path, p, pose, camera, pixel)
+                                place(&mut out.pieces, path, c.path, &p, pose, camera, pixel)
                             }
                         }
                     }
@@ -759,6 +811,7 @@ mod tests {
             future: [1.0; 3],
             past: [1.0; 3],
             gap: 0.0,
+            window: None,
         };
         let pose = Pose {
             origin: DVec3::new(1.5e8, 0.0, 0.0),
@@ -780,17 +833,29 @@ mod tests {
         let mid = camera
             .project(pose.to_world(path.at(785.398_163_397_448_3).unwrap()), size)
             .unwrap();
-        let curve = path.near(&pose, &camera, size, mid, 4.0, |_| true).unwrap();
+        let curve = path
+            .near(&pose, &camera, size, 0.0, mid, 4.0, |_| true)
+            .unwrap();
         let chord = path
-            .near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 400.0, |_| true)
+            .near(
+                &pose,
+                &camera,
+                size,
+                0.0,
+                on(a, 0.5f64.sqrt()),
+                400.0,
+                |_| true,
+            )
             .unwrap();
         let px = (mid - on(a, 0.5f64.sqrt())).length();
         println!("on the curve {curve:.3} px; at the chord {chord:.1} px ({px:.1} px in)");
         assert!(curve < 0.25, "{curve}");
         assert!((chord - px).abs() < 1.0, "{chord} {px}");
         assert!(
-            path.near(&pose, &camera, size, on(a, 0.5f64.sqrt()), 4.0, |_| true)
-                .is_none()
+            path.near(&pose, &camera, size, 0.0, on(a, 0.5f64.sqrt()), 4.0, |_| {
+                true
+            })
+            .is_none()
         );
         // Behind the eye, nothing.
         let behind = Camera::looking_at(
@@ -800,9 +865,15 @@ mod tests {
             0.8,
         );
         assert!(
-            path.near(&pose, &behind, size, DVec2::new(400.0, 400.0), 1e6, |_| {
-                true
-            })
+            path.near(
+                &pose,
+                &behind,
+                size,
+                0.0,
+                DVec2::new(400.0, 400.0),
+                1e6,
+                |_| { true }
+            )
             .is_none()
         );
     }
@@ -858,6 +929,7 @@ mod tests {
                 future: [1.0; 3],
                 past: [1.0; 3],
                 gap: 0.0,
+                window: None,
             };
             let camera = Camera::looking_at(
                 pose.origin + eye,
@@ -886,13 +958,13 @@ mod tests {
                 continue;
             }
             tried += 1;
-            let got = path.near(&pose, &camera, size, at, 4.0, |_| true);
+            let got = path.near(&pose, &camera, size, 0.0, at, 4.0, |_| true);
             let Some(got) = got else {
                 panic!("trial {trial}: culled at {truth:.3} px from the curve")
             };
             worst = worst.max((got - truth).abs());
             assert!(
-                path.near(&pose, &camera, size, at, 4.0, |_| false)
+                path.near(&pose, &camera, size, 0.0, at, 4.0, |_| false)
                     .is_none()
             );
         }
@@ -929,6 +1001,7 @@ mod tests {
             future: [1.0; 3],
             past: [1.0; 3],
             gap: 0.0,
+            window: None,
         };
         let pose = Pose {
             origin: DVec3::ZERO,
@@ -945,7 +1018,7 @@ mod tests {
             (apex - on_chord).length()
         );
         assert!((apex - on_chord).length() > estimate + 20.0);
-        let d = path.near(&pose, &camera, size, apex, 4.0, |_| true);
+        let d = path.near(&pose, &camera, size, 0.0, apex, 4.0, |_| true);
         assert!(d.is_some_and(|d| d < 0.25), "{d:?}");
     }
 
@@ -969,6 +1042,7 @@ mod tests {
             future: [1.0; 3],
             past: [0.5; 3],
             gap: 0.0,
+            window: None,
         }
     }
 
@@ -1038,6 +1112,7 @@ mod tests {
             future: [1.0; 3],
             past: [1.0; 3],
             gap: 0.0,
+            window: None,
         };
         // The curve's highest point, 96 km above the chord at u ≈ 0.21
         // (1,000 km · u(2u − 1)(u − 1)).
@@ -1078,6 +1153,52 @@ mod tests {
 
     /// Splits: before the path, nothing is past; after it, everything;
     /// between, the segment and fraction, in f64 however long the path.
+    /// A long stay drawn a revolution about the moment: within it, its
+    /// revolution about the moment; before or after it, its first or
+    /// last. Culled to those segments; picked on them at any moment.
+    #[test]
+    fn a_window_draws_a_revolution_about_the_moment() {
+        // 10 revolutions, 180 segments each, 5,550 s long.
+        let path = Path {
+            window: Some(5_550.0),
+            ..leo(10)
+        };
+        let t0 = path.samples[0].t;
+        assert_eq!(path.drawn(t0 + 5.0 * 5_550.0), 810..990);
+        assert_eq!(path.drawn(0.0), 0..180);
+        assert_eq!(path.drawn(2e9), 1_620..1_800);
+        let paths = Paths { paths: vec![path] };
+        let prepared = Prepared::new(&paths);
+        let fov = 50f64.to_radians();
+        let far = Camera::looking_at(DVec3::new(0.0, -1e5, 3e4), DVec3::ZERO, DVec3::Z, fov);
+        let v = prepared.visible(
+            &paths,
+            &far,
+            &[Pose::default()],
+            (800, 600),
+            t0 + 5.0 * 5_550.0,
+        );
+        let mut segments: Vec<usize> = v
+            .instances
+            .iter()
+            .flat_map(|i| (i[0]..i[0] + (i[1] & 0xffff)).map(|k| k as usize))
+            .collect();
+        segments.sort();
+        assert_eq!(segments, (810..990).collect::<Vec<_>>());
+        // Seen from above, a point on the circle is on the line drawn
+        // whenever: the revolution drawn passes every point of it.
+        let above = Camera::looking_at(DVec3::new(0.0, 0.0, 3e4), DVec3::ZERO, DVec3::Y, fov);
+        let size = (800, 600);
+        let on = above.project(DVec3::new(6_778.0, 0.0, 0.0), size).unwrap();
+        let line = &paths.paths[0];
+        for now in [0.0, t0 + 12_345.0, 2e9] {
+            assert!(
+                line.near(&Pose::default(), &above, size, now, on, 1.0, |_| true)
+                    .is_some()
+            );
+        }
+    }
+
     #[test]
     fn splits_at_the_moment() {
         // 100 days of LEO.

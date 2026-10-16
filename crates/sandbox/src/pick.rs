@@ -68,12 +68,14 @@ pub fn body(at: Vec2, anchors: &[Anchor]) -> Option<Pick> {
 
 /// The ship and item whose line passes nearest a click at `at` (px on
 /// `view`), within [`LINE_PX`], where `balls` do not hide it: `owners`
-/// gives each item's path among `paths`, placed by `poses`.
+/// gives each item's path among `paths`, placed by `poses`, as drawn at
+/// `now` (s on the paths' time axis).
 pub fn line(
     at: Vec2,
     view: &View,
     paths: &render::Paths,
     poses: &[render::Pose],
+    now: f64,
     owners: &HashMap<(usize, usize), usize>,
     balls: &[Ball],
 ) -> Option<(usize, usize)> {
@@ -85,7 +87,15 @@ pub fn line(
             let path = paths.paths.get(p)?;
             let pose = poses.get(path.pose)?;
             let shown = |p| !hidden(view.camera.eye, p, balls, None);
-            let d = path.near(pose, &view.camera, view.size, at, LINE_PX * scale, shown)?;
+            let d = path.near(
+                pose,
+                &view.camera,
+                view.size,
+                now,
+                at,
+                LINE_PX * scale,
+                shown,
+            )?;
             Some((d, owner))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))

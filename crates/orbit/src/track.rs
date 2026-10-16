@@ -26,6 +26,9 @@ pub struct Track {
     /// burn), or the position (where two motions meet).
     pub times: Vec<f64>,
     pub states: Vec<[f64; 6]>,
+    /// Where it coasts in a closed orbit (a stay), the orbit's period, s:
+    /// a revolution about a moment shows where the ship is.
+    pub revolution: Option<f64>,
 }
 
 impl Track {
@@ -35,6 +38,7 @@ impl Track {
             epoch,
             times: Vec::new(),
             states: Vec::new(),
+            revolution: None,
         }
     }
 

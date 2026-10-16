@@ -80,6 +80,8 @@ pub struct Stats {
 struct Seen {
     view: labels::View,
     poses: Vec<render::Pose>,
+    /// The scene's moment, s on the paths' time axis.
+    now: f64,
     /// The bodies drawn as disks.
     balls: Vec<labels::Ball>,
     anchors: Vec<Anchor>,
@@ -908,6 +910,7 @@ impl Shell {
         self.seen = Some(Seen {
             view,
             poses: scene.poses.clone(),
+            now: scene.now,
             balls,
             anchors,
             placed,
@@ -925,6 +928,7 @@ impl Shell {
                     &seen.view,
                     &self.paths,
                     &seen.poses,
+                    seen.now,
                     &self.owners,
                     &seen.balls,
                 )?;

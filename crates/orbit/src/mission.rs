@@ -1591,6 +1591,9 @@ impl<'w> Planner<'w> {
         };
         match &self.here {
             Here::Low { orbit, coast: c } => {
+                let revolution = 2.0
+                    * std::f64::consts::PI
+                    * (orbit.radius.powi(3) / eph.body(orbit.body).gm).sqrt();
                 let system = eph.system(orbit.body);
                 let (field, _) = self.world.system(system)?;
                 let leaving =
@@ -1611,6 +1614,9 @@ impl<'w> Planner<'w> {
                     }
                     (None, _) => {}
                 }
+                if let Some(track) = &mut item.track {
+                    track.revolution = Some(revolution);
+                }
             }
             Here::Station(visit) => {
                 let r = &visit.reference;
@@ -1619,6 +1625,7 @@ impl<'w> Planner<'w> {
                 if span > 0.0 {
                     track.extend(field, 0.0, span, |t| r.state(self.since.plus_days(t / DAY)));
                 }
+                track.revolution = Some(r.period_s());
                 item.track = Some(track);
                 let revolutions = (r.path.span().1 - r.path.span().0) / r.period_s();
                 if span > 0.0 {
