@@ -4,7 +4,23 @@ Status, 2026-10-16: steps 1–7 done (6 done before 5, its shape models
 left out; of step 6, part 9's spins and small bodies' maps open); now
 step 8, the gate (step 8 plan, at the end).
 
-- Step 8, so far:
+- Step 8, the gate as measured (2026-10-16), for the user's verdict:
+  1. Holds: the published plan flies and is drawn, its Δv as published.
+  2. Stands: step 3's and 4's offscreen checks.
+  3. Offscreen, frames fit 240 Hz at 4K at the 95th percentile (CPU
+     3.55 ms, GPU 3.90), the longest 5.1 ms. In a window on DP-1 the
+     compositor caps it (~5.6 ms a frame; vkcube ~196 a second); on the
+     60 Hz DP-3, frames at the refresh.
+  4. HDR: the user's check on the OLED. SDR: no clipped bands in twelve
+     scenes; the Sun's disk washed out, open.
+  5. Fails on one leg: LEO to the DRO designs in 16.5 s (open, as in
+     M1a); the rest in 0.1–3.7 s. The view: frames while designing
+     every 4.5–5.1 ms on average, 0–3 a run over 25 ms of work, the
+     longest 12–65 ms; a change of frame or focus ~60 ms with the Mars
+     plan. M1a's 0.1 s is for standing routes, which the sandbox has
+     none of yet.
+
+- Step 8, details:
   - Item 1 holds at the end of step 7: the published plan flies with no
     jumps (the low lunar orbit round trip's return now from its own
     orbit, +62.0 m/s), its Δv as at step 1 (Mars handbook departures
@@ -51,8 +67,13 @@ step 8, the gate (step 8 plan, at the end).
       60 Hz, where the focus was): after designing, frames at the
       refresh (16.67 ms, 95% 16.8, the longest 18–19 ms), GPU 1.57 ms;
       while designing, the longest 55–64 ms (two runs).
-    - The offscreen test (CPU and GPU time a frame, stepping a month a
-      second) is not written yet.
+    - Offscreen (`tests/playback.rs`, ignored: 3840×2160 at two pixels
+      to a logical one, a frame every 1/240 s at a month a second, 600
+      frames from each of 2042, 2052, 2062 and 2072, each waiting for
+      the GPU): CPU a frame median 2.90 ms, 95% 3.55, the longest 5.14;
+      GPU median 2.28, 95% 3.90, the longest 5.14. Within the 4.17 ms
+      refresh at the 95th percentile, both. The CPU's profile is flat:
+      `Shape::lit_area` 5%, ephemeris and Kepler evaluations ~10%.
   - Item 4, SDR: twelve scenes shot through the SDR tonemap
     (`--screenshot`: Earth whole and half lit, the Moon from 3,000 and
     100 km, Mars, Venus, Jupiter, Saturn, the Sun from 2 and 30 million
