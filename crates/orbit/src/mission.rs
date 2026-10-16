@@ -54,6 +54,21 @@ const TOF_STEP: f64 = 2.0;
 const TRIES: usize = 3;
 const TRIES_APART_DAYS: f64 = 5.0;
 
+/// A leg leaving the ship's own low orbit leaves at its first chance that
+/// costs at most this much more than leaving with its plane free (a
+/// fraction of that design's departure burn): at once, else when the
+/// planes align; else at its cheapest if that costs at most this much
+/// more; else it jumps.
+const PLANE_FAIR: f64 = 0.1;
+const PLANE_MOST: f64 = 0.25;
+
+/// Times over the longest wait at which the planes' alignment is looked
+/// for; of those where they align, the first this many are tried, each
+/// moved by these fractions of the longest wait.
+const ALIGN_SAMPLES: usize = 400;
+const ALIGN_TIMES: usize = 2;
+const ALIGN_STEPS: [f64; 5] = [-1.0 / 120.0, -1.0 / 240.0, 0.0, 1.0 / 240.0, 1.0 / 120.0];
+
 /// A pin this close before the ship is ready leaves when it is, days:
 /// pins are kept to the minute.
 const PIN_SLACK_DAYS: f64 = 0.5 / 1_440.0;
@@ -781,6 +796,14 @@ pub fn resume_from(checkpoints: &[Checkpoint], edited: usize) -> Option<&Checkpo
     Some(&checkpoints[k])
 }
 
+/// A design a leg flies, and the reference of the ship's own low orbit it
+/// leaves, if it was designed from it, with a note on how.
+struct Flight {
+    design: Design,
+    own: Option<Reference>,
+    note: Option<String>,
+}
+
 /// A station orbit for one visit: the reference the ship follows from the
 /// leg that arrives until the leg that leaves.
 struct Visit {
@@ -1106,11 +1129,28 @@ impl<'w> Planner<'w> {
             .filter(|(k, (o, c))| *k == 0 || o.0 < c.0)
             .map(|(_, w)| w)
             .collect();
+        // Leaving the ship's own low orbit, the leg may wait for the planes
+        // to align: up to a period of the moon its designs move with,
+        // unless the plan sets the window.
+        let wait = matches!(self.here, Here::Low { coast: Some(_), .. })
+            .then(|| {
+                let met = match go.to.kind {
+                    PlaceKind::Body(b) => Some(b),
+                    _ => None,
+                };
+                legs::wait_limit(field, met, open)
+            })
+            .flatten()
+            .map(|limit| match go.window {
+                Some(_) => close,
+                None => Epoch(open.plus_days(limit / DAY).0.max(close.0)),
+            });
         // A station reached is followed from before the earliest arrival
         // to after the leg that leaves it.
         let arriving = match &go.to.kind {
             PlaceKind::Station { family, period } => {
-                let latest = windows.last().unwrap().1.plus_days(longest);
+                let last = windows.last().unwrap().1;
+                let latest = Epoch(wait.map_or(last.0, |w| w.0.max(last.0))).plus_days(longest);
                 let until =
                     self.visit_until(self.at + 1, latest, self.member_days(family, *period)?);
                 Some(self.visit(&go.to, open, until)?)
@@ -1140,33 +1180,42 @@ impl<'w> Planner<'w> {
             // depends on which others are asked for (from the NRHO to low
             // lunar orbit, 1.65–4 days cost 675–692 m/s alone and up to
             // 1,259 together). Alone, an option is what pinning it flies.
-            let designs: Vec<Option<Design>> = durations
+            let mut flights: Vec<Option<Flight>> = durations
                 .par_iter()
                 .map(|&d| {
                     let window = (0.0, (c.0 - o.0) * DAY);
-                    legs::plan(field, light, o, from, to, window, &[d])
+                    let free = legs::plan(field, light, o, from, to, window, &[d])
                         .pop()
-                        .flatten()
+                        .flatten()?;
+                    Some(self.leave(&leg, free, (o, c), wait))
                 })
                 .collect();
             let options = offered
                 .iter()
-                .zip(&designs)
-                .map(|(&days, d)| Choice {
-                    depart: d
-                        .as_ref()
-                        .map_or(o, |d| d.path.epoch.plus_days(d.departure() / DAY)),
+                .zip(&flights)
+                .map(|(&days, f)| Choice {
+                    depart: f.as_ref().map_or(o, |f| f.design.departure_epoch()),
                     days,
-                    dv: d.as_ref().map(|d| d.dv),
+                    dv: f.as_ref().map(|f| f.design.dv),
                 })
                 .collect();
-            let Some(design) = designs
-                .into_iter()
-                .flatten()
-                .min_by(|a, b| a.dv.total_cmp(&b.dv))
-            else {
+            // The cheapest from the ship's own orbit; else the cheapest.
+            let cheapest = |own: bool| {
+                (0..flights.len())
+                    .filter_map(|i| {
+                        let f = flights[i].as_ref()?;
+                        (f.own.is_some() == own).then_some((i, f.design.dv))
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+            };
+            let Some((i, _)) = cheapest(true).or_else(|| cheapest(false)) else {
                 continue;
             };
+            let Flight {
+                design,
+                own,
+                note: own_note,
+            } = flights[i].take().unwrap();
             let retried = (k > 0).then(|| {
                 format!(
                     "no design converged leaving {}–{}; this window opens {}",
@@ -1175,11 +1224,18 @@ impl<'w> Planner<'w> {
                     when(o)
                 )
             });
-            let note = [retried, go.note.clone()]
+            let note = [retried, own_note, go.note.clone()]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
             let note = (!note.is_empty()).then(|| note.join("; "));
+            let leg = match &own {
+                Some(r) => Leg {
+                    from: End::Orbit(r),
+                    ..leg
+                },
+                None => leg,
+            };
             let mut items = self.flown(go, &leg, design, options, arriving.clone(), note)?;
             set_window(&mut items, (open, close));
             return Ok(items);
@@ -1249,7 +1305,7 @@ impl<'w> Planner<'w> {
             });
             flown = d;
         }
-        let Some(design) = flown else {
+        let Some(free) = flown else {
             return Err(if cells.is_empty() {
                 "no dates in the window".into()
             } else {
@@ -1266,7 +1322,31 @@ impl<'w> Planner<'w> {
             duration: None,
             window: None,
         };
-        let mut items = self.flown(go, &leg, design, tried, None, go.note.clone())?;
+        // From the ship's own orbit, its phase picks the departure (within
+        // half a revolution of the date); the date is not moved to wait
+        // for the planes.
+        let Flight {
+            design,
+            own,
+            note: own_note,
+        } = self.leave(&leg, free, (self.ready, Epoch(f64::INFINITY)), None);
+        if let Some(last) = tried.last_mut() {
+            last.depart = design.departure_epoch();
+            last.dv = Some(design.dv);
+        }
+        let leg = match &own {
+            Some(r) => Leg {
+                from: End::Orbit(r),
+                ..leg
+            },
+            None => leg,
+        };
+        let note = [own_note, go.note.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let note = (!note.is_empty()).then(|| note.join("; "));
+        let mut items = self.flown(go, &leg, design, tried, None, note)?;
         set_window(&mut items, searched);
         Ok(items)
     }
@@ -1358,7 +1438,9 @@ impl<'w> Planner<'w> {
             let b = design.burns[0].dv;
             [s[0], s[1], s[2], s[3] - b.x, s[4] - b.y, s[5] - b.z]
         };
-        let (mut items, jumped) = self.stay(t0, Some((leaving, center)))?;
+        // A design from the ship's own low orbit leaves where the ship is.
+        let from_own = matches!((&self.here, leg.from), (Here::Low { .. }, End::Orbit(_)));
+        let (mut items, jumped) = self.stay(t0, (!from_own).then_some((leaving, center)))?;
         // Burns and flybys.
         let burn_nodes: Vec<usize> = (0..path.times.len()).filter(|&k| path.burns[k]).collect();
         let mut markers: Vec<Marker> = design
@@ -1452,6 +1534,187 @@ impl<'w> Planner<'w> {
         };
         self.arrive(&go.to.label, end);
         Ok(items)
+    }
+
+    /// `free`, a design of `leg`, as it flies: from the ship's own low
+    /// orbit if a flown leg left it there ([`Planner::own_orbit`]), else
+    /// as it is.
+    fn leave(
+        &self,
+        leg: &Leg,
+        free: Design,
+        window: (Epoch, Epoch),
+        wait: Option<Epoch>,
+    ) -> Flight {
+        let Here::Low {
+            orbit,
+            coast: Some(coast),
+        } = &self.here
+        else {
+            return Flight {
+                design: free,
+                own: None,
+                note: None,
+            };
+        };
+        match self.own_orbit(leg, (*orbit, *coast), &free, window, wait) {
+            Ok((design, own, note)) => Flight {
+                design,
+                own: Some(own),
+                note,
+            },
+            Err(why) => Flight {
+                design: free,
+                own: None,
+                note: Some(why),
+            },
+        }
+    }
+
+    /// `free`, a design of `leg` leaving the ship's low orbit with its plane
+    /// free, designed again from the ship's own orbit (`own`: the orbit,
+    /// and where a flown leg left the ship in it), its duration kept: at
+    /// once, from where the ship passes nearest its departure, leaving
+    /// within `window`; within a system, also about the first times the
+    /// planes align, by `wait` ([`legs::aligned`]). The first costing at
+    /// most [`PLANE_FAIR`] more, else the cheapest if at most
+    /// [`PLANE_MOST`] more: the design, the reference of the ship's orbit
+    /// it leaves, and a note; `Err`, why it does not leave from there (the
+    /// free design flies, and the jump is reported).
+    fn own_orbit(
+        &self,
+        leg: &Leg,
+        (orbit, coast): (LowOrbit, (Epoch, [f64; 6])),
+        free: &Design,
+        window: (Epoch, Epoch),
+        wait: Option<Epoch>,
+    ) -> Result<(Design, Reference, Option<String>), String> {
+        let eph = self.world.eph;
+        let (field, _) = self.world.system(eph.system(orbit.body))?;
+        let period =
+            2.0 * std::f64::consts::PI * (orbit.radius.powi(3) / eph.body(orbit.body).gm).sqrt();
+        let left = free.departure_epoch();
+        let departure = free.burns[0].dv.length();
+        let more = |d: &Design| d.dv - free.dv;
+        // `free` moved `dt` s later, leaving within `bounds` and a
+        // revolution of where it was moved to.
+        let design = |dt: f64, bounds: (Epoch, Epoch)| -> Option<(Design, Reference)> {
+            let around = left.plus_days(dt / DAY);
+            let lo = Epoch(bounds.0.0.max(around.0 - period / DAY));
+            let hi = Epoch(bounds.1.0.min(around.0 + period / DAY));
+            if lo.0 > hi.0 {
+                return None;
+            }
+            let (from, until) = (lo.plus_days(-period / DAY), hi.plus_days(period / DAY));
+            let reference = own_reference(field, coast, from, until, period).ok()?;
+            let from_own = Leg {
+                from: End::Orbit(&reference),
+                depart: None,
+                arrive: None,
+                duration: Some(free.duration()),
+                window: None,
+                ..*leg
+            };
+            let seed = legs::own_orbit_seed(&from_own, orbit.body, period, free, dt, (lo, hi))?;
+            let after = |t: Epoch| (t.0 - seed.epoch.0) * DAY;
+            let d = Leg {
+                window: Some((after(lo), after(hi))),
+                ..from_own
+            }
+            .design(&seed)
+            .ok()?;
+            Some((d, reference))
+        };
+        let costs = |d: &Design| match more(d) {
+            m if m >= 0.0 => format!("{:.1} m/s more than with its plane free", m * 1e3),
+            m => format!("{:.1} m/s less than with its plane free", -m * 1e3),
+        };
+        let now = design(0.0, window);
+        if let Some((d, _)) = &now
+            && more(d) <= PLANE_FAIR * departure
+        {
+            let note = (more(d).abs() > 1e-3).then(|| format!("from its own orbit, {}", costs(d)));
+            let (d, r) = now.unwrap();
+            return Ok((d, r, note));
+        }
+        // Waiting for the planes to align: about each of the first times
+        // they do, moved a little either way (where it costs least is not
+        // quite where they align: the moon's pull bends the path).
+        let met = match leg.to {
+            End::Body(b) => Some(b),
+            _ => None,
+        };
+        // Designs about each time the planes align, in order.
+        let mut later: Vec<Vec<(Design, Reference)>> = Vec::new();
+        if let Some(latest) = wait.filter(|w| w.0 > left.0)
+            && let Some(limit) = legs::wait_limit(field, met, left)
+        {
+            let times: Vec<Epoch> = (0..=ALIGN_SAMPLES)
+                .map(|k| left.plus_days((latest.0 - left.0) * k as f64 / ALIGN_SAMPLES as f64))
+                .collect();
+            let states = coast_to(field, coast.0, coast.1, &times)?;
+            let samples: Vec<(Epoch, [f64; 6])> = times.into_iter().zip(states).collect();
+            later = legs::aligned(field, orbit.body, &leg.to, free, &samples, ALIGN_TIMES)
+                .into_iter()
+                .map(|(k, _)| {
+                    let dt = (samples[k].0.0 - left.0) * DAY;
+                    ALIGN_STEPS
+                        .par_iter()
+                        .map(|step| dt + step * limit)
+                        .filter(|&dt| dt > 0.0)
+                        .filter_map(|dt| design(dt, (window.0, latest)))
+                        .collect()
+                })
+                .collect();
+        }
+        let (at_once, more_at_once) = match &now {
+            Some((d, _)) => (
+                format!("{:.1} m/s at once", d.dv * 1e3),
+                format!("{:+.1} m/s at once", more(d) * 1e3),
+            ),
+            None => (
+                "none converged at once".to_string(),
+                "none converged at once".to_string(),
+            ),
+        };
+        let cheapest = |designs: Vec<(Design, Reference)>| {
+            designs.into_iter().min_by(|a, b| a.0.dv.total_cmp(&b.0.dv))
+        };
+        // The cheapest about the first time the planes align that has a
+        // fair design; else the cheapest of all.
+        let fair = later
+            .iter()
+            .position(|g| g.iter().any(|(d, _)| more(d) <= PLANE_FAIR * departure));
+        let best = match fair {
+            Some(k) => cheapest(later.swap_remove(k)),
+            None => cheapest(now.into_iter().chain(later.into_iter().flatten()).collect()),
+        };
+        match best {
+            Some((d, r)) if more(&d) <= PLANE_MOST * departure => {
+                let days = d.departure_epoch().0 - left.0;
+                let note = if days > period / DAY {
+                    format!(
+                        "from its own orbit, {days:.1} days later, when the planes align, \
+                         {} ({more_at_once})",
+                        costs(&d)
+                    )
+                } else {
+                    format!("from its own orbit, {}", costs(&d))
+                };
+                Ok((d, r, Some(note)))
+            }
+            best => Err(format!(
+                "from its own orbit: {at_once}{}, against {:.1} m/s with its plane free",
+                best.map_or(String::new(), |(d, _)| {
+                    format!(
+                        ", at best {:.1} leaving {}",
+                        d.dv * 1e3,
+                        when(d.departure_epoch())
+                    )
+                }),
+                free.dv * 1e3
+            )),
+        }
     }
 
     /// After an aerocapture's pass at `s` (relative to the system's planet)
@@ -1724,6 +1987,60 @@ fn coast_back(field: &Field, t: Epoch, s: [f64; 6], span: f64) -> Result<[f64; 6
     run.advance_to(&ode, -span)
         .map_err(|_| "a coast could not be integrated".to_string())?;
     Ok(run.y)
+}
+
+/// The state at each of `times` (in order) of `s` at `t`, coasting in
+/// `field`.
+fn coast_to(
+    field: &Field,
+    t: Epoch,
+    s: [f64; 6],
+    times: &[Epoch],
+) -> Result<Vec<[f64; 6]>, String> {
+    let failed = |_| "a coast could not be integrated".to_string();
+    let Some(&first) = times.first() else {
+        return Ok(Vec::new());
+    };
+    // To the first, either way in time; then on from there.
+    let ode = field.ode(t);
+    let mut run = Dop853::new(&ode, 0.0, s, TOL);
+    run.advance_to(&ode, (first.0 - t.0) * DAY)
+        .map_err(failed)?;
+    let ode = field.ode(first);
+    let mut run = Dop853::new(&ode, 0.0, run.y, TOL);
+    times
+        .iter()
+        .map(|u| {
+            run.advance_to(&ode, (u.0 - first.0) * DAY)
+                .map_err(failed)?;
+            Ok(run.y)
+        })
+        .collect()
+}
+
+/// The ship's own low orbit of `period` s, coasting in `field` from `s`
+/// at `t`, from `from` until `until`: a reference a leg can leave.
+fn own_reference(
+    field: &Field,
+    (t, s): (Epoch, [f64; 6]),
+    from: Epoch,
+    until: Epoch,
+    period: f64,
+) -> Result<Reference, String> {
+    let start = coast_to(field, t, s, &[from])?[0];
+    let span = (until.0 - from.0) * DAY;
+    let ode = field.ode(from);
+    let mut run = Dop853::new(&ode, 0.0, start, TOL);
+    let mut steps = Vec::new();
+    run.advance_dense(&ode, span, &mut steps)
+        .map_err(|_| "a coast could not be integrated".to_string())?;
+    Ok(Reference {
+        epoch: from,
+        center: field.center(),
+        revolutions: ((span / period).round() as usize).max(1),
+        patches: Vec::new(),
+        path: Trajectory::new(steps),
+    })
 }
 
 /// The jump between the ship's own state `own` in a low orbit about

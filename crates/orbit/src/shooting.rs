@@ -223,6 +223,13 @@ impl Design {
         self.path.times[0]
     }
 
+    /// When it leaves.
+    pub fn departure_epoch(&self) -> Epoch {
+        self.path
+            .epoch
+            .plus_days(self.departure() / SECONDS_PER_DAY)
+    }
+
     pub fn duration(&self) -> f64 {
         self.path.times.last().unwrap() - self.path.times[0]
     }

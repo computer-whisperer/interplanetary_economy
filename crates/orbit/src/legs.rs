@@ -1428,12 +1428,28 @@ fn redesign(
 /// when the field is centered on Earth.
 fn carrier(field: &Field, from: &End, to: &End) -> Option<BodyId> {
     let eph = field.ephemeris();
-    let center = field.center()?;
     let met = [from, to].into_iter().find_map(|end| match end {
-        End::Body(b) if eph.parent(*b) == Some(center) => Some(*b),
+        End::Body(b) if eph.parent(*b) == field.center() => Some(*b),
         _ => None,
     });
-    met.or_else(|| (eph.lookup("earth")? == center).then_some(eph.lookup("moon")?))
+    carrier_of(field, met)
+}
+
+/// [`carrier`] for a leg that meets body `met`, if any.
+fn carrier_of(field: &Field, met: Option<BodyId>) -> Option<BodyId> {
+    let eph = field.ephemeris();
+    let center = field.center()?;
+    met.filter(|&b| eph.parent(b) == Some(center))
+        .or_else(|| (eph.lookup("earth")? == center).then_some(eph.lookup("moon")?))
+}
+
+/// The longest a leg within `field` leaving a low orbit waits for the
+/// planes to align ([`aligned`]), s: a period of the moon it is moved
+/// with ([`carrier`]; `met`, the body it meets, if one of the field's
+/// center's moons), as the Sun sees it at `t`. `None` without one.
+pub fn wait_limit(field: &Field, met: Option<BodyId>, t: Epoch) -> Option<f64> {
+    let moon = carrier_of(field, met)?;
+    Some(synodic_period(field.ephemeris(), field.center()?, moon, t))
 }
 
 /// `path` (relative to `primary`) moved `dt` s later, each node carried with
@@ -1485,5 +1501,303 @@ fn carry(eph: &Ephemeris, primary: BodyId, secondary: BodyId, path: &Path, dt: f
         epoch: path.epoch.plus_days(dt / SECONDS_PER_DAY),
         states,
         ..path.clone()
+    }
+}
+
+/// How much worse than the best alignment [`aligned`] takes, to take an
+/// earlier one, radians.
+const ALIGNED_SLACK: f64 = 2.0 * std::f64::consts::PI / 180.0;
+
+/// A state relative to the field's origin, relative to `body` at `t`.
+fn about(field: &Field, body: BodyId, t: Epoch, s: &[f64; 6]) -> (DVec3, DVec3) {
+    let b = field.body_state(body, t);
+    (
+        DVec3::new(s[0], s[1], s[2]) - b.r,
+        DVec3::new(s[3], s[4], s[5]) - b.v,
+    )
+}
+
+/// Where a design leaving a low orbit about `body` heads: from the body,
+/// the direction of its departure conic's asymptote, or of its apoapsis if
+/// the conic is bound. Turned about it, the departure moves along the low
+/// orbit's circle and the conic still heads there: a departure from an
+/// orbit whose plane contains it can be turned into that plane. (The
+/// direction to where the path leaves the body's reach, or ends, picked
+/// worse times in the Moon's pull: LEO to the NRHO waited 10.4 days to fly
+/// 554 m/s over the free design, against 0.5 days and 117.)
+fn heading(field: &Field, body: BodyId, design: &Design) -> DVec3 {
+    let t = design.departure_epoch();
+    let (r, v) = about(field, body, t, &design.path.states[0]);
+    let gm = field.ephemeris().body(body).gm;
+    let s = [r.x, r.y, r.z, v.x, v.y, v.z];
+    match excess_velocity(gm, &s, true) {
+        Some(v_inf) => v_inf.normalize(),
+        None => -((v.length_squared() - gm / r.length()) * r - r.dot(v) * v).normalize(),
+    }
+}
+
+/// How far from `body` a path is its body's: its sphere of influence about
+/// its parent (the Moon's about Earth), or the Sun.
+fn reach(eph: &Ephemeris, body: BodyId, t: Epoch) -> f64 {
+    match eph.system(body) {
+        p if p != body => {
+            let d = (eph.barycentric(body, t).r - eph.barycentric(p, t).r).length();
+            d * (eph.body(body).gm / eph.body(p).gm).powf(0.4)
+        }
+        _ => eph.sphere_of_influence(body, t),
+    }
+}
+
+/// `path` turned `angle` radians about `axis` through `body`: wholly within
+/// half the body's reach ([`reach`]), not at all beyond it nor near its
+/// moons in the field (within half theirs), blended between, so that a
+/// departure turns while where it goes stays.
+fn turn_about(field: &Field, body: BodyId, path: &Path, axis: DVec3, angle: f64) -> Path {
+    let eph = field.ephemeris();
+    let moons: Vec<BodyId> = field
+        .bodies()
+        .filter(|&b| b != body && eph.system(b) == body)
+        .collect();
+    // 1 within half of `far`, 0 beyond it, smooth between.
+    let within = |d: f64, far: f64| {
+        let u = ((far - d) / (0.5 * far)).clamp(0.0, 1.0);
+        u * u * (3.0 - 2.0 * u)
+    };
+    let states = path
+        .states
+        .iter()
+        .zip(&path.times)
+        .map(|(s, &t)| {
+            let at = path.epoch.plus_days(t / SECONDS_PER_DAY);
+            let (r, v) = about(field, body, at, s);
+            let weight = moons
+                .iter()
+                .fold(within(r.length(), reach(eph, body, at)), |w, &m| {
+                    w * (1.0 - within(about(field, m, at, s).0.length(), reach(eph, m, at)))
+                });
+            let turn = glam::DQuat::from_axis_angle(axis, angle * weight);
+            let b = field.body_state(body, at);
+            let (r, v) = (turn * r + b.r, turn * v + b.v);
+            [r.x, r.y, r.z, v.x, v.y, v.z]
+        })
+        .collect();
+    Path {
+        states,
+        ..path.clone()
+    }
+}
+
+/// The angle about `axis` that turns `from` nearest `to` (both normals of
+/// planes containing it). `None` if `to` is along the axis.
+fn angle_about(axis: DVec3, from: DVec3, to: DVec3) -> Option<f64> {
+    let across = to - to.dot(axis) * axis;
+    (across.length() > 1e-9).then(|| {
+        let across = across.normalize();
+        axis.dot(from.cross(across)).atan2(from.dot(across))
+    })
+}
+
+/// When `free`, a design of a leg within a system leaving a low orbit
+/// about `body` with its plane free ([`plan`]'s), moved later with the
+/// field's moon ([`carry`]), heads ([`heading`]) along the plane of the
+/// ship's own orbit there, so that, turned about where it heads, it leaves
+/// from that orbit: of `own` (times at or after `free`'s departure, and
+/// the ship's state then, relative to the field's origin), the first
+/// `count` where the angle between where it heads and the plane has a
+/// local minimum within [`ALIGNED_SLACK`] of the least, with those angles
+/// (radians). None without a moon to move the design with.
+pub fn aligned(
+    field: &Field,
+    body: BodyId,
+    to: &End,
+    free: &Design,
+    own: &[(Epoch, [f64; 6])],
+    count: usize,
+) -> Vec<(usize, f64)> {
+    let eph = field.ephemeris();
+    let met = match to {
+        End::Body(b) => Some(*b),
+        _ => None,
+    };
+    let Some((primary, secondary)) = field.center().zip(carrier_of(field, met)) else {
+        return Vec::new();
+    };
+    let (left, heads) = (free.departure_epoch(), heading(field, body, free));
+    let f0 = RotatingFrame::at(eph, primary, secondary, left);
+    let angles: Vec<f64> = own
+        .iter()
+        .map(|(t, s)| {
+            let f1 = RotatingFrame::at(eph, primary, secondary, *t);
+            let heads = f1.x * heads.dot(f0.x) + f1.y * heads.dot(f0.y) + f1.z * heads.dot(f0.z);
+            let (r, v) = about(field, body, *t, s);
+            r.cross(v)
+                .normalize()
+                .dot(heads)
+                .clamp(-1.0, 1.0)
+                .asin()
+                .abs()
+        })
+        .collect();
+    let least = angles.iter().copied().fold(f64::INFINITY, f64::min);
+    (0..angles.len())
+        .filter(|&k| {
+            let lower = |j: Option<usize>| {
+                j.and_then(|j| angles.get(j))
+                    .is_none_or(|&a| a >= angles[k])
+            };
+            angles[k] <= least + ALIGNED_SLACK && lower(k.checked_sub(1)) && lower(Some(k + 1))
+        })
+        .take(count)
+        .map(|k| (k, angles[k]))
+        .collect()
+}
+
+/// A seed for `leg`, which leaves from the ship's own low orbit about
+/// `body` (`leg.from`, an [`End::Orbit`]), from `free`, a design of the
+/// leg leaving with its plane free: `free` moved `dt` s later with the
+/// field's moon ([`carry`]; none moves it in a field without one), turned
+/// about where it heads ([`heading`]) into the plane nearest the ship's
+/// ([`turn_about`]; turned half a revolution, it leaves the other way), its
+/// departure moved to when the ship's orbit passes nearest it (within half
+/// a revolution of `period` s, leaving within `window` and before the next
+/// node), onto the ship's orbit there, with the departure burn's size
+/// along the ship's velocity. `None` if no time is left to leave in, or
+/// the ship's plane is across where the design heads.
+pub fn own_orbit_seed(
+    leg: &Leg,
+    body: BodyId,
+    period: f64,
+    free: &Design,
+    dt: f64,
+    window: (Epoch, Epoch),
+) -> Option<Path> {
+    let End::Orbit(own) = leg.from else {
+        panic!("a seed from the ship's own orbit leaves an orbit")
+    };
+    let field = leg.field;
+    let eph = field.ephemeris();
+    let moved = if dt == 0.0 {
+        free.clone()
+    } else {
+        let (primary, secondary) = field.center().zip(carrier(field, &leg.from, &leg.to))?;
+        Design {
+            path: carry(eph, primary, secondary, &free.path, dt),
+            ..free.clone()
+        }
+    };
+    let epoch = moved.path.epoch;
+    let when = |t: f64| epoch.plus_days(t / SECONDS_PER_DAY);
+    let after = |t: Epoch| (t.0 - epoch.0) * SECONDS_PER_DAY;
+    // The ship's state relative to the field's origin.
+    let center = own
+        .center
+        .expect("a low orbit's reference is about its planet");
+    let ship = |t: f64| -> [f64; 6] {
+        let (s, c) = (own.state(when(t)), field.body_state(center, when(t)));
+        let c = [c.r.x, c.r.y, c.r.z, c.v.x, c.v.y, c.v.z];
+        std::array::from_fn(|d| s[d] + c[d])
+    };
+    let t0 = moved.path.times[0];
+    let (span_lo, span_hi) = own.path.span();
+    let shift = (own.epoch.0 - epoch.0) * SECONDS_PER_DAY;
+    let lo = (t0 - period / 2.0)
+        .max(after(window.0))
+        .max(span_lo + shift);
+    let hi = (t0 + period / 2.0)
+        .min(after(window.1))
+        .min(moved.path.times[1] - 60.0)
+        .min(span_hi + shift);
+    if lo > hi {
+        return None;
+    }
+    // Turned into the plane nearest the ship's.
+    let heads = heading(field, body, &moved);
+    let normal = |t: f64, s: &[f64; 6]| {
+        let (r, v) = about(field, body, when(t), s);
+        r.cross(v).normalize()
+    };
+    let theirs = normal(t0, &moved.path.states[0]);
+    let angle = angle_about(heads, theirs, normal(t0, &ship(t0.clamp(lo, hi))))?;
+    let mut seed = turn_about(field, body, &moved.path, heads, angle);
+    // The nearest pass: sampled, then sampled again about the best, to a
+    // second.
+    let target = about(field, body, when(t0), &seed.states[0]).0;
+    let miss = |t: f64| (about(field, body, when(t), &ship(t)).0 - target).length();
+    let (mut a, mut b) = (lo, hi);
+    let mut best = lo;
+    while b - a > 1.0 {
+        let step = (b - a) / 32.0;
+        best = (0..=32)
+            .map(|k| a + step * k as f64)
+            .min_by(|x, y| miss(*x).total_cmp(&miss(*y)))
+            .unwrap();
+        (a, b) = ((best - step).max(lo), (best + step).min(hi));
+    }
+    let s = ship(best);
+    let v = about(field, body, when(best), &s).1.normalize();
+    let burn = free.burns[0].dv.length() * v;
+    seed.times[0] = best;
+    seed.states[0] = [
+        s[0],
+        s[1],
+        s[2],
+        s[3] + burn.x,
+        s[4] + burn.y,
+        s[5] + burn.z,
+    ];
+    Some(seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shooting::Burn;
+
+    /// A departure from low lunar orbit, turned about where it heads into
+    /// planes all round (half a revolution: the other way round), heads
+    /// the same way, in the plane asked for, from the same orbit's radius.
+    #[test]
+    fn turned_departures_head_the_same_way() {
+        let eph = Ephemeris::standard();
+        let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
+        let field = Field::new(eph, Some(earth), &[eph.sun(), earth, moon]);
+        let t = Epoch::from_ymd(2045, 3, 1);
+        let m = field.body_state(moon, t);
+        // 2.5 km/s at 1,838 km: a hyperbola about the Moon.
+        let (r, v) = (DVec3::new(1_838.0, 0.0, 0.0), DVec3::new(0.0, 2.0, 1.5));
+        let design = |s: [f64; 6]| Design {
+            path: Path::coasting(t, vec![0.0, 3_600.0], vec![s]),
+            burns: vec![Burn {
+                t: 0.0,
+                dv: 0.8 * v.normalize(),
+            }],
+            dv: 0.8,
+            iterations: 0,
+            frames: vec![None],
+        };
+        let free = design([
+            m.r.x + r.x,
+            m.r.y + r.y,
+            m.r.z + r.z,
+            m.v.x + v.x,
+            m.v.y + v.y,
+            m.v.z + v.z,
+        ]);
+        let heads = heading(&field, moon, &free);
+        let normal = |d: &Design| {
+            let (r, v) = about(&field, moon, t, &d.path.states[0]);
+            (r.cross(v).normalize(), r.length())
+        };
+        let (theirs, _) = normal(&free);
+        let across = heads.any_orthonormal_vector();
+        for turn in [0.3, 1.5, std::f64::consts::PI, 4.0] {
+            let want = glam::DQuat::from_axis_angle(heads, turn) * across;
+            let angle = angle_about(heads, theirs, want).unwrap();
+            let turned = design(turn_about(&field, moon, &free.path, heads, angle).states[0]);
+            let (got, radius) = normal(&turned);
+            assert!((got - want).length() < 1e-9, "{turn}: {got} against {want}");
+            assert!((radius - 1_838.0).abs() < 1e-6);
+            assert!((heading(&field, moon, &turned) - heads).length() < 1e-9);
+        }
     }
 }

@@ -1,8 +1,8 @@
 //! Mission plans flown (M1c.md, step 1): every plan in `data/missions/`
 //! parses; a chain of legs is continuous in time and in space, where
-//! drawn; junctions in a low orbit the planner cannot fly are reported;
-//! an aerocapture ends circular in its low orbit; a plan edited goes on
-//! from the middle as a fresh design of it would.
+//! drawn; a leg leaves a low orbit from the ship's own orbit there, or
+//! reports the jump; an aerocapture ends circular in its low orbit; a plan
+//! edited goes on from the middle as a fresh design of it would.
 
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
@@ -188,37 +188,82 @@ fn crew_rotation() {
         assert!((got / want - 1.0).abs() < 0.05, "{legs:?}");
     }
     // A low orbit left after an ascent has a free plane: no junction.
-    assert!(
-        !items
-            .iter()
-            .flat_map(|i| &i.markers)
-            .any(|m| matches!(m.kind, MarkerKind::Jump { .. }))
-    );
+    assert_eq!(jumps(&items), 0);
     // 7 m: the stay in low lunar orbit, coasted back from the departure
     // and forward again over 8 days.
     assert_continuous(eph, &items, 0.05);
 }
 
-/// Arriving in a low orbit and leaving it again, the leg after picks its
-/// own plane: the planner reports the jump.
+/// Arriving in a low orbit and leaving it again, the leg after leaves
+/// from the ship's own orbit (6.9° from the plane it picks when free): at
+/// once, paying for the plane, continuous with the stay before it.
 #[test]
-fn junction_in_low_orbit_is_reported() {
+fn leaving_low_orbit_from_its_own_orbit() {
     let world = World::standard();
     let items = fly(
         &world,
         &plan("published.toml"),
         "Low lunar orbit round trip",
     );
-    let jumps: Vec<(f64, f64)> = items
+    assert!(!items.iter().any(|i| matches!(i.kind, ItemKind::Failed(_))));
+    assert_eq!(jumps(&items), 0);
+    let back = items.iter().rfind(|i| i.kind == ItemKind::Leg).unwrap();
+    let note = back.note.as_deref().unwrap();
+    assert!(note.starts_with("from its own orbit, "), "{note}");
+    assert_continuous(world.eph, &items, 1e-3);
+}
+
+/// Jumps in a low orbit the planner reports.
+fn jumps(items: &[Item]) -> usize {
+    items
         .iter()
         .flat_map(|i| &i.markers)
-        .filter_map(|m| match m.kind {
-            MarkerKind::Jump { km, plane_deg } => Some((km, plane_deg)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(jumps.len(), 1, "{jumps:?}");
-    assert!(jumps[0].0 > 1.0, "{jumps:?}");
+        .filter(|m| matches!(m.kind, MarkerKind::Jump { .. }))
+        .count()
+}
+
+/// Leaving low lunar orbit as the ship arrives, the leg's free plane is
+/// 166° from the ship's (it goes the other way): it waits in its orbit
+/// for the planes to align. Between planets the date is not moved for the
+/// plane: leaving LEO for Mars as the ship arrives there, 93° from its
+/// plane, costs too much, and the jump is reported (found in review: the
+/// jump had gone with the empty stay before it).
+#[test]
+fn waiting_for_the_plane_or_jumping() {
+    let src = r#"
+        name = "leaving on arrival"
+        [[ship]]
+        name = "moon, then Mars"
+        start = { at = "leo", epoch = "2033-03-25" }
+        [[ship.leg]]
+        to = "llo"
+        days = [3.5]
+        [[ship.leg]]
+        to = "leo"
+        days = [3.5]
+        [[ship.leg]]
+        to = { low = "mars", altitude = 400 }
+        window = ["2033-04-01", "2033-06-01"]
+        days = [178]
+    "#;
+    let plan = Plan::parse(src, Ephemeris::standard(), Places::standard()).unwrap();
+    let world = World::standard();
+    let items = fly(&world, &plan, "moon, then Mars");
+    let legs: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::Leg).collect();
+    assert_eq!(legs.len(), 3, "every leg flew");
+    // Ready on arrival in low lunar orbit, it left 13.3 days later.
+    let waited = legs[1].start.0 - legs[0].end.0;
+    assert!(waited > 10.0, "{waited} days");
+    let note = legs[1].note.as_deref().unwrap();
+    assert!(note.contains("days later, when the planes align"), "{note}");
+    let to_leo = items.iter().position(|i| std::ptr::eq(i, legs[1])).unwrap();
+    assert_eq!(jumps(&items[..=to_leo]), 0);
+    assert_continuous(world.eph, &items[..=to_leo], 1e-3);
+    // The Mars leg leaves as the ship reaches LEO, and jumps.
+    assert_eq!(legs[2].start.0, legs[1].end.0);
+    assert_eq!(jumps(std::slice::from_ref(legs[2])), 1);
+    let note = legs[2].note.as_deref().unwrap();
+    assert!(note.starts_with("from its own orbit: "), "{note}");
 }
 
 /// LEO to Mars by aerocapture on the handbook's 2033 dates: the ship
@@ -244,43 +289,6 @@ fn aerocapture_at_mars() {
     assert!((burn - 87.0).abs() < 5.0, "{burn} m/s");
     assert_continuous(eph, &items, 1e-3);
     assert!(capture.start.0 > Epoch::from_ymd(2033, 9, 30).0);
-}
-
-/// A leg leaving at the moment the ship arrived in a low orbit (no stay
-/// between) still reports its jump. Found in review: the jump went with
-/// the empty stay.
-#[test]
-fn junction_when_leaving_on_arrival() {
-    let src = r#"
-        name = "leaving on arrival"
-        [[ship]]
-        name = "moon, then Mars"
-        start = { at = "leo", epoch = "2033-03-25" }
-        [[ship.leg]]
-        to = "llo"
-        days = [3.5]
-        [[ship.leg]]
-        to = "leo"
-        days = [3.5]
-        [[ship.leg]]
-        to = { low = "mars", altitude = 400 }
-        window = ["2033-04-11", "2033-04-11"]
-        days = [178]
-    "#;
-    let plan = Plan::parse(src, Ephemeris::standard(), Places::standard()).unwrap();
-    let world = World::standard();
-    let items = fly(&world, &plan, "moon, then Mars");
-    let legs: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::Leg).collect();
-    assert_eq!(legs.len(), 3, "every leg flew");
-    // The precondition: the Mars leg leaves when the ship reaches LEO.
-    assert_eq!(legs[2].start.0, legs[1].end.0);
-    let jumps = |i: &Item| {
-        i.markers
-            .iter()
-            .filter(|m| matches!(m.kind, MarkerKind::Jump { .. }))
-            .count()
-    };
-    assert_eq!((jumps(legs[1]), jumps(legs[2])), (1, 1));
 }
 
 /// A leg to a small body before its orbit is known (from 2040) fails with

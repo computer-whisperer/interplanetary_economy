@@ -4,8 +4,82 @@ Status, 2026-10-15: steps 1–6 done (6 done before 5, its shape models
 left out; of step 6, part 9's spins and small bodies' maps open, parts
 10, the eye's glare, and 11, the Sun's photosphere, done); now step 7,
 mission planning, grown from editing (decided 2026-10-15; step 7 plan,
-at the end): parts 1–7 done and reviewed; next, part 8 (legs leaving a
-low orbit from the ship's own orbit), then step 8, the gate.
+at the end): parts 1–7 done and reviewed, part 8 (legs leaving a low
+orbit from the ship's own orbit) done; next, step 8, the gate.
+
+- Step 7, part 8: leaving a low orbit from the ship's own orbit (from
+  M1b; how decided 2026-10-15: small plane offsets paid at once, large
+  ones waited out, else the jump reported).
+  - A leg leaving a low orbit the ship reached by a flown leg (or an
+    aerocapture) is designed as before, with its plane free, then again
+    from the ship's own orbit: `End::Orbit` on a reference coasted from
+    where the ship arrived (`own_reference`), the duration kept. The
+    seed (`legs::own_orbit_seed`) is the free design turned about where
+    it heads (`legs::heading`: its departure conic's asymptote, or its
+    apoapsis if bound) into the plane nearest the ship's
+    (`legs::turn_about`, near the departure body only, not near its
+    moons; turned half a revolution, it leaves the other way), its
+    departure moved to where the ship passes nearest it within half a
+    revolution, with the burn's size along the ship's velocity.
+  - Which flies (`Planner::own_orbit`): at once, if it costs at most a
+    tenth of the free design's departure burn more (`PLANE_FAIR`).
+    Else, within a system, the leg waits for the planes to align: over
+    a synodic period of the moon its designs move with (or the window
+    the plan sets), the times the free design, moved later with the
+    moon (`carry`), heads along the ship's plane (`legs::aligned`);
+    about each of the first two, five departures a few hours apart are
+    designed. The cheapest about the first alignment with a fair one
+    flies; else the cheapest of all, if at most a quarter of the
+    departure burn more (`PLANE_MOST`); else the free design flies and
+    the jump is reported, the leg's note saying what leaving from its
+    own orbit would cost. Between planets the date is the date
+    search's (or the pin's) and only the phase moves.
+  - A station reached by a leg that may wait is followed through the
+    wait (its reference continued a synodic month longer), which moves
+    its design with the plane free a little: low lunar orbit to the
+    NRHO in the labels tests' plan, 689.0 to 700.3 m/s.
+  - Measured (each in 0.2–5 s):
+
+    | Leg | Plane free | From its own orbit |
+    |---|---|---|
+    | LLO to LEO, published round trip (6.9° off) | 3,949.9 m/s | at once, +62.0 (the jump: 197) |
+    | LLO to LEO on arrival, 2033-04-07 (166° off) | 3,949.9 | waits 13.3 days, +11.0 |
+    | LLO to the NRHO | 697.1 | at once, +24.0 |
+    | LEO after an aerocapture, to the NRHO | 3,508.3 | waits 0.8 days, +58.3 |
+    | LEO after an aerocapture, to LLO | 3,951.0 | waits 4.8 days, +245.0 |
+    | Low Mars orbit after an aerocapture, to Phobos (56° off) | 1,205.0 | at best +1,438: jumps |
+    | LEO to Mars on arrival (90° off) | 6,149.5 | +2,865 at once: jumps |
+
+    LEO to LLO's second alignment, 10 days later, flies 3.9 m/s under
+    the free design; the first fair one is taken. Phobos orbits in
+    Mars's equator, so from a low orbit 56° off it takes a plane
+    change: real, and left reported.
+  - Tried and dropped: requiring the planes to match, rather than
+    where the departure heads to lie in the ship's plane, found no
+    alignment from LEO to LLO (43°) or to Phobos, and only 11° for the
+    166° case (+101 m/s); heading to where the path leaves the body's
+    reach picked worse times than the departure conic's (LEO to the
+    NRHO: 10.4 days, +554); planning afresh at an aligned time found
+    nothing in short windows, and left when it liked. Designs from the
+    ship's orbit are sensitive to the departure time (LEO to LLO about
+    one alignment: +245 to +921 m/s across half a day), hence five
+    tries about each.
+  - Not done: waiting between planets (a plane cost per date could
+    join the date search); seeds keeping a station's phase when moved
+    (moved with the moon, a design meets the NRHO elsewhere on it): low
+    lunar orbit to the NRHO from 2045-03-06 costs +449 m/s at once and
+    no design converges about an alignment, so it jumps.
+  - Tests: the published round trip leaves at once, continuous to 1 m;
+    the 166° case waits and the Mars leg after it jumps; a departure
+    turned about its heading heads the same way, in the plane asked
+    for (unit).
+  - Waits drew as a dense shell over the planet (each revolution of a
+    stay drawn): a stay is now drawn and picked a revolution about the
+    clock (`render::Path::window`, from `Track::revolution`), its first
+    or last when the clock is outside it.
+- Planning (decided 2026-10-15): each duration a leg within a system
+  offers is designed alone, so an option is what pinning it flies (see
+  part 5).
 
 - Step 7, a review of parts 2–5 (a sub-agent, with runtime probes)
   found, all fixed:
@@ -562,10 +636,14 @@ low orbit from the ship's own orbit), then step 8, the gate.
     off (3.2 km/s), and a departure for Mars on arrival in LEO is 85°
     off. Decided 2026-10-14: it stays reported through M1c and is fixed
     before M1b (DESIGN.md, Milestones); 2026-10-15: fixed in M1c, as
-    step 7's last part.
+    step 7's last part. Done (step 7, part 8): the first two leave from
+    the ship's own orbit, at once and after 13.3 days; the third still
+    jumps.
   - Long stays in a low orbit are sampled ~2,900 times a day, so a wait
     through a synodic period in LEO would be ~2 million samples. Step 4's
-    lines will need a lighter form for long coasts.
+    lines will need a lighter form for long coasts. (Step 7, part 8: a
+    stay is drawn and picked a revolution about the clock, its first or
+    last outside it (`render::Path::window`); still sampled whole.)
   - Stays in a station orbit cost the upkeep simulated on the visit's
     reference, from 4 runs: 0.5–1.9 m/s per year for the NRHO across
     visits (step 5d's 1.09 came from 20), and none on references under 4
@@ -1096,7 +1174,7 @@ lines); Hushfold's distance-field text and polychora's label declutter
      reports the jump at each such junction (km, and the plane change
      it would take); fixing it is playbook work (departures from a set
      plane). Leaving after a launch or an ascent, the plane is free in
-     fact: launch timing picks it.
+     fact: launch timing picks it. (Fixed in step 7, part 8.)
 5. **Paths for drawing** (`orbit::track`): a design records each arc's
    integration frame, and `Leg::track` integrates its arcs again with
    dense output. Samples go every 2° of the motion about the body
