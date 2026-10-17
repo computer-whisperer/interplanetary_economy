@@ -226,8 +226,9 @@ pub fn totals(items: &[Item]) -> Option<String> {
     ))
 }
 
-/// The items' samples: item, kind, center, Julian date (TDB), state km and
-/// km/s relative to the center, and the Moon's (for the Earth–Moon frame).
+/// The items' samples (a stay's made over it, `Track::samples`): item,
+/// kind, center, Julian date (TDB), state km and km/s relative to the
+/// center, and the Moon's (for the Earth–Moon frame).
 pub fn csv(eph: &Ephemeris, items: &[Item]) -> String {
     let moon = eph.lookup("moon").expect("the Moon is in the ephemeris");
     let mut out = String::from("item,kind,center,jd,x,y,z,vx,vy,vz,mx,my,mz,mvx,mvy,mvz\n");
@@ -238,7 +239,10 @@ pub fn csv(eph: &Ephemeris, items: &[Item]) -> String {
             .map_or("ssb".to_string(), |c| eph.body(c).id.clone());
         let kind = format!("{:?}", item.kind).to_lowercase();
         let kind = kind.split('(').next().unwrap_or_default();
-        for (t, st) in track.times.iter().zip(&track.states) {
+        let Some((first, last)) = track.span() else {
+            continue;
+        };
+        for (t, st) in track.samples(first, last) {
             let at = track.epoch.plus_days(t / SECONDS_PER_DAY);
             let m = eph.barycentric(moon, at);
             let c = track.center.map(|c| eph.barycentric(c, at));

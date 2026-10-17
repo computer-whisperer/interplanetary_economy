@@ -6,6 +6,8 @@
 
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
+use orbit::gravity::Field;
+use orbit::integrate::{Dop853, Tolerance, Trajectory};
 use orbit::mission::{
     Checkpoint, Item, ItemKind, MarkerKind, Pin, Plan, Planner, Step, World, check, legs_value,
     parse_legs, reads, resume_point,
@@ -42,9 +44,8 @@ fn fly(world: &World, plan: &Plan, ship: &str) -> Vec<Item> {
 /// barycenter.
 fn end_of(eph: &Ephemeris, item: &Item, last: bool) -> Option<DVec3> {
     let track = item.track.as_ref()?;
-    let k = if last { track.times.len() - 1 } else { 0 };
-    let at = track.epoch.plus_days(track.times[k] / SECONDS_PER_DAY);
-    let s = track.states[k];
+    let (t, s) = if last { track.last() } else { track.first() }?;
+    let at = track.epoch.plus_days(t / SECONDS_PER_DAY);
     let center = track
         .center
         .map_or(DVec3::ZERO, |c| eph.barycentric(c, at).r);
@@ -63,14 +64,7 @@ fn assert_continuous(eph: &Ephemeris, items: &[Item], km: f64) {
         );
         if let (Some(a), Some(b)) = (end_of(eph, &w[0], true), end_of(eph, &w[1], false)) {
             // A stay on a surface or at a body is drawn at its center.
-            let still = |i: &Item| {
-                i.track
-                    .as_ref()
-                    .unwrap()
-                    .states
-                    .iter()
-                    .all(|s| s == &[0.0; 6])
-            };
+            let still = |i: &Item| i.track.as_ref().unwrap().rests();
             if still(&w[0]) || still(&w[1]) {
                 continue;
             }
@@ -339,7 +333,7 @@ fn aerocapture_at_mars() {
     let track = capture.track.as_ref().unwrap();
     let mars = eph.lookup("mars").unwrap();
     assert_eq!(track.center, Some(mars));
-    let s = track.states.last().unwrap();
+    let (_, s) = track.last().unwrap();
     let r = DVec3::new(s[0], s[1], s[2]).length();
     let want = eph.body(mars).radius + 400.0;
     assert!(
@@ -746,4 +740,67 @@ window = ["2039-12-15", "2040-03-01"]
     assert_eq!(checkpoints.len(), 2, "the start, and after the failed leg");
     assert_eq!(reads(&plan.ships[0], Some(0)), 2, "the wait and the leg");
     assert!(resume_point(&plan.ships[0], &checkpoints, 2).is_none());
+}
+
+/// The low lunar orbit round trip's stays in LEO and in low lunar orbit
+/// keep four states a day (M1b.md, step 2 plan, part 6), those of one
+/// integration from their first state to the bit, and are where it puts
+/// them between, within a meter: 0.4 mm in LEO, 89 mm in low lunar orbit
+/// (2026-10-16), where integrating again in Earth's frame is that noisy.
+#[test]
+fn a_stay_is_where_one_integration_puts_it() {
+    let world = World::standard();
+    let eph = world.eph;
+    let items = fly(
+        &world,
+        &plan("published.toml"),
+        "Low lunar orbit round trip",
+    );
+    let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
+    let field = Field::new(eph, Some(earth), &[eph.sun(), earth, moon]).with_oblateness();
+    let tol = Tolerance {
+        rtol: 1e-12,
+        atol: 1e-9,
+    };
+    let stays: Vec<&Item> = items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Stay && i.track.as_ref().unwrap().revolution.is_some())
+        .collect();
+    assert_eq!(stays.len(), 2, "in LEO and in low lunar orbit");
+    for stay in stays {
+        let track = stay.track.as_ref().unwrap();
+        let (first, last) = track.span().unwrap();
+        let days = (last - first) / SECONDS_PER_DAY;
+        assert!(
+            track.held().len() as f64 <= 4.0 * days + 3.0,
+            "{} kept",
+            track.held().len()
+        );
+        let (t0, s0) = track.first().unwrap();
+        let ode = field.ode(track.epoch.plus_days(t0 / SECONDS_PER_DAY));
+        let mut run = Dop853::new(&ode, 0.0, s0, tol);
+        let mut steps = Vec::new();
+        run.advance_dense(&ode, last - t0, &mut steps).unwrap();
+        let one = Trajectory::new(steps);
+        for (t, s) in track.held() {
+            assert_eq!(
+                s.map(f64::to_bits),
+                one.at(t - t0).map(f64::to_bits),
+                "kept at {t} s"
+            );
+        }
+        let worst = (0..=500)
+            .map(|k| {
+                let t = first + (last - first) * f64::from(k) / 500.0;
+                let (a, b) = (track.at(t).unwrap(), one.at(t - t0));
+                (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
+            })
+            .fold(0.0, f64::max);
+        println!(
+            "{}: {:.3} mm at worst over {days:.2} days",
+            stay.label,
+            worst * 1e6
+        );
+        assert!(worst < 1e-3, "{}: {worst} km", stay.label);
+    }
 }

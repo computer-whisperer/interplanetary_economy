@@ -81,13 +81,20 @@ fn a_ship_parked_in_leo_keeps_what_it_flew() {
     assert_eq!(again[0].start, stay.start);
     assert_eq!(new.epoch, old.epoch);
     let before = |t: f64| old.epoch.plus_days(t / SECONDS_PER_DAY).0 < now.0;
-    let flown = old.times.iter().take_while(|&&t| before(t)).count();
-    assert!(flown > 100, "{flown} samples before now");
+    let (kept, held) = (old.held(), new.held());
+    let flown = kept.iter().take_while(|(t, _)| before(*t)).count();
+    assert!(flown > 3, "{flown} states kept before now");
+    let bits = |(t, s): &(f64, [f64; 6])| (t.to_bits(), s.map(f64::to_bits));
     for k in 0..flown {
-        assert_eq!(new.times[k].to_bits(), old.times[k].to_bits(), "sample {k}");
-        for (a, b) in new.states[k].iter().zip(&old.states[k]) {
-            assert_eq!(a.to_bits(), b.to_bits(), "sample {k}");
-        }
+        assert_eq!(bits(&held[k]), bits(&kept[k]), "state {k}");
+    }
+    // And where it was between them.
+    let (first, _) = old.span().unwrap();
+    let to_now = (now.0 - old.epoch.0) * SECONDS_PER_DAY - first;
+    for k in 0..50 {
+        let t = first + to_now * k as f64 / 50.0;
+        let (a, b) = (new.at(t).unwrap(), old.at(t).unwrap());
+        assert_eq!(a.map(f64::to_bits), b.map(f64::to_bits), "at {t} s");
     }
     let leg = again.iter().find(|i| i.kind == ItemKind::Leg).unwrap();
     assert!(leg.start.0 >= now.0, "it left {}", leg.start.stamp());

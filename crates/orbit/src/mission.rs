@@ -3,7 +3,8 @@
 //! designs a ship's legs one at a time, each leaving from where and when
 //! the last arrived, and yields what the ship does as [`Item`]s: legs
 //! flown, stays between them, and events priced by rules (landing, ascent,
-//! aerocapture), with paths sampled for drawing.
+//! aerocapture), with their paths for drawing (`track`: sampled, or a
+//! stay's made when asked).
 
 use crate::ephem::{BodyId, Ephemeris};
 use crate::families::Catalog;
@@ -527,7 +528,7 @@ pub struct World {
     pub eph: &'static Ephemeris,
     cat: &'static Catalog,
     /// (planet, field, lighter field for seeds), centered on the planet.
-    systems: Vec<(BodyId, Field<'static>, Field<'static>)>,
+    systems: Vec<(BodyId, Arc<Field<'static>>, Field<'static>)>,
     global: Field<'static>,
     locals: Vec<Field<'static>>,
 }
@@ -548,12 +549,12 @@ impl World {
             systems: vec![
                 (
                     earth,
-                    Field::new(eph, Some(earth), &cislunar).with_oblateness(),
+                    Arc::new(Field::new(eph, Some(earth), &cislunar).with_oblateness()),
                     Field::new(eph, Some(earth), &cislunar),
                 ),
                 (
                     mars,
-                    Field::new(eph, Some(mars), &mars_bodies).with_oblateness(),
+                    Arc::new(Field::new(eph, Some(mars), &mars_bodies).with_oblateness()),
                     Field::new(eph, Some(mars), &mars_bodies).with_oblateness(),
                 ),
             ],
@@ -566,7 +567,7 @@ impl World {
     }
 
     /// The fields about planet `system`.
-    fn system(&self, system: BodyId) -> Result<(&Field<'static>, &Field<'static>), String> {
+    fn system(&self, system: BodyId) -> Result<(&Arc<Field<'static>>, &Field<'static>), String> {
         self.systems
             .iter()
             .find(|s| s.0 == system)
@@ -889,9 +890,9 @@ impl Checkpoint {
         if let Here::Low { orbit, coast: None } = &c.here {
             match stay
                 .and_then(|i| i.track.as_ref())
-                .and_then(|t| Some((t, *t.times.first()?, *t.states.first()?)))
+                .and_then(|t| Some((t, t.first()?)))
             {
-                Some((track, t, s)) => {
+                Some((track, (t, s))) => {
                     c.here = Here::Low {
                         orbit: *orbit,
                         coast: Some((track.epoch.plus_days(t / DAY), s)),
@@ -965,7 +966,7 @@ struct Flight {
 /// A station orbit for one visit: the reference the ship follows from the
 /// leg that arrives until the leg that leaves.
 struct Visit {
-    reference: Reference,
+    reference: Arc<Reference>,
     label: String,
 }
 
@@ -1601,7 +1602,7 @@ impl<'w> Planner<'w> {
             })
             .map(|reference| {
                 Arc::new(Visit {
-                    reference,
+                    reference: Arc::new(reference),
                     label: spot.label.clone(),
                 })
             })
@@ -1664,7 +1665,7 @@ impl<'w> Planner<'w> {
         if let Some(j) = jumped {
             markers.insert(0, j);
         }
-        let arrival = *track.states.last().unwrap();
+        let (_, arrival) = track.last().expect("a leg's track has samples");
         let end_burn = design.burns.last().unwrap().dv;
         let mut capture = None;
         if let End::Atmosphere { body, after, .. } = leg.to {
@@ -2052,12 +2053,6 @@ impl<'w> Planner<'w> {
             seconds: 0.0,
             note: None,
         };
-        let still = |b: BodyId| {
-            let mut t = Track::new(Some(b), self.since);
-            t.times = vec![0.0, span];
-            t.states = vec![[0.0; 6]; 2];
-            t
-        };
         match &self.here {
             Here::Low { orbit, coast: c } => {
                 let revolution = 2.0
@@ -2090,12 +2085,7 @@ impl<'w> Planner<'w> {
             Here::Station(visit) => {
                 let r = &visit.reference;
                 let (field, _) = self.world.system(eph.lookup("earth").unwrap())?;
-                let mut track = Track::new(r.center, self.since);
-                if span > 0.0 {
-                    track.extend(field, 0.0, span, |t| r.state(self.since.plus_days(t / DAY)));
-                }
-                track.revolution = Some(r.period_s());
-                item.track = Some(track);
+                item.track = Some(Track::following(field.clone(), r.clone(), self.since, span));
                 let revolutions = (r.path.span().1 - r.path.span().0) / r.period_s();
                 if span > 0.0 {
                     if revolutions >= UPKEEP_REVOLUTIONS
@@ -2112,7 +2102,9 @@ impl<'w> Planner<'w> {
                 }
                 item.label = format!("at {}", visit.label);
             }
-            Here::Body(b) | Here::Surface(b) => item.track = Some(still(*b)),
+            Here::Body(b) | Here::Surface(b) => {
+                item.track = Some(Track::still(*b, self.since, span))
+            }
         }
         let items = if span > 0.0 { vec![item] } else { Vec::new() };
         Ok((items, jumped))
@@ -2126,23 +2118,41 @@ fn set_window(items: &mut [Item], window: (Epoch, Epoch)) {
     }
 }
 
-/// `s` at `t` coasted `span` s in `field`: sampled, and the state at the
-/// end.
-fn coast(field: &Field, t: Epoch, s: [f64; 6], span: f64) -> Result<(Track, [f64; 6]), String> {
-    let mut track = Track::new(field.center(), t);
+/// `s` at `t` coasted `span` s in `field`: its track, keeping the states
+/// its integration passes at [`Track::kept_times`] (its interpolants not
+/// kept), and the state at the end.
+fn coast(
+    field: &Arc<Field<'static>>,
+    t: Epoch,
+    s: [f64; 6],
+    span: f64,
+) -> Result<(Track, [f64; 6]), String> {
     if span <= 0.0 {
-        track.times.push(0.0);
-        track.states.push(s);
-        return Ok((track, s));
+        return Ok((Track::coast(field.clone(), TOL, t, vec![(0.0, s)]), s));
     }
+    let times = Track::kept_times(t, span);
+    let mut kept = vec![(0.0, s)];
     let ode = field.ode(t);
     let mut run = Dop853::new(&ode, 0.0, s, TOL);
-    let mut steps = Vec::new();
-    run.advance_dense(&ode, span, &mut steps)
-        .map_err(|_| "a coast could not be integrated".to_string())?;
-    let path = Trajectory::new(steps);
-    track.extend(field, 0.0, span, |t| path.at(t));
-    Ok((track, path.at(span)))
+    let mut last = None;
+    while run.t != span {
+        let step = run
+            .step(&ode, span)
+            .map_err(|_| "a coast could not be integrated".to_string())?;
+        // Each time by the step it falls in, as `Trajectory::at` reads; the
+        // end below (a last step can end a rounding past it).
+        while let Some(&k) = times.get(kept.len())
+            && k < step.t0 + step.h
+            && k < span
+        {
+            kept.push((k, step.at(k)));
+        }
+        last = Some(step);
+    }
+    let last = last.expect("a coast of some length takes a step");
+    let end = last.at(span);
+    kept.push((span, end));
+    Ok((Track::coast(field.clone(), TOL, t, kept), end))
 }
 
 /// The first apoapsis about `body` of `s` at `t`, within `span` s: its
@@ -2269,5 +2279,28 @@ fn jump(field: &Field, body: BodyId, t: Epoch, own: &[f64; 6], leaving: &[f64; 6
         },
         dv: 2.0 * v0.length() * (angle / 2.0).sin(),
         pass: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A short coast whose last step ends a rounding past its span keeps
+    /// its end once (found in review: twice, and `Track::coast` panicked):
+    /// LEO coasts of 12 s to 2 minutes, every 0.1 s.
+    #[test]
+    fn a_short_coast_keeps_its_end_once() {
+        let world = World::standard();
+        let earth = world.eph.lookup("earth").unwrap();
+        let (field, _) = world.system(earth).unwrap();
+        let v = (world.eph.body(earth).gm / 6_778.0).sqrt();
+        let s = [6_778.0, 0.0, 0.0, 0.0, 0.6 * v, 0.8 * v];
+        let t = Epoch(16_495.892_205_982_48);
+        for k in 0..1_080 {
+            let span = 12.0 + 0.1 * f64::from(k) + 1e-9 * f64::from(k % 7);
+            let (track, end) = coast(field, t, s, span).unwrap();
+            assert_eq!(track.last(), Some((span, end)), "{span} s");
+        }
     }
 }

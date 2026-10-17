@@ -57,8 +57,10 @@ fn bits(item: &Item) -> Vec<u64> {
     if let Some(track) = &item.track {
         w.push(track.epoch.0.to_bits());
         w.push(track.revolution.map_or(u64::MAX, f64::to_bits));
-        w.extend(track.times.iter().map(|t| t.to_bits()));
-        w.extend(track.states.iter().flatten().map(|x| x.to_bits()));
+        for (t, s) in track.held() {
+            w.push(t.to_bits());
+            w.extend(s.map(f64::to_bits));
+        }
     }
     w
 }

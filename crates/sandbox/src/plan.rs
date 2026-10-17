@@ -493,13 +493,21 @@ pub fn position(eph: &Ephemeris, items: &[Item], t: Epoch, later: bool) -> Optio
 /// and its track's are computed from different epochs.
 const SAME_TIME_S: f64 = 1e-3;
 
+/// Whether `track` spans `t`, within [`SAME_TIME_S`] of its ends.
+pub fn spans(track: &Track, t: Epoch) -> bool {
+    let s = (t.0 - track.epoch.0) * SECONDS_PER_DAY;
+    track
+        .span()
+        .is_some_and(|(first, last)| first - SAME_TIME_S <= s && s <= last + SAME_TIME_S)
+}
+
 /// Where `track` is at `t` (barycentric km), if it spans it.
 pub fn on_track(eph: &Ephemeris, track: &Track, t: Epoch) -> Option<DVec3> {
-    let (first, last) = track.span()?;
-    let s = (t.0 - track.epoch.0) * SECONDS_PER_DAY;
-    if s < first - SAME_TIME_S || s > last + SAME_TIME_S {
+    if !spans(track, t) {
         return None;
     }
+    let (first, last) = track.span()?;
+    let s = (t.0 - track.epoch.0) * SECONDS_PER_DAY;
     let s = track.at(s.clamp(first, last))?;
     let center = track
         .center

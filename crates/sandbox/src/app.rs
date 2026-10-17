@@ -16,7 +16,7 @@ use crate::orbits::Orbits;
 use crate::panel;
 use crate::paths::{self, Event, PAST_DIM};
 use crate::pick::{self, Pick};
-use crate::plan::{Loaded, on_track, position};
+use crate::plan::{Loaded, on_track, position, spans};
 use crate::settings::{self, Settings};
 use crate::sky;
 use crate::timeline::{self, Timeline};
@@ -120,6 +120,42 @@ struct ShipSet {
     built: paths::Built,
 }
 
+/// The stay a ship is in at the clock, its samples made about it
+/// (`paths::window`) as a track of samples: where its marker is drawn
+/// while the ships' lines are hidden, without integrating its coast each
+/// frame (found in review).
+#[derive(Clone)]
+struct Near {
+    revision: u64,
+    item: usize,
+    track: orbit::track::Track,
+    window: paths::Window,
+}
+
+impl Near {
+    /// `kept`, if it holds for `ship` with the clock at `t`; else the stay
+    /// it is in then, if it makes its samples when asked.
+    fn at(kept: Option<Near>, ship: &crate::plan::Ship, t: Epoch) -> Option<Near> {
+        let k = ship
+            .items
+            .iter()
+            .rposition(|i| i.track.as_ref().is_some_and(|track| spans(track, t)))?;
+        if let Some(n) =
+            kept.filter(|n| (n.revision, n.item) == (ship.revision, k) && n.window.holds(t))
+        {
+            return Some(n);
+        }
+        let track = ship.items[k].track.as_ref().filter(|t| t.makes_samples())?;
+        let window = paths::window(track, t)?;
+        Some(Near {
+            revision: ship.revision,
+            item: k,
+            track: track.part(window.from, window.to),
+            window,
+        })
+    }
+}
+
 /// Where `ship` ran dry, as its lines are built for it.
 fn dry_at(ship: &crate::plan::Ship) -> Option<(usize, Option<usize>, f64)> {
     ship.dry().map(|d| (d.item, d.marker, d.t.0))
@@ -150,6 +186,8 @@ pub struct Shell {
     /// `SHIP_SETS`).
     loop_set: Arc<render::Paths>,
     ship_sets: Vec<ShipSet>,
+    /// By ship, where its lines are hidden, the stay it is in at the clock.
+    near: Vec<Option<Near>>,
     /// The ships' events, in order.
     events: Vec<Event>,
     /// Sorted marker times, for jumps, and the ships' revisions they were
@@ -213,6 +251,7 @@ impl Shell {
             built: None,
             loop_set: Arc::default(),
             ship_sets: Vec::new(),
+            near: Vec::new(),
             events: Vec::new(),
             event_times: Vec::new(),
             event_revisions: Vec::new(),
@@ -785,23 +824,27 @@ impl Shell {
             changed = true;
         }
         // A ship's set is kept where the ship at its place has the same
-        // revision (unique), first leg and running dry: a ship moved by a
-        // removal is built again, its colors and events' place changed.
-        let (eph, frame, focus) = (self.eph, self.frame, self.camera.focus);
+        // revision (unique), first leg and running dry, and the clock is
+        // where its stays' samples were made for (else those are made
+        // again): a ship moved by a removal is built again, its colors and
+        // events' place changed.
+        let (eph, frame, focus, t) = (self.eph, self.frame, self.camera.focus, self.clock.t);
         for (s, ship) in ships.iter().enumerate() {
-            let kept = self.ship_sets.get(s).is_some_and(|set| {
+            let same = self.ship_sets.get(s).filter(|set| {
                 (set.revision, set.first_leg, set.dry)
                     == (ship.revision, ship.first_leg, dry_at(ship))
             });
-            if kept {
-                continue;
-            }
+            let built = match same {
+                Some(set) if set.built.holds(t) => continue,
+                Some(set) => paths::rebuilt(&set.built, eph, &frame, focus, ship, t),
+                None => paths::build(eph, &frame, focus, s, ship, t),
+            };
             changed = true;
             let set = ShipSet {
                 revision: ship.revision,
                 first_leg: ship.first_leg,
                 dry: dry_at(ship),
-                built: paths::build(eph, &frame, focus, s, ship),
+                built,
             };
             match self.ship_sets.get_mut(s) {
                 Some(old) => *old = set,
@@ -815,9 +858,18 @@ impl Shell {
                 .flat_map(|set| set.built.events.iter().copied())
                 .collect();
         }
+        // The stay each ship is in, made about the clock for its marker
+        // while the ships' lines are hidden (shown, it rides them).
+        let ships = self.plan.as_ref().map_or(&[][..], |p| &p.ships[..]);
+        self.near.resize(ships.len(), None);
+        for (near, ship) in self.near.iter_mut().zip(ships) {
+            *near = match lines.ships {
+                true => None,
+                false => Near::at(near.take(), ship, t),
+            };
+        }
         // The markers' times, for jumps, whether the ships' lines are
         // shown or not.
-        let ships = self.plan.as_ref().map_or(&[][..], |p| &p.ships[..]);
         let revisions = ships.iter().map(|s| s.revision);
         if !revisions.clone().eq(self.event_revisions.iter().copied()) {
             self.event_revisions = revisions.collect();
@@ -920,14 +972,18 @@ impl Shell {
     /// with a track spans `t`.
     pub fn ship_position(&self, s: usize, t: Epoch, view: &render::Pose) -> Option<DVec3> {
         let ship = &self.plan.as_ref()?.ships[s];
-        let k = ship.items.iter().rposition(|i| {
-            i.track
-                .as_ref()
-                .is_some_and(|track| on_track(self.eph, track, t).is_some())
-        })?;
+        let k = ship
+            .items
+            .iter()
+            .rposition(|i| i.track.as_ref().is_some_and(|track| spans(track, t)))?;
+        let near = self.near.get(s).and_then(Option::as_ref);
         self.item_line(s, k)
             .and_then(|line| line.at(t.seconds()))
             .map(|p| view.to_world(p))
+            .or_else(|| {
+                let near = near.filter(|n| n.item == k)?;
+                on_track(self.eph, &near.track, t)
+            })
             .or_else(|| position(self.eph, &ship.items[k..=k], t, true))
     }
 

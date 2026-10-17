@@ -269,6 +269,65 @@ below), and the four decisions below, each as recommended.
     until the loop has run past their time over every ship, though a
     ship's tanks depend only on its own design (ships share nothing
     until step 3); `sim run` waits for every design.
+- Part 6: lighter stays (the design below was written before building
+  it, and held).
+  - Before (release, load ~8): the published plan through `sim run`,
+    93 MB at its peak and 26.3 s; a ship parked a year in LEO and one a
+    year in the NRHO (`sandbox/tests/playback.rs`, `parked_a_year`),
+    212 MB through `sim run`, and in the sandbox 163 MB designed, 1.3 GB
+    once drawn about Earth, the first frame 332 ms, frames at an hour a
+    second 1.3 ms median and 57 ms the longest.
+  - A track holds one of three motions: samples (legs, captures, a ship
+    resting); a coast (a stay in a low orbit): its field, and states
+    kept every 6 h (at 00, 06, 12 and 18) from the planner's one
+    integration, its first and last among them; or a reference (a
+    station stay): its visit's, shared. Its samples are made when asked
+    (`Track::samples`, every 2° over a span), and `Track::at` makes the
+    state at a time: a coast's integrated from the kept state before it
+    over that state's 6 h, read at the time, so that both agree.
+  - The planner steps through a stay's integration without keeping its
+    interpolants; the state a leg leaves from is as before, to the bit.
+  - The sandbox builds a stay drawn a revolution about the clock from
+    samples made about it, two revolutions each way (clamped to the
+    stay; `paths::window`), and builds it again when the clock leaves
+    their middle; the ship's other lines are kept (`paths::rebuilt`).
+    The ship's marker rides the stay's line, as now; with the ships'
+    lines hidden, a track of samples made about the clock for the stay
+    it is in.
+  - `sim run --tracks` makes each stay's samples for its CSV.
+  - Checked: a stay's kept states are its one integration's to the bit,
+    and its states between are within 0.4 mm of it in LEO and 89 mm in
+    low lunar orbit, where integrating again in Earth's frame is that
+    noisy (the plan asked for a meter); the career rule's past is kept
+    to the bit; designs are unchanged (`sim run` prints the same items
+    for the published plan, the crew rotation and the step 1 scenario).
+    Hashes differ where a stay spans the time hashed: a station stay is
+    read from its reference, and a coast from its kept state or
+    integrated from it, rather than between samples. A day's hash reads
+    a kept state: 365 midnights over the two parked ships take 0.5 ms.
+  - After (load ~15–40): the published plan, 90 MB at its peak (it has
+    few long stays; the review's runs, 86 MB before and 76 after); the
+    parked ships, 47 MB through `sim run` (42), and in the sandbox 49 MB
+    designed. Drawn, the sandbox holds 1.0 GB, as it does with the ships'
+    lines hidden: the rest is the renderer's (the stays' lines took
+    ~290 MB before). Frames as before: 1.1–1.6 ms median at an hour, a
+    day and a week a second, 3.9 ms the longest at a day a second (where
+    the stay is built again ten times a second); the longest frames,
+    55–63 ms at an hour a second and 30 ms at a week, are there with the
+    ships' lines hidden too, so not the stays'.
+  - Review (a sub-agent, with probes of `at` and `samples` at every
+    edge, the departure state against the old code's to the bit, and
+    the sandbox's revolution drawn about the clock at every rate): a
+    coast of a minute or two could keep its end twice, its last step
+    ending a rounding past it, and panic; a window ending at a kept
+    state had it twice; the sandbox built a ship's every line again
+    when a stay's samples were made again (the ledger said they were
+    kept); with the ships' lines hidden, a coasting ship's marker
+    integrated its coast twice a frame (0.59 ms a frame, now 0.016); a
+    window clamped to a stay's end could round short of it and be built
+    again every frame after. Each fixed: the first three with a test,
+    the fourth timed (its test checks the marker's place), the last by
+    deciding from the clamp rather than from the end it rounds to.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

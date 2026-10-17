@@ -1,7 +1,9 @@
 //! A plan's paths and events as drawn (M1c.md, step 4 plan, items 4 and
 //! 5): each item's track mapped into the view's frame at its samples' own
 //! times, colored by leg; the station orbits' reference loops; and markers
-//! for burns, passes and events where they happen.
+//! for burns, passes and events where they happen. A stay, drawn a
+//! revolution about the clock, is built from samples made about it, and
+//! built again when the clock moves on (M1b.md, step 2 plan, part 6).
 //!
 //! Times on the paths' axis are seconds since J2000 (`Epoch` × 86,400).
 
@@ -11,6 +13,7 @@ use glam::DVec3;
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::mission::{Item, ItemKind, MarkerKind};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
+use orbit::track::Track;
 use rayon::prelude::*;
 use render::{Path, Paths, Sample, Shape};
 use std::sync::Arc;
@@ -55,6 +58,12 @@ const JUMP_COLOR: [f32; 3] = [1.0, 0.12, 0.08];
 /// A leg that could not be designed, where it is drawn (the timeline);
 /// the burn a ship ran dry at.
 pub const FAILURE_COLOR: [f32; 3] = JUMP_COLOR;
+
+/// A stay drawn a revolution about the clock is built from samples this
+/// many revolutions each way of it, and again once the clock has moved a
+/// revolution and a half (at a day a second, in LEO, ten times a second;
+/// the ship's other lines kept, [`rebuilt`]).
+const STAY_REVOLUTIONS: f64 = 2.0;
 
 /// Linear values of an sRGB color.
 fn linear(rgb: u32) -> [f32; 3] {
@@ -139,25 +148,97 @@ fn split(path: Path, t: f64, rest: [f32; 3]) -> Vec<Path> {
         .collect()
 }
 
-/// An item's path in `frame` (with the camera on `focus`): none for an
-/// item without a track, or resting on or at a body.
+/// What of a track is drawn with the clock at `t`: from `from` to `to` (s
+/// after its epoch), as built while the clock is within `valid` (s since
+/// J2000).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Window {
+    pub from: f64,
+    pub to: f64,
+    pub valid: (f64, f64),
+}
+
+impl Window {
+    pub fn holds(&self, t: Epoch) -> bool {
+        (self.valid.0..=self.valid.1).contains(&t.seconds())
+    }
+}
+
+/// What of `track` is drawn with the clock at `t`: of a stay drawn a
+/// revolution about the clock, samples made [`STAY_REVOLUTIONS`] each way
+/// of it, clamped to the stay, for as long as the revolution drawn about
+/// the clock (the renderer's, `render::Path::drawn`) is among them; of
+/// anything else, all of it, for all time.
+pub fn window(track: &Track, t: Epoch) -> Option<Window> {
+    let (first, last) = track.span()?;
+    let all = Window {
+        from: first,
+        to: last,
+        valid: (f64::NEG_INFINITY, f64::INFINITY),
+    };
+    let Some(revolution) = track.revolution else {
+        return Some(all);
+    };
+    let (reach, half) = (STAY_REVOLUTIONS * revolution, 0.5 * revolution);
+    if last - first <= 2.0 * reach {
+        return Some(all);
+    }
+    let now = (t.0 - track.epoch.0) * SECONDS_PER_DAY;
+    let at = |s: f64| track.epoch.seconds() + s;
+    // Before the stay or after it, its first or last revolution is drawn.
+    Some(if now <= first + reach {
+        let to = first + 2.0 * reach;
+        Window {
+            from: first,
+            to,
+            valid: (f64::NEG_INFINITY, at(to - half)),
+        }
+    } else if now >= last - reach {
+        let from = last - 2.0 * reach;
+        Window {
+            from,
+            to: last,
+            valid: (at(from + half), f64::INFINITY),
+        }
+    } else {
+        Window {
+            from: now - reach,
+            to: now + reach,
+            valid: (at(now - reach + half), at(now + reach - half)),
+        }
+    })
+}
+
+/// The clock's span over which `item` is drawn as built with the clock at
+/// `t` ([`window`]): all time for an item without a track.
+fn valid(item: &Item, t: Epoch) -> (f64, f64) {
+    item.track
+        .as_ref()
+        .and_then(|track| window(track, t))
+        .map_or((f64::NEG_INFINITY, f64::INFINITY), |w| w.valid)
+}
+
+/// An item's path in `frame` (with the camera on `focus`), the clock at
+/// `t` ([`window`]). None for an item without a track, or resting on or at
+/// a body.
 fn item_path(
     eph: &Ephemeris,
     frame: &Frame,
     focus: BodyId,
     item: &Item,
     color: [f32; 3],
+    t: Epoch,
 ) -> Option<Path> {
-    let track = item
-        .track
-        .as_ref()
-        .filter(|t| !t.rests() && t.times.len() > 1)?;
+    let track = item.track.as_ref().filter(|t| !t.rests())?;
+    let w = window(track, t)?;
+    let made = track.samples(w.from, w.to);
+    if made.len() < 2 {
+        return None;
+    }
     // Where the frame is known (a small body as the focus, from 2040).
-    let samples: Vec<Sample> = track
-        .times
+    let samples: Vec<Sample> = made
         .par_iter()
-        .zip(&track.states)
-        .filter_map(|(&s, state)| {
+        .filter_map(|&(s, state)| {
             let t = Epoch(track.epoch.0 + s / SECONDS_PER_DAY);
             if !frame.covers(eph, focus, t) {
                 return None;
@@ -208,8 +289,19 @@ pub struct Built {
     pub set: Arc<Paths>,
     /// Each path's item, by its index in the ship's.
     pub items: Vec<usize>,
+    /// Each of the ship's items' span of the clock over which it is drawn
+    /// as built, s since J2000 ([`window`]), drawn or not.
+    pub valid: Vec<(f64, f64)>,
     /// Its events, as ship `s`'s.
     pub events: Vec<Event>,
+}
+
+impl Built {
+    /// Whether all of it is drawn as built with the clock at `t`.
+    pub fn holds(&self, t: Epoch) -> bool {
+        let now = t.seconds();
+        self.valid.iter().all(|v| (v.0..=v.1).contains(&now))
+    }
 }
 
 /// How marker `i` of `ship`'s item `k` is drawn, `colors` its items' (as
@@ -230,17 +322,24 @@ pub fn event_style(ship: &Ship, colors: &[[f32; 3]], k: usize, i: usize) -> (Sha
     }
 }
 
-/// Ship `s`'s paths and events in `frame`: where it ran dry, its path
-/// after then not flown (a stay, drawn a revolution about the clock, is
-/// not split), and the burn marked.
-pub fn build(eph: &Ephemeris, frame: &Frame, focus: BodyId, s: usize, ship: &Ship) -> Built {
+/// Ship `s`'s paths and events in `frame`, the clock at `t`: where it ran
+/// dry, its path after then not flown (a stay, drawn a revolution about
+/// the clock, is not split), and the burn marked.
+pub fn build(
+    eph: &Ephemeris,
+    frame: &Frame,
+    focus: BodyId,
+    s: usize,
+    ship: &Ship,
+    t: Epoch,
+) -> Built {
     let colors = colors(ship);
     let dry = ship.dry();
     let (paths, items): (Vec<Path>, Vec<usize>) = colors
         .par_iter()
         .enumerate()
         .filter_map(|(k, &color)| {
-            item_path(eph, frame, focus, &ship.items[k], color).map(|p| (p, k))
+            item_path(eph, frame, focus, &ship.items[k], color, t).map(|p| (p, k))
         })
         .collect::<Vec<_>>()
         .into_iter()
@@ -257,6 +356,7 @@ pub fn build(eph: &Ephemeris, frame: &Frame, focus: BodyId, s: usize, ship: &Shi
     let mut out = Built {
         set: Arc::new(Paths { paths }),
         items,
+        valid: ship.items.iter().map(|i| valid(i, t)).collect(),
         events: Vec::new(),
     };
     for (k, item) in ship.items.iter().enumerate() {
@@ -285,6 +385,51 @@ pub fn build(eph: &Ephemeris, frame: &Frame, focus: BodyId, s: usize, ship: &Shi
             });
         }
     }
+    out
+}
+
+/// Ship `ship`'s lines `old`, built with the clock elsewhere, with the
+/// clock at `t`: its items' that no longer hold made again about it (a
+/// stay's, never split where it ran dry), the rest and the events kept.
+pub fn rebuilt(
+    old: &Built,
+    eph: &Ephemeris,
+    frame: &Frame,
+    focus: BodyId,
+    ship: &Ship,
+    t: Epoch,
+) -> Built {
+    let colors = colors(ship);
+    let now = t.seconds();
+    let made: Vec<(Vec<Path>, (f64, f64))> = (0..ship.items.len())
+        .into_par_iter()
+        .map(|k| {
+            let v = old.valid[k];
+            match (v.0..=v.1).contains(&now) {
+                true => {
+                    let kept = old.items.iter().zip(&old.set.paths);
+                    let kept = kept.filter(|(i, _)| **i == k).map(|(_, p)| p.clone());
+                    (kept.collect(), v)
+                }
+                false => {
+                    let item = &ship.items[k];
+                    let path = item_path(eph, frame, focus, item, colors[k], t);
+                    (path.into_iter().collect(), valid(item, t))
+                }
+            }
+        })
+        .collect();
+    let mut out = Built {
+        events: old.events.clone(),
+        ..Built::default()
+    };
+    let mut paths = Vec::new();
+    for (k, (made, v)) in made.into_iter().enumerate() {
+        out.items.extend(made.iter().map(|_| k));
+        paths.extend(made);
+        out.valid.push(v);
+    }
+    out.set = Arc::new(Paths { paths });
     out
 }
 

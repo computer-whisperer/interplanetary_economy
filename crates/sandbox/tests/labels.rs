@@ -341,14 +341,17 @@ fn a_line_over_a_disk_is_picked() {
             .find(|a| a.target == Target::Body(moon))
             .unwrap()
             .clone();
-        // The stay's line: the one in the view's frame spanning it.
+        // The stay's line: the one in the view's frame within it, about
+        // the clock (built from samples made there).
         let line = scene.paths[SHIP_SETS]
             .paths
             .iter()
             .find(|p| {
+                let (first, last) = (p.samples[0].t, p.samples.last().unwrap().t);
                 p.pose == VIEW_POSE
-                    && p.samples[0].t <= stay.start.seconds() + 1.0
-                    && p.samples.last().unwrap().t >= stay.end.seconds() - 1.0
+                    && first >= stay.start.seconds() - 1.0
+                    && last <= stay.end.seconds() + 1.0
+                    && (first..=last).contains(&t.seconds())
             })
             .expect("the stay is drawn");
         let clear = |q: Vec2| {

@@ -195,7 +195,7 @@ aero = true
     tanks.pending_from = None;
 
     let (frame, focus) = (Frame::offered(eph)[1].2, eph.lookup("earth").unwrap());
-    let built = paths::build(eph, &frame, focus, 0, &ship);
+    let built = paths::build(eph, &frame, focus, 0, &ship, ship.items[0].start);
     assert_eq!(built.items.iter().filter(|&&k| k == 0).count(), 1);
     let pass = built
         .events

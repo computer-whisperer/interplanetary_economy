@@ -6,7 +6,7 @@
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Item, ItemKind, Plan, Step};
 use orbit::places::Places;
-use orbit::time::Epoch;
+use orbit::time::{Epoch, SECONDS_PER_DAY};
 use sandbox::app::Shell;
 use sandbox::frames::Frame;
 use sandbox::labels::Target;
@@ -48,7 +48,7 @@ fn lines_follow_tracks_in_every_frame() {
     assert_eq!(kinds, [&ItemKind::Stay, &ItemKind::Leg], "{kinds:?}");
     let moon = eph.lookup("moon").unwrap();
     for (id, _, frame) in Frame::offered(eph) {
-        let built = paths::build(eph, &frame, moon, 0, ship);
+        let built = paths::build(eph, &frame, moon, 0, ship, ship.items[0].start);
         assert_eq!(built.set.paths.len(), 2, "{id}");
         let mut worst: f64 = 0.0;
         for (path, &k) in built.set.paths.iter().zip(&built.items) {
@@ -130,6 +130,163 @@ fn ship_and_burns_on_the_line() {
             .iter()
             .any(|m| m.shape == render::Shape::Disc)
     );
+}
+
+/// A ship parked three days in LEO, then to low lunar orbit.
+const PARKED: &str = r#"
+name = "Parked"
+
+[[ship]]
+name = "Tug"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+"#;
+
+/// A ship parked three days in LEO: its stay is drawn from samples made a
+/// few revolutions each way of the clock (M1b.md, step 2 plan, part 6),
+/// the ship on that line and the line on its track; built again once the
+/// clock has moved on, and not before.
+#[test]
+fn a_long_stay_is_drawn_about_the_clock() {
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(PARKED, eph, Places::standard()).unwrap()).unwrap();
+    plan.wait();
+    let stay = plan.ships[0].items[0].clone();
+    assert_eq!(stay.kind, ItemKind::Stay);
+    let track = stay.track.clone().unwrap();
+    let revolution = track.revolution.unwrap();
+    let mut app = Shell::new(Epoch(stay.start.0 + 1.0));
+    app.plan = Some(plan);
+    app.frame = Frame::offered(eph)[1].2;
+    let built = |app: &mut Shell| {
+        app.update_paths();
+        let scene = app.scene(1.0);
+        let set = scene.paths[SHIP_SETS].clone();
+        let t = app.clock.t.seconds();
+        let line = set
+            .paths
+            .iter()
+            .find(|p| {
+                let (a, b) = (p.samples[0].t, p.samples.last().unwrap().t);
+                a >= stay.start.seconds() - 1.0 && b <= stay.end.seconds() + 1.0
+            })
+            .expect("the stay is drawn")
+            .clone();
+        let ship = scene
+            .markers
+            .iter()
+            .find(|m| m.shape == render::Shape::Disc)
+            .expect("the ship is drawn")
+            .position;
+        let view = scene.poses[VIEW_POSE];
+        let on_line = view.to_world(line.at(t).unwrap());
+        assert!((ship - on_line).length() < 1e-6);
+        let tracked = on_track(eph, &track, app.clock.t).unwrap();
+        assert!(
+            (ship - tracked).length() < 1e-3,
+            "{} km",
+            (ship - tracked).length()
+        );
+        (set, line)
+    };
+    let (set, line) = built(&mut app);
+    let (a, b) = (line.samples[0].t, line.samples.last().unwrap().t);
+    let now = app.clock.t.seconds();
+    assert!(
+        (now - a - 2.0 * revolution).abs() < 1.0 && (b - now - 2.0 * revolution).abs() < 1.0,
+        "{} and {} revolutions each way",
+        (now - a) / revolution,
+        (b - now) / revolution
+    );
+    app.clock
+        .seek(Epoch(app.clock.t.0 + revolution / SECONDS_PER_DAY));
+    let (kept, _) = built(&mut app);
+    assert!(Arc::ptr_eq(&kept, &set), "a revolution on: kept");
+    app.clock
+        .seek(Epoch(app.clock.t.0 + revolution / SECONDS_PER_DAY));
+    let (again, line) = built(&mut app);
+    assert!(!Arc::ptr_eq(&again, &set), "two on: built again");
+    let now = app.clock.t.seconds();
+    assert!(
+        line.samples[0].t < now - revolution && line.samples.last().unwrap().t > now + revolution
+    );
+    // Before the stay, its first revolutions, whatever the clock.
+    app.clock.seek(Epoch(stay.start.0 - 0.5));
+    app.update_paths();
+    let early = app.scene(1.0).paths[SHIP_SETS].clone();
+    let first = early
+        .paths
+        .iter()
+        .map(|p| p.samples[0].t)
+        .find(|&t| (t - stay.start.seconds()).abs() < 1.0);
+    assert!(first.is_some(), "the stay's first revolutions");
+    app.clock.seek(Epoch(stay.start.0 - 0.2));
+    app.update_paths();
+    assert!(Arc::ptr_eq(&app.scene(1.0).paths[SHIP_SETS], &early));
+    // After it, its last, kept as the clock goes on.
+    app.clock.seek(Epoch(stay.end.0 + 5.0));
+    app.update_paths();
+    let late = app.scene(1.0).paths[SHIP_SETS].clone();
+    for days in [5.5, 6.0, 30.0] {
+        app.clock.seek(Epoch(stay.end.0 + days));
+        app.update_paths();
+        assert!(Arc::ptr_eq(&app.scene(1.0).paths[SHIP_SETS], &late));
+    }
+
+    // Made again about the clock, the stay is as a fresh build draws it
+    // and the leg after it is kept (found in review: built again too).
+    let ship = &app.plan.as_ref().unwrap().ships[0];
+    let (frame, earth) = (app.frame, eph.lookup("earth").unwrap());
+    let t1 = Epoch(stay.start.0 + 1.0);
+    let t2 = Epoch(t1.0 + 2.0 * revolution / SECONDS_PER_DAY);
+    let old = paths::build(eph, &frame, earth, 0, ship, t1);
+    assert!(old.holds(t1) && !old.holds(t2));
+    let again = paths::rebuilt(&old, eph, &frame, earth, ship, t2);
+    let fresh = paths::build(eph, &frame, earth, 0, ship, t2);
+    assert_eq!(again.items, fresh.items);
+    assert_eq!(format!("{:?}", again.set), format!("{:?}", fresh.set));
+    assert_eq!(again.valid, fresh.valid);
+    assert!(again.holds(t2));
+}
+
+/// With the ships' lines hidden, a ship parked in LEO is drawn where its
+/// stay's samples made about the clock put it, on its track (found in
+/// review: its coast was integrated for it twice a frame).
+#[test]
+fn a_parked_ship_is_drawn_with_its_lines_hidden() {
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(PARKED, eph, Places::standard()).unwrap()).unwrap();
+    plan.wait();
+    let stay = plan.ships[0].items[0].clone();
+    let mut app = Shell::new(Epoch(stay.start.0 + 1.0));
+    app.plan = Some(plan);
+    app.frame = Frame::offered(eph)[1].2;
+    app.settings.lines.ships = false;
+    for k in 0..20 {
+        app.clock
+            .seek(Epoch(stay.start.0 + 1.0 + 0.01 * f64::from(k)));
+        app.update_paths();
+        let scene = app.scene(1.0);
+        assert!(scene.paths[SHIP_SETS..app.orbit_sets()].is_empty());
+        let ship = scene
+            .markers
+            .iter()
+            .find(|m| m.shape == render::Shape::Disc)
+            .expect("the ship is drawn")
+            .position;
+        let tracked = on_track(eph, stay.track.as_ref().unwrap(), app.clock.t).unwrap();
+        assert!(
+            (ship - tracked).length() < 1e-4,
+            "{} km",
+            (ship - tracked).length()
+        );
+    }
 }
 
 /// Focused on a small body (its orbit known from 2040) with a plan before
