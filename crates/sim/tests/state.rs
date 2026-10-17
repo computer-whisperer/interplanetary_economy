@@ -80,10 +80,10 @@ fn close(a: f64, b: f64, rel: f64) -> bool {
     (a - b).abs() <= rel * a.abs().max(b.abs())
 }
 
-/// The lander's sortie, methalox (no boil-off): the first leg burns
-/// m(1 − e^(−Δv/vₑ)) of the ship as it leaves, and it ends at m e^(−ΣΔv/vₑ)
-/// whatever the order of its burns and upkeep (a leg's markers add up to
-/// its Δv), LOX and methane burned at 3.6:1.
+/// The lander's sortie, methalox (no boil-off): each item burns
+/// m(1 − e^(−Δv/vₑ)) of the ship as it begins (a leg's markers add up to
+/// its Δv, and their burns, one after another, to its), and it ends at
+/// m e^(−ΣΔv/vₑ), LOX and methane burned at 3.6:1.
 #[test]
 fn burns_follow_the_rocket_equation() {
     let game = game(&sortie(400.0), 24);
@@ -102,14 +102,25 @@ fn burns_follow_the_rocket_equation() {
         }
     }
     let m0 = class.dry + 400.0;
-    let leg = items.iter().position(|i| i.kind == ItemKind::Leg).unwrap();
-    // From the ship as it leaves, its stay's upkeep paid.
-    let before: f64 = state.used[..leg].iter().sum();
-    let used = (m0 - before) * (1.0 - (-items[leg].dv / spec.ve).exp());
+    // Each from the ship as it begins, the items before it paid.
+    let mut m = m0;
+    for (k, item) in items.iter().enumerate() {
+        // 1 − e^(−x) as −expm1(−x): a stay's upkeep can be grams.
+        let used = -m * (-burned(item) / spec.ve).exp_m1();
+        assert!(
+            close(state.used[k], used, 1e-12),
+            "{}: {} {used}",
+            item.label,
+            state.used[k]
+        );
+        m -= state.used[k];
+    }
     assert!(
-        close(state.used[leg], used, 1e-12),
-        "{} {used}",
-        state.used[leg]
+        items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Leg)
+            .any(|i| i.markers.len() > 1),
+        "a leg of more than one burn"
     );
     let total: f64 = items.iter().map(|i| burned(i)).sum();
     assert!(

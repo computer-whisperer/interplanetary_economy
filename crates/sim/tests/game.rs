@@ -62,12 +62,14 @@ fn hashes(game: &Game) -> Vec<u64> {
 }
 
 /// A sortie from the NRHO to the lunar surface and back to low lunar
-/// orbit: four quick steps.
+/// orbit: four quick steps. A hydrolox lander: the day's hash covers its
+/// tanks, boil-off and all.
 const SORTIE: &str = r#"
 name = "sortie"
 
 [[ship]]
 name = "Lander"
+class = "lander-h"
 start = { at = "nrho", epoch = "2045-03-01" }
 
 [[ship.leg]]
@@ -438,8 +440,7 @@ fn an_undone_rename_takes_the_old_name() {
 /// plan, part 2).
 #[test]
 fn a_class_warns_in_the_sandbox_and_a_new_one_designs_nothing() {
-    let src = SORTIE.replace("name = \"Lander\"", "name = \"Lander\"\nclass = \"lander\"");
-    let mut game = Game::new(parse(&src), pool(24)).unwrap();
+    let mut game = Game::new(parse(SORTIE), pool(24)).unwrap();
     game.wait();
     assert!(game.ships()[0].breaches.is_empty());
     let (made, revision) = (game.designs_made(), game.ships()[0].revision);
@@ -472,7 +473,7 @@ fn a_class_warns_in_the_sandbox_and_a_new_one_designs_nothing() {
         why.starts_with("ship \"Lander\": no class \"barge\""),
         "{why}"
     );
-    assert_eq!(game.plan().ships[0].class.as_deref(), Some("lander"));
+    assert_eq!(game.plan().ships[0].class.as_deref(), Some("lander-h"));
 }
 
 /// A career log in the sandbox, its ship given a class: its re-plan is
@@ -566,4 +567,69 @@ days = [3.5]
     );
     let game = Game::in_mode(parse(&landing), Mode::Sandbox, pool(24)).unwrap();
     assert_eq!(game.ships()[0].breaches.len(), 1);
+}
+
+/// Each check of a ship's class, broken alone by a ship from LEO: refused
+/// in career, a warning on the step in the sandbox (M1b.md, step 2 plan,
+/// part 7).
+#[test]
+fn each_class_check_is_refused_in_career_and_warned_in_the_sandbox() {
+    let llo = "\n[[ship.leg]]\nto = \"llo\"\ndays = [3.5]\n";
+    let cases = [
+        (
+            "tug-h",
+            ", propellant_t = 150.5",
+            String::new(),
+            "a tug-h's tanks hold 150 t, not 150.5",
+        ),
+        (
+            "tug-h",
+            ", cargo = { equipment = 50.5 }",
+            String::new(),
+            "a tug-h's hold takes 50 t, not 50.5",
+        ),
+        (
+            "tug-h",
+            "",
+            format!("{llo}\n[[ship.leg]]\nto = \"moon-south-pole\"\n"),
+            "leg 2: a tug-h can't land at moon-south-pole",
+        ),
+        (
+            "lander",
+            "",
+            format!("{llo}\n[[ship.leg]]\nto = \"leo\"\ndays = [3.5]\naero = true\n"),
+            "leg 2: a lander can't arrive through an atmosphere",
+        ),
+        (
+            "tug-h",
+            "",
+            "\n[[ship.leg]]\nto = \"lmo\"\n".to_string(),
+            "leg 1: a tug-h can't leave Earth's system",
+        ),
+    ];
+    for (class, load, legs, breach) in cases {
+        let src = format!(
+            r#"
+name = "breach"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+name = "Ship"
+class = "{class}"
+start = {{ at = "leo", epoch = "2045-03-01"{load} }}
+{legs}"#
+        );
+        let why = Game::new(parse(&src), pool(1)).err().unwrap();
+        assert_eq!(why, format!("ship \"Ship\": {breach}"));
+        let game = Game::in_mode(parse(&src), Mode::Sandbox, pool(1)).unwrap();
+        let warned: Vec<String> = game.ships()[0]
+            .breaches
+            .iter()
+            .map(|b| b.to_string())
+            .collect();
+        assert_eq!(warned, [breach]);
+    }
 }

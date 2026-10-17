@@ -328,6 +328,25 @@ below), and the four decisions below, each as recommended.
     again every frame after. Each fixed: the first three with a test,
     the fourth timed (its test checks the marker's place), the last by
     deciding from the clamp rather than from the end it rounds to.
+- Part 7: tests. Most were written with the parts they test: burns,
+  upkeep, boil-off, running dry and the hashes with part 3
+  (`crates/sim/tests/state.rs`), the class checks with part 2, a new
+  load designing nothing with parts 2 and 4. Added where the plan's
+  list was not yet met:
+  - Every item of the lander's sortie burns what a hand computation
+    from its Δv gives, from the ship as it begins; only the first leg
+    was checked. The hand computation takes 1 − e^(−x) as −expm1(−x),
+    as the engine does: the sortie's NRHO stay burns 5 g of upkeep, and
+    1 − e^(−x) lost eight digits of it.
+  - Each class check (tanks, hold, landing, aerocapture, leaving
+    Earth's system), broken alone by a ship from LEO: refused in career,
+    a warning in the sandbox. Career's refusal was tested for landing
+    and aerocapture, the sandbox's warning for landing and the hold.
+  - The sortie of `crates/sim/tests/game.rs` is a hydrolox lander, so
+    its hashes cover tanks and boil-off: at 1 and 24 threads, and an
+    edit of its steps, re-run, against a fresh game's and undone. A new
+    load's re-run was covered; an edit of the steps was tested only on
+    a ship without a class.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
