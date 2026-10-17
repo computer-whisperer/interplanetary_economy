@@ -6,45 +6,13 @@ use crate::scenario::Scenario;
 use highs::{Col, HighsModelStatus, Model, RowProblem, Sense, SolvedModel};
 use orbit::routes::{PlaceId, RouteGraph};
 use sim::params::{PROPELLANTS, Propellant, ShipClass};
+use sim::ships::{COMMODITIES, Commodity};
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Commodity {
-    Lox,
-    Ch4,
-    Lh2,
-    Equipment,
-    Payload,
-    Metal,
-}
-
-pub const COMMODITIES: [Commodity; 6] = [
-    Commodity::Lox,
-    Commodity::Ch4,
-    Commodity::Lh2,
-    Commodity::Equipment,
-    Commodity::Payload,
-    Commodity::Metal,
-];
-
-impl Commodity {
-    fn index(self) -> usize {
-        self as usize
-    }
-
-    /// The fuel burned with LOX in `p`.
-    pub fn fuel(p: Propellant) -> Commodity {
-        match p {
-            Propellant::Methalox => Commodity::Ch4,
-            Propellant::Hydrolox => Commodity::Lh2,
-        }
-    }
-
-    /// Whether a ship burning `p` carries this in its tanks rather than its
-    /// hold.
-    fn tanked(self, p: Propellant) -> bool {
-        self == Commodity::Lox || self == Commodity::fuel(p)
-    }
+/// Whether a ship burning `p` carries `c` in its tanks rather than its
+/// hold.
+fn tanked(c: Commodity, p: Propellant) -> bool {
+    c == Commodity::Lox || c == Commodity::fuel(p)
 }
 
 /// Fraction of a stock of `c` left after `days`.
@@ -192,7 +160,7 @@ impl Lp {
             nodes.iter().enumerate().map(|(k, &id)| (id, k)).collect();
         macro_rules! bal {
             ($n:expr, $c:expr, $p:expr) => {
-                balance[node_index[&$n]][$c.index()][$p]
+                balance[node_index[&$n]][$c as usize][$p]
             };
         }
 
@@ -448,7 +416,7 @@ impl Lp {
                 let mut tank = Terms::default();
                 tank.add(trips, r * ship.dry - ship.tank);
                 for &(c, x) in &cargo {
-                    if c.tanked(ship.propellant) {
+                    if tanked(c, ship.propellant) {
                         tank.add(x, 1.0 + r);
                     } else {
                         hold.add(x, 1.0);
@@ -641,7 +609,7 @@ impl Lp {
         let mut price = HashMap::new();
         for (k, &n) in self.nodes.iter().enumerate() {
             for c in COMMODITIES {
-                let row = self.first_balance_row + (k * COMMODITIES.len() + c.index()) * t_n;
+                let row = self.first_balance_row + (k * COMMODITIES.len() + c as usize) * t_n;
                 let usd_per_kg = (0..t_n)
                     .map(|p| -duals[row + p] / self.disc[p] / MUSD_PER_USD_T)
                     .collect();

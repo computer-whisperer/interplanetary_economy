@@ -1,9 +1,10 @@
 //! Which development path a plan follows.
 
-use crate::model::{Commodity, MUSD_PER_USD_T, Plan};
+use crate::model::{MUSD_PER_USD_T, Plan};
 use crate::scenario::Scenario;
 use orbit::ephem::Ephemeris;
 use orbit::routes::RouteGraph;
+use sim::ships::Commodity;
 use std::fmt;
 
 /// Where propellant comes from.

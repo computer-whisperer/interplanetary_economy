@@ -4,15 +4,15 @@
 //! massless, as in M1c. What its class does not allow of it is a
 //! [`Breach`]: a warning in the sandbox, refused in career (`game`).
 
-use crate::params::{Economy, ShipClass};
+use crate::params::{Economy, Propellant, ShipClass};
 use orbit::ephem::{BodyId, Ephemeris};
 use orbit::mission::{Ship, Spot, Step};
 use orbit::places::{PlaceKind, Places};
 use orbit::routes::RouteGraph;
 use std::fmt;
 
-/// What a hold carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a hold carries (and M2's model ships).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Commodity {
     Lox,
     /// Methane.
@@ -35,6 +35,14 @@ pub const COMMODITIES: [Commodity; 6] = [
 ];
 
 impl Commodity {
+    /// The fuel burned with LOX in `p`.
+    pub fn fuel(p: Propellant) -> Commodity {
+        match p {
+            Propellant::Methalox => Commodity::Ch4,
+            Propellant::Hydrolox => Commodity::Lh2,
+        }
+    }
+
     /// As plans write it (`data/economy.toml`'s outputs write the first
     /// three so).
     pub fn id(self) -> &'static str {
