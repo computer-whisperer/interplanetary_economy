@@ -1,9 +1,9 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-16: step 1 done; step 2 under way (its plan below,
-after step 1's). Decided: one engine for both
-modes, with economy components landing in the sandbox first (Modes,
-below), and the four decisions below, each as recommended.
+Status, 2026-10-17: steps 1 and 2 done (their plans below). Decided:
+one engine for both modes, with economy components landing in the
+sandbox first (Modes, below), and the four decisions below, each as
+recommended.
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
   going on from a checkpoint gives a fresh design's bits
@@ -347,6 +347,24 @@ below), and the four decisions below, each as recommended.
     edit of its steps, re-run, against a fresh game's and undone. A new
     load's re-run was covered; an edit of the steps was tested only on
     a ship without a class.
+- Part 8: measurements (2026-10-17, release).
+  - Design times, owed from step 1: the published plan `--alone`, three
+    runs at load 3.4–6.8 (most of it the runs' own threads): LEO to the
+    DRO 16.7–16.9 s, every other leg 0.1–3.7 s, as M1c's (16.5–16.9 s;
+    0.1–3.7). Step 1's 22.5 s was the load. Designed as one game
+    (`sim run`), 25.0 s (26.3 before part 6).
+  - The loop's re-run on the published plan, every ship a hauler (18
+    ships, 13,379 days; `tests/state.rs`, ignored): the loop alone
+    2.7–3.3 ms, a new load run again 2.9–3.4 ms; 50 ships of 2,000
+    items 55–76 ms. Against gate item 4's 1 s: no snapshots.
+  - Checked against part 3, alternately under the same load (another
+    program using about 2 of the 24 cores): its loop alone 3.1–3.7 ms,
+    and every leg's design time the same as now to 0.1–0.2 s (LEO to the
+    DRO 17.5–18.8 s for both under that load). A first run during a
+    build (load 27) read 4.9 ms for the loop and 50.7 s for the
+    designs.
+  - The full workspace suite passes at the end of step 2: 313 tests, 12
+    ignored (measurements), in 5 min 54 s.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
