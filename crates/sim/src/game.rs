@@ -1,14 +1,18 @@
-//! A game (M1b.md, step 1 plan, parts 4 and 5): its log, each ship's
-//! design as it stands, and its mode's policies. Ships are designed in
-//! the background, on the host's pool, by walks (`designs::walk`) that
-//! take what the cache has and design the rest; an edit or an undo walks
-//! again, and finds what it did not change in the cache.
+//! A game (M1b.md, step 1 plan, parts 4 and 5): its log, its economy as
+//! drawn, each ship's design as it stands, and its mode's policies. Ships
+//! are designed in the background, on the host's pool, by walks
+//! (`designs::walk`) that take what the cache has and design the rest; an
+//! edit or an undo walks again, and finds what it did not change in the
+//! cache.
 
 use crate::designs::{Cache, Designed, Ended, Key, apply, walk};
 use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, minute};
+use crate::params::{Draw, Economy, EconomyFile};
+use crate::ships::{self, Breach};
 use orbit::mission::{Checkpoint, Item, ItemKind, Plan, Ship, Step, World, resume_point};
 use orbit::places::Places;
+use orbit::routes::RouteGraph;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use std::collections::{HashSet, VecDeque};
 use std::hash::Hasher;
@@ -40,13 +44,16 @@ pub struct ShipDesign {
     /// Its re-plans that could not take effect where the ship was (it
     /// flies on as before each): their places among its re-plans, and why.
     pub refused: Vec<(usize, String)>,
+    /// What its class does not allow of it, its steps as they stand: the
+    /// sandbox's warnings (career refuses them).
+    pub breaches: Vec<Breach>,
     /// Another whenever its items change, unique in the process: what
     /// views of them are built for.
     pub revision: u64,
     /// Its design's steps as they stand, by key.
     steps: Vec<(Key, Arc<Designed>)>,
-    /// A hash of what it is designed from: the log's ship (its name
-    /// aside) and its re-plans.
+    /// A hash of what it is designed from: the log's ship (its name, class
+    /// and load aside) and its re-plans.
     inputs: Key,
     /// Every key its walks took, shown or not (a re-plan's decision reads
     /// the step it replaced): shared with its walk in the background,
@@ -66,7 +73,7 @@ impl ShipDesign {
     }
 
     /// A hash of what it is designed from, which changes only when the
-    /// ship (its name aside) or its re-plans do.
+    /// ship (its name, class and load aside) or its re-plans do.
     pub fn inputs(&self) -> Key {
         self.inputs
     }
@@ -103,6 +110,8 @@ pub struct Game {
     /// The plan as it stands: the log's ships with their re-plans.
     plan: Plan,
     mode: Mode,
+    /// Drawn from the log's seed, on the standard route graph.
+    economy: Economy,
     /// Career: the time the game has reached.
     now: Epoch,
     path: Option<PathBuf>,
@@ -137,9 +146,56 @@ fn standing(ship: &Ship, replans: &[&Replan], refused: &[(usize, String)]) -> Sh
     ship
 }
 
+/// Why `log` cannot be played in `mode` with `economy`, if it cannot:
+/// each ship's class and load are read (`ships::read`); and career, which
+/// refuses an action that breaks a ship's class when it is made, has each
+/// ship start at LEO, where it is bought, and keep within its class as
+/// each of its re-plans leaves its steps (M1b.md, step 2 plan, part 2).
+fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
+    for ship in &log.plan.ships {
+        let fail = |e: String| format!("ship {:?}: {e}", ship.name);
+        let fitted = ships::read(ship, economy).map_err(fail)?;
+        if mode == Mode::Sandbox {
+            continue;
+        }
+        if ship.start.source.as_str() != Some("leo") {
+            return Err(fail(format!(
+                "a ship starts at LEO, where it is bought, not {}",
+                ship.start.label
+            )));
+        }
+        let Some(fitted) = fitted else {
+            continue;
+        };
+        let first = |s: &Ship| {
+            ships::breaches(s, &fitted, economy, world().eph)
+                .into_iter()
+                .next()
+        };
+        if let Some(b) = first(ship) {
+            return Err(fail(b.to_string()));
+        }
+        let mut replanned = ship.clone();
+        for (i, r) in log.replans.iter().enumerate() {
+            if r.ship != ship.id {
+                continue;
+            }
+            apply(&mut replanned.steps, r);
+            // The steps before it were checked: what it breaks is among
+            // its own, numbered as its legs are (`[[replan.leg]]`).
+            if let Some(b) = first(&replanned) {
+                let leg = b.step.map_or(0, |s| s.saturating_sub(r.from));
+                return Err(format!("replan {}: leg {}: {}", i + 1, leg + 1, b.why));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Game {
-    /// `log` played in its own mode, its ships designed on `pool`.
-    pub fn new(log: Log, pool: Arc<rayon::ThreadPool>) -> Game {
+    /// `log` played in its own mode, its ships designed on `pool`; why
+    /// not, if it cannot be.
+    pub fn new(log: Log, pool: Arc<rayon::ThreadPool>) -> Result<Game, String> {
         let mode = log.setup.mode;
         Game::in_mode(log, mode, pool)
     }
@@ -147,7 +203,13 @@ impl Game {
     /// `log` played in `mode`. A career game's log opens in the sandbox as
     /// a sandbox log (its re-plans kept as they were made); a sandbox
     /// log played in career starts from its start, else its first ship's.
-    pub fn in_mode(mut log: Log, mode: Mode, pool: Arc<rayon::ThreadPool>) -> Game {
+    pub fn in_mode(mut log: Log, mode: Mode, pool: Arc<rayon::ThreadPool>) -> Result<Game, String> {
+        let economy = EconomyFile::standard().draw(
+            world().eph,
+            RouteGraph::standard(),
+            &mut log.setup.seed.map_or(Draw::Central, Draw::seeded),
+        );
+        allowed(&log, mode, &economy)?;
         let (sender, receiver) = channel();
         let first = log
             .plan
@@ -167,6 +229,7 @@ impl Game {
             plan: log.plan.clone(),
             log,
             mode,
+            economy,
             now,
             path: None,
             undo: Vec::new(),
@@ -178,7 +241,7 @@ impl Game {
             receiver,
         };
         game.reshaped();
-        game
+        Ok(game)
     }
 
     /// Reads the log at `path` and starts designing it, in `mode` (else
@@ -192,7 +255,8 @@ impl Game {
         let log = Log::parse(&src, world().eph, Places::standard())
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let mode = mode.unwrap_or(log.setup.mode);
-        let mut game = Game::in_mode(log, mode, pool);
+        let mut game =
+            Game::in_mode(log, mode, pool).map_err(|e| format!("{}: {e}", path.display()))?;
         game.path = Some(path.to_path_buf());
         Ok(game)
     }
@@ -207,7 +271,7 @@ impl Game {
             replans: Vec::new(),
             checks: Vec::new(),
         });
-        let mut game = Game::new(log, pool);
+        let mut game = Game::new(log, pool).expect("an empty plan is a game");
         game.path = Some(path);
         game
     }
@@ -235,6 +299,10 @@ impl Game {
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    pub fn economy(&self) -> &Economy {
+        &self.economy
     }
 
     /// The plan as it stands: each ship with its re-plans.
@@ -299,7 +367,7 @@ impl Game {
     }
 
     /// Ship `k` of the plan as it stands: the log's, with its re-plans
-    /// but those refused.
+    /// but those refused; and what its class does not allow of it.
     fn stand(&mut self, k: usize) {
         let ship = &self.log.plan.ships[k];
         let mine: Vec<&Replan> = self
@@ -308,11 +376,16 @@ impl Game {
             .iter()
             .filter(|r| r.ship == ship.id)
             .collect();
-        self.plan.ships[k] = standing(ship, &mine, &self.ships[k].refused);
+        let ship = standing(ship, &mine, &self.ships[k].refused);
+        let fitted = ships::read(&ship, &self.economy).expect("a game's ships read (`allowed`)");
+        self.ships[k].breaches = fitted.map_or(Vec::new(), |f| {
+            ships::breaches(&ship, &f, &self.economy, world().eph)
+        });
+        self.plan.ships[k] = ship;
     }
 
     /// What ship `k` of the log is designed from, hashed: the ship (its
-    /// name aside) and its re-plans.
+    /// name, class and load aside) and its re-plans.
     fn inputs(&self, k: usize) -> Key {
         let ship = &self.log.plan.ships[k];
         let mut h = Fixed::default();
@@ -342,6 +415,7 @@ impl Game {
             done: false,
             failure: None,
             refused: Vec::new(),
+            breaches: Vec::new(),
             revision: revision(),
             steps: Vec::new(),
             inputs: self.inputs(k),
@@ -518,16 +592,42 @@ impl Game {
         }
     }
 
+    /// The log with `change` made, if the game allows it (`allowed`).
+    fn changed(&self, change: impl FnOnce(&mut Log)) -> Result<Log, String> {
+        let mut log = self.log.clone();
+        change(&mut log);
+        allowed(&log, self.mode, &self.economy)?;
+        Ok(log)
+    }
+
     /// Replaces ship `id` with `ship` (its steps as they stand). In the
     /// sandbox, its re-plans are folded into it: its steps are those
-    /// edited, from its start.
+    /// edited, from its start. A new name, class or load alone keeps
+    /// them, and designs nothing.
     pub fn edit(&mut self, id: u64, mut ship: Ship) -> Result<(), String> {
         self.sandbox("Editing a ship")?;
         let k = self.index(id).ok_or(format!("no ship has id {id}"))?;
-        self.undo.push(self.log.clone());
         ship.id = id;
-        self.log.plan.ships[k] = ship;
-        self.log.replans.retain(|r| r.ship != id);
+        let mut refit = self.plan.ships[k].clone();
+        refit.name.clone_from(&ship.name);
+        refit.class.clone_from(&ship.class);
+        refit.propellant_t = ship.propellant_t;
+        refit.cargo.clone_from(&ship.cargo);
+        let refit = format!("{refit:?}") == format!("{ship:?}");
+        let log = self.changed(|log| match refit {
+            true => {
+                let kept = &mut log.plan.ships[k];
+                kept.name = ship.name;
+                kept.class = ship.class;
+                kept.propellant_t = ship.propellant_t;
+                kept.cargo = ship.cargo;
+            }
+            false => {
+                log.plan.ships[k] = ship;
+                log.replans.retain(|r| r.ship != id);
+            }
+        })?;
+        self.undo.push(std::mem::replace(&mut self.log, log));
         self.reshaped();
         Ok(())
     }
@@ -545,7 +645,8 @@ impl Game {
         self.ships[k].name = name.to_string();
     }
 
-    /// Adds `ship`, last, with an id of its own; in career, from now on.
+    /// Adds `ship`, last, with an id of its own; in career, from now on,
+    /// at LEO and within its class.
     pub fn add_ship(&mut self, mut ship: Ship) -> Result<u64, String> {
         if self.mode == Mode::Career && ship.epoch.0 < self.now.0 {
             return Err(format!(
@@ -554,12 +655,13 @@ impl Game {
                 ship.epoch.stamp()
             ));
         }
-        if self.mode == Mode::Sandbox {
-            self.undo.push(self.log.clone());
-        }
         ship.id = self.log.plan.next_id();
         let id = ship.id;
-        self.log.plan.ships.push(ship);
+        let log = self.changed(|log| log.plan.ships.push(ship))?;
+        let before = std::mem::replace(&mut self.log, log);
+        if self.mode == Mode::Sandbox {
+            self.undo.push(before);
+        }
         self.reshaped();
         Ok(id)
     }
@@ -591,9 +693,9 @@ impl Game {
     /// Career: ship `id`'s steps from `from` on replaced by `steps`, from
     /// now (to the minute). It takes effect where the ship is: now, if it
     /// is staying where the step that holds `from` leaves from; at the
-    /// end of a leg in flight; or later. Refused if it changes a step
-    /// whose leg has begun, or needs a longer station visit than was
-    /// built (until step 3).
+    /// end of a leg in flight; or later. Refused if its steps break the
+    /// ship's class, if it changes a step whose leg has begun, or if it
+    /// needs a longer station visit than was built (until step 3).
     pub fn replan(&mut self, id: u64, from: usize, steps: Vec<Step>) -> Result<(), String> {
         if self.mode != Mode::Career {
             return Err("re-plans are career's; the sandbox edits".into());
@@ -613,6 +715,7 @@ impl Game {
             from,
             steps,
         };
+        let log = self.changed(|log| log.replans.push(replan.clone()))?;
         // Walked with what the cache has, the re-plan is decided where the
         // ship is (in career, its designs to now are done). One whose step
         // is not designed yet takes effect after now; if it then cannot,
@@ -642,7 +745,7 @@ impl Game {
             return Err(why);
         }
         self.now = at;
-        self.log.replans.push(replan);
+        self.log = log;
         self.reshaped();
         Ok(())
     }

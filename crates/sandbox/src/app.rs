@@ -461,8 +461,8 @@ impl Shell {
     }
 
     /// Replaces ship `s` with `ship`, designing it again from where it
-    /// first changed (a new name alone is only a rename); the plan keeps
-    /// what it was for undo.
+    /// first changed (a new name, class or load alone designs nothing);
+    /// the plan keeps what it was for undo.
     pub fn change(&mut self, s: usize, ship: orbit::mission::Ship) {
         let Some(plan) = self.plan.as_mut() else {
             return;
@@ -473,12 +473,13 @@ impl Shell {
         {
             self.leg = None;
         }
-        let renamed_only = {
-            let same = |x: &orbit::mission::Ship| format!("{:?}", (&x.start, x.epoch, &x.steps));
-            same(&plan.plan().ships[s]) == same(&ship)
+        // The selected item stays where the ship's course does.
+        let same_course = {
+            let course = |x: &orbit::mission::Ship| format!("{:?}", (&x.start, x.epoch, &x.steps));
+            course(&plan.plan().ships[s]) == course(&ship)
         };
         plan.edit(s, ship);
-        if !renamed_only {
+        if !same_course {
             self.selected = None;
         }
     }

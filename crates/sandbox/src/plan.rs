@@ -14,6 +14,7 @@ use orbit::track::Track;
 use rayon::prelude::*;
 use sim::game::{Game, world};
 use sim::log::{Log, Mode};
+use sim::ships::Breach;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -48,6 +49,8 @@ pub struct Ship {
     /// Another whenever its items change, unique in the process
     /// (`ShipDesign::revision`): what its lines are built for.
     pub revision: u64,
+    /// What its class does not allow of it (`ShipDesign::breaches`).
+    pub warnings: Vec<Breach>,
 }
 
 /// A sweep's result: ship and step swept, the sweep's id, its options.
@@ -95,10 +98,14 @@ impl Loaded {
         Loaded::of(Game::empty(name, path, pool.clone()), pool)
     }
 
-    /// `plan` in the sandbox, not saved anywhere.
-    pub fn start(plan: Plan) -> Loaded {
+    /// `plan` in the sandbox, not saved anywhere; why not, if its ships'
+    /// classes or loads do not read (`Game::new`).
+    pub fn start(plan: Plan) -> Result<Loaded, String> {
         let pool = Arc::new(crate::background::pool("design"));
-        Loaded::of(Game::new(Log::sandbox(plan), pool.clone()), pool)
+        Ok(Loaded::of(
+            Game::new(Log::sandbox(plan), pool.clone())?,
+            pool,
+        ))
     }
 
     fn of(game: Game, pool: Arc<rayon::ThreadPool>) -> Loaded {
@@ -151,6 +158,8 @@ impl Loaded {
                 Some(mut v) => {
                     v.name.clone_from(&d.name);
                     v.first_leg = first_leg;
+                    any |= v.warnings != d.breaches;
+                    v.warnings.clone_from(&d.breaches);
                     v
                 }
                 None => {
@@ -163,6 +172,7 @@ impl Loaded {
                         failure: d.failure.clone(),
                         first_leg,
                         revision: d.revision,
+                        warnings: d.breaches.clone(),
                     }
                 }
             };
@@ -172,22 +182,29 @@ impl Loaded {
     }
 
     /// Replaces ship `s` with `ship`, designing it again from where it
-    /// first changed (a new name alone is only a rename); undoable.
+    /// first changed (a new name alone is only a rename, and a new class
+    /// or load designs nothing); undoable.
     pub fn edit(&mut self, s: usize, ship: orbit::mission::Ship) {
         let id = self.ships[s].id;
         let before = &self.game.plan().ships[s];
-        let same = |x: &orbit::mission::Ship| format!("{:?}", (&x.start, x.epoch, &x.steps));
-        if same(before) == same(&ship) {
+        let mut renamed = before.clone();
+        renamed.name.clone_from(&ship.name);
+        if format!("{renamed:?}") == format!("{ship:?}") {
             if before.name != ship.name {
                 self.game.rename(id, &ship.name);
                 self.shown();
             }
             return;
         }
+        let inputs = self.game.ships()[s].inputs();
+        // Refused only for a class or load that does not read, which the
+        // editor keeps as the game had them.
         self.game
             .edit(id, ship)
-            .expect("the sandbox edits any ship");
-        self.sweeps.retain(|&(ship, _), _| ship != s);
+            .expect("the sandbox edits any ship whose class and load read");
+        if self.game.ships()[s].inputs() != inputs {
+            self.sweeps.retain(|&(ship, _), _| ship != s);
+        }
         self.changed();
     }
 
@@ -201,7 +218,9 @@ impl Loaded {
     /// Adds `ship` to the plan, last, with an id of its own, and designs
     /// it.
     pub fn add_ship(&mut self, ship: orbit::mission::Ship) {
-        self.game.add_ship(ship).expect("the sandbox adds any ship");
+        self.game
+            .add_ship(ship)
+            .expect("the sandbox adds any ship whose class and load read");
         self.sweeps.clear();
         self.changed();
     }

@@ -20,6 +20,7 @@ use sandbox::panel::{self, Tone};
 use sandbox::paths::{SHIP_SETS, VIEW_POSE};
 use sandbox::pick::Pick;
 use sandbox::plan::{Loaded, Ship};
+use sim::ships::Breach;
 
 /// From the NRHO to low lunar orbit: designed in a fraction of a second.
 const QUICK: &str = r#"
@@ -40,7 +41,7 @@ fn designed() -> Loaded {
 
 fn designed_from(src: &str) -> Loaded {
     let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(src, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(src, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     assert!(plan.done());
     plan
@@ -454,6 +455,7 @@ fn panel_rows_carry_dv_and_failures() {
             failure: Some(why.into()),
             first_leg: 0,
             revision: 0,
+            warnings: Vec::new(),
         },
         Ship {
             id: 2,
@@ -466,6 +468,7 @@ fn panel_rows_carry_dv_and_failures() {
             failure: Some(why.into()),
             first_leg: 0,
             revision: 0,
+            warnings: Vec::new(),
         },
     ];
     let panicked = "designing it panicked: no message";
@@ -483,6 +486,7 @@ fn panel_rows_carry_dv_and_failures() {
             failure: Some(panicked.into()),
             first_leg: 0,
             revision: 0,
+            warnings: Vec::new(),
         },
     ];
     let rows = panel::rows(eph, &ships, Epoch::from_ymd(2045, 3, 2), None);
@@ -497,6 +501,57 @@ fn panel_rows_carry_dv_and_failures() {
     assert_eq!(rows[2].dv, "3,100 m/s");
     assert_eq!(rows[3].kind, "failed");
     assert!(rows[3].lines.contains(&failure));
+}
+
+/// What a ship's class does not allow (M1b.md, step 2 plan, part 2): a
+/// warning on the step's first item past its stay (here a landing, which
+/// a step to a surface designs in place of a leg: found in a screenshot);
+/// on the ship's row, its start's and those of steps not designed yet.
+#[test]
+fn panel_rows_carry_class_warnings() {
+    let breach = |step, why: &str| Breach {
+        step,
+        why: why.into(),
+    };
+    let (mut stay, mut landing) = (item(ItemKind::Stay, 0.0), item(ItemKind::Landing, 2.1));
+    (stay.step, landing.step) = (1, 1);
+    let ship = Ship {
+        id: 1,
+        name: "Tug".into(),
+        items: vec![stay, landing],
+        done: false,
+        failure: None,
+        first_leg: 0,
+        revision: 0,
+        warnings: vec![
+            breach(None, "a tug-h's hold takes 50 t, not 60"),
+            breach(Some(1), "a tug-h can't land at moon-south-pole"),
+            breach(Some(2), "a tug-h can't fly between planets"),
+        ],
+    };
+    let rows = panel::rows(
+        Ephemeris::standard(),
+        &[ship],
+        Epoch::from_ymd(2045, 3, 2),
+        None,
+    );
+    let warned = |r: usize| -> Vec<&str> {
+        rows[r]
+            .lines
+            .iter()
+            .filter(|(_, tone)| *tone == Tone::Warning)
+            .map(|(line, _)| line.as_str())
+            .collect()
+    };
+    assert_eq!(
+        warned(0),
+        [
+            "a tug-h's hold takes 50 t, not 60",
+            "leg 3: a tug-h can't fly between planets"
+        ]
+    );
+    assert!(warned(1).is_empty());
+    assert_eq!(warned(2), ["a tug-h can't land at moon-south-pole"]);
 }
 
 /// Clicks through damascene, as the window delivers them, at 1 and 2

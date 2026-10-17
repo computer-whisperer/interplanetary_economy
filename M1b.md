@@ -115,6 +115,36 @@ below), and the four decisions below, each as recommended.
   bit before and after (their `Debug` text, 16 files). The route
   graph's loader moved to `orbit` (`RouteGraph::standard`), beside
   `Places::standard`.
+- Part 2: a plan's ship names its class and its start's load (`class`;
+  `propellant_t`, `cargo` by `lox`, `ch4`, `lh2`, `equipment`,
+  `payload`, `metal`, as `economy.toml` writes outputs); `sim::ships`
+  reads them and checks the ship against its class. A game draws its
+  economy from its seed. Settled in building it:
+  - Landing is checked by body: a class lands on a body if it lists one
+    of its surfaces, so a surface written out as a table is checked too.
+  - A class that is not `interplanetary` leaves no system (a planet's,
+    or a small body alone), and starts in Earth's, where it is bought.
+  - Loads are held to tanks and holds to the gram: amounts written in
+    decimal add up only to within rounding.
+  - The sandbox warns on the step's first item past its stay (a step to
+    a surface designs a landing, not a leg: found in a screenshot), and
+    on the ship's row for its start and steps not yet designed.
+  - Career: every ship starts at LEO, with a class or without. A log
+    that breaks a class, or whose class or load does not read, is not a
+    game (`Game::new` says why): a career log's actions were checked
+    when made, so reading one back checks them again. A re-plan is
+    checked on the steps as each re-plan leaves them in the log (as
+    `Log::check` counts them), not as they stand after designs pass one
+    over, so that the check made when it was made is the one made on
+    reading it back.
+  - A new name, class or load designs nothing (tests count designs),
+    and keeps the ship's re-plans in the sandbox.
+  - Review (a sub-agent): a new class folded a career log's re-plans in
+    the sandbox, and the ship flew from its start without them; amounts
+    in decimal at a hold's capacity overfilled it; a re-plan's breach
+    was numbered by the ship's steps, not the re-plan's legs; messages
+    rounded an overage away and called a small body a planet. Each
+    fixed, with a test.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

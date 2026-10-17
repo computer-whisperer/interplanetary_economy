@@ -8,3 +8,4 @@ pub mod log;
 pub mod params;
 pub mod report;
 pub mod run;
+pub mod ships;

@@ -392,7 +392,7 @@ days = [0.5]
 #[test]
 fn hidden_lines_are_left_out() {
     let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(QUICK, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(QUICK, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     assert!(plan.done());
     let mut app = Shell::new(Epoch::from_ymd(2045, 3, 5));

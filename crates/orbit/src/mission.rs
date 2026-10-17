@@ -21,6 +21,7 @@ use crate::track::Track;
 use glam::DVec3;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -107,6 +108,14 @@ pub struct Ship {
     pub start: Spot,
     pub epoch: Epoch,
     pub steps: Vec<Step>,
+    /// Its class (`data/economy.toml`), and what it carries at its start:
+    /// propellant, t (else a full tank), and cargo, t by commodity. The
+    /// sim engine reads and checks them (`sim::ships`; M1b.md, step 2
+    /// plan, part 2); they are kept as written, and designing the ship
+    /// does not read them.
+    pub class: Option<String>,
+    pub propellant_t: Option<f64>,
+    pub cargo: BTreeMap<String, f64>,
 }
 
 /// A place as a plan names it.
@@ -214,6 +223,8 @@ struct ShipFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<u64>,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    class: Option<String>,
     start: StartFile,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     leg: Vec<LegFile>,
@@ -224,6 +235,10 @@ struct ShipFile {
 struct StartFile {
     at: toml::Value,
     epoch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    propellant_t: Option<f64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cargo: BTreeMap<String, f64>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -284,6 +299,9 @@ impl Plan {
                     start,
                     epoch,
                     steps,
+                    class: ship.class,
+                    propellant_t: ship.start.propellant_t,
+                    cargo: ship.start.cargo,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -325,9 +343,12 @@ impl Plan {
                 .map(|ship| ShipFile {
                     id: Some(ship.id),
                     name: ship.name.clone(),
+                    class: ship.class.clone(),
                     start: StartFile {
                         at: ship.start.source.clone(),
                         epoch: ship.epoch.stamp(),
+                        propellant_t: ship.propellant_t,
+                        cargo: ship.cargo.clone(),
                     },
                     leg: legs(&ship.steps),
                 })

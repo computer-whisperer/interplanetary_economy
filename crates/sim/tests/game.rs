@@ -87,7 +87,7 @@ to = "llo"
 #[test]
 fn a_game_designs_what_the_planner_does() {
     let src = mission("gateway-rotation.toml");
-    let mut game = Game::new(parse(&src), pool(24));
+    let mut game = Game::new(parse(&src), pool(24)).unwrap();
     game.wait();
     let ship = &game.plan().ships[0];
     let mut planner = Planner::new(world(), ship).unwrap();
@@ -106,8 +106,8 @@ fn a_game_designs_what_the_planner_does() {
 
 #[test]
 fn the_threads_change_nothing() {
-    let mut one = Game::new(parse(SORTIE), pool(1));
-    let mut many = Game::new(parse(SORTIE), pool(24));
+    let mut one = Game::new(parse(SORTIE), pool(1)).unwrap();
+    let mut many = Game::new(parse(SORTIE), pool(24)).unwrap();
     one.wait();
     many.wait();
     assert_eq!(
@@ -124,7 +124,7 @@ fn the_threads_change_nothing() {
 /// nothing and is the game it was.
 #[test]
 fn an_edit_designs_what_it_changed_and_an_undo_nothing() {
-    let mut game = Game::new(parse(SORTIE), pool(24));
+    let mut game = Game::new(parse(SORTIE), pool(24)).unwrap();
     game.wait();
     let (before, made) = (hashes(&game), game.designs_made());
     let items = game.ships()[0].items().count();
@@ -144,7 +144,7 @@ fn an_edit_designs_what_it_changed_and_an_undo_nothing() {
 
     let mut edited = parse(SORTIE);
     edited.plan.ships[0] = ship;
-    let mut fresh = Game::new(edited, pool(24));
+    let mut fresh = Game::new(edited, pool(24)).unwrap();
     fresh.wait();
     assert_eq!(hashes(&game), hashes(&fresh));
     assert_ne!(hashes(&game), before);
@@ -170,7 +170,7 @@ fn career_replans_from_now() {
     log.plan
         .ships
         .retain(|s| s.name == "Low lunar orbit round trip");
-    let mut sandbox = Game::new(log.clone(), pool(24));
+    let mut sandbox = Game::new(log.clone(), pool(24)).unwrap();
     sandbox.wait();
     let stay = sandbox.ships()[0].items().next().unwrap().clone();
     assert_eq!(stay.kind, ItemKind::Stay);
@@ -178,7 +178,7 @@ fn career_replans_from_now() {
 
     log.setup.mode = Mode::Career;
     log.setup.now = Some(now);
-    let mut game = Game::new(log, pool(24));
+    let mut game = Game::new(log, pool(24)).unwrap();
     game.wait();
     let id = game.ships()[0].id;
     let before = hashes(&game);
@@ -212,8 +212,8 @@ fn career_replans_from_now() {
 
     // Read back, in career and in the sandbox.
     let text = game.log().to_toml();
-    let mut again = Game::new(parse(&text), pool(24));
-    let mut opened = Game::in_mode(parse(&text), Mode::Sandbox, pool(24));
+    let mut again = Game::new(parse(&text), pool(24)).unwrap();
+    let mut opened = Game::in_mode(parse(&text), Mode::Sandbox, pool(24)).unwrap();
     again.wait();
     opened.wait();
     assert_eq!(hashes(&again), after);
@@ -226,7 +226,7 @@ fn career_replans_from_now() {
 #[test]
 fn a_longer_station_visit_is_refused() {
     let src = mission("gateway-rotation.toml");
-    let mut sandbox = Game::new(parse(&src), pool(24));
+    let mut sandbox = Game::new(parse(&src), pool(24)).unwrap();
     sandbox.wait();
     let stay = sandbox.ships()[0]
         .items()
@@ -236,7 +236,7 @@ fn a_longer_station_visit_is_refused() {
     let mut log = parse(&src);
     log.setup.mode = Mode::Career;
     log.setup.now = Some(stay.start.plus_days(5.0));
-    let mut game = Game::new(log, pool(24));
+    let mut game = Game::new(log, pool(24)).unwrap();
     game.wait();
     let id = game.ships()[0].id;
     let steps = game.plan().ships[0].steps.clone();
@@ -270,7 +270,7 @@ fn every_scenario_holds() {
             "{}: a scenario checks",
             path.display()
         );
-        let games = sim::run::run(&log, false, &pool(24));
+        let games = sim::run::run(&log, false, &pool(24)).unwrap();
         for c in sim::run::checks(&log, &games) {
             match c {
                 Ok(held) => println!("{}: held: {held}", path.display()),
@@ -311,7 +311,7 @@ fn go(to: &str, days: f64) -> Step {
 /// the first would have (found in review: it had been passed over).
 #[test]
 fn a_later_replan_takes_effect_where_it_holds() {
-    let mut game = Game::new(round_trip_in_career("2045-03-01T12:00"), pool(24));
+    let mut game = Game::new(round_trip_in_career("2045-03-01T12:00"), pool(24)).unwrap();
     game.wait();
     let id = game.ships()[0].id;
     game.replan(id, 1, vec![go("leo", 4.0)]).unwrap();
@@ -332,7 +332,7 @@ fn a_later_replan_takes_effect_where_it_holds() {
     );
     assert!(game.ships()[0].refused.is_empty());
     let text = game.log().to_toml();
-    let mut again = Game::new(parse(&text), pool(24));
+    let mut again = Game::new(parse(&text), pool(24)).unwrap();
     again.wait();
     assert_eq!(hashes(&again), hashes(&game));
 }
@@ -350,7 +350,7 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
         from: 0,
         steps: vec![go("llo", 4.0), go("leo", 3.5)],
     });
-    let mut game = Game::new(log, pool(24));
+    let mut game = Game::new(log, pool(24)).unwrap();
     game.wait();
     let ship = &game.ships()[0];
     assert_eq!(ship.refused.len(), 1, "{:?}", ship.refused);
@@ -381,7 +381,7 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
 fn a_ship_with_no_legs_begins_its_stay_at_now() {
     let mut log = round_trip_in_career("2045-03-10T00:00");
     log.plan.ships[0].steps.clear();
-    let mut game = Game::new(log, pool(24));
+    let mut game = Game::new(log, pool(24)).unwrap();
     game.wait();
     assert_eq!(game.ships()[0].items().count(), 0);
     let start = Epoch::from_ymd(2045, 3, 1);
@@ -398,7 +398,7 @@ fn a_ship_with_no_legs_begins_its_stay_at_now() {
 /// Renamed, then undone: the old name is back, in the plan and the ship.
 #[test]
 fn an_undone_rename_takes_the_old_name() {
-    let mut game = Game::new(parse(SORTIE), pool(24));
+    let mut game = Game::new(parse(SORTIE), pool(24)).unwrap();
     game.wait();
     let id = game.ships()[0].id;
     game.rename(id, "Other");
@@ -406,4 +406,137 @@ fn an_undone_rename_takes_the_old_name() {
     assert!(game.undo());
     assert_eq!(game.ships()[0].name, "Lander");
     assert_eq!(game.plan().ships[0].name, "Lander");
+}
+
+/// A ship's class in the sandbox: what it does not allow is a warning on
+/// the step, and a new class or load designs nothing (M1b.md, step 2
+/// plan, part 2).
+#[test]
+fn a_class_warns_in_the_sandbox_and_a_new_one_designs_nothing() {
+    let src = SORTIE.replace("name = \"Lander\"", "name = \"Lander\"\nclass = \"lander\"");
+    let mut game = Game::new(parse(&src), pool(24)).unwrap();
+    game.wait();
+    assert!(game.ships()[0].breaches.is_empty());
+    let (made, revision) = (game.designs_made(), game.ships()[0].revision);
+    let id = game.ships()[0].id;
+    let mut tug = game.plan().ships[0].clone();
+    tug.class = Some("tug-h".into());
+    tug.cargo.insert("equipment".into(), 60.0);
+    game.edit(id, tug).unwrap();
+    game.wait();
+    let warned: Vec<String> = game.ships()[0]
+        .breaches
+        .iter()
+        .map(|b| b.to_string())
+        .collect();
+    assert_eq!(
+        warned,
+        [
+            "a tug-h's hold takes 50 t, not 60",
+            "leg 2: a tug-h can't land at moon-south-pole",
+        ]
+    );
+    assert_eq!(game.designs_made(), made);
+    assert_eq!(game.ships()[0].revision, revision);
+    assert!(game.undo());
+    assert!(game.ships()[0].breaches.is_empty());
+    let mut unknown = game.plan().ships[0].clone();
+    unknown.class = Some("barge".into());
+    let why = game.edit(id, unknown).unwrap_err();
+    assert!(
+        why.starts_with("ship \"Lander\": no class \"barge\""),
+        "{why}"
+    );
+    assert_eq!(game.plan().ships[0].class.as_deref(), Some("lander"));
+}
+
+/// A career log in the sandbox, its ship given a class: its re-plan is
+/// kept, and nothing is designed again (found in review: the edit folded
+/// the re-plan, and the ship flew from its start without it).
+#[test]
+fn a_new_class_keeps_the_replans() {
+    let path = format!(
+        "{}/../../data/scenarios/llo-round-trip-replanned.toml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let log = parse(&std::fs::read_to_string(path).unwrap());
+    let mut game = Game::in_mode(log, Mode::Sandbox, pool(24)).unwrap();
+    game.wait();
+    let (made, before) = (game.designs_made(), hashes(&game));
+    let id = game.ships()[0].id;
+    let mut tug = game.plan().ships[0].clone();
+    tug.class = Some("tug-h".into());
+    game.edit(id, tug).unwrap();
+    game.wait();
+    assert_eq!(game.log().replans.len(), 1);
+    assert_eq!(game.designs_made(), made);
+    assert_eq!(hashes(&game), before);
+    assert_eq!(game.plan().ships[0].class.as_deref(), Some("tug-h"));
+}
+
+/// Career refuses what a ship's class does not allow when it is made: a
+/// ship added, a re-plan, or a log that has one; and a ship starts at LEO.
+#[test]
+fn career_refuses_what_a_class_does_not_allow() {
+    let src = r#"
+name = "tugs"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+"#;
+    let mut game = Game::new(parse(src), pool(24)).unwrap();
+    let id = game.ships()[0].id;
+    // Its legs counted as the re-plan's, as a log reads them (found in
+    // review: they were counted as the ship's steps).
+    let why = game
+        .replan(id, 1, vec![go("moon-south-pole", 0.1)])
+        .unwrap_err();
+    assert_eq!(
+        why,
+        "replan 1: leg 1: a tug-h can't land at moon-south-pole"
+    );
+    assert!(game.log().replans.is_empty());
+
+    let mut lander = game.plan().ships[0].clone();
+    lander.name = "Lander".into();
+    lander.class = Some("lander".into());
+    lander.steps = vec![go("llo", 3.5), go("leo", 3.5)];
+    let Step::Go(home) = &mut lander.steps[1] else {
+        panic!("a leg")
+    };
+    home.aero = true;
+    let why = game.add_ship(lander.clone()).unwrap_err();
+    assert_eq!(
+        why,
+        "ship \"Lander\": leg 2: a lander can't arrive through an atmosphere"
+    );
+    let mut at_nrho = lander.clone();
+    at_nrho.start = orbit::mission::Spot::named("nrho", Places::standard()).unwrap();
+    at_nrho.steps.clear();
+    let why = game.add_ship(at_nrho).unwrap_err();
+    assert_eq!(
+        why,
+        "ship \"Lander\": a ship starts at LEO, where it is bought, not nrho"
+    );
+    assert_eq!(game.ships().len(), 1);
+
+    // A log that has one is not a career game; in the sandbox, it warns.
+    let landing = format!("{src}\n[[ship.leg]]\nto = \"moon-south-pole\"\n");
+    let why = Game::new(parse(&landing), pool(24)).err().unwrap();
+    assert_eq!(
+        why,
+        "ship \"Tug\": leg 2: a tug-h can't land at moon-south-pole"
+    );
+    let game = Game::in_mode(parse(&landing), Mode::Sandbox, pool(24)).unwrap();
+    assert_eq!(game.ships()[0].breaches.len(), 1);
 }

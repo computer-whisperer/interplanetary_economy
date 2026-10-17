@@ -51,13 +51,21 @@ fn run(file: &PathBuf, alone: bool, tracks: Option<PathBuf>) -> Result<()> {
     }
     println!("{}", log.plan.name);
     let pool = Arc::new(rayon::ThreadPoolBuilder::new().build()?);
-    let games = sim::run::run(&log, alone, &pool);
+    let games =
+        sim::run::run(&log, alone, &pool).map_err(|e| anyhow!("{}: {e}", file.display()))?;
     for game in &games {
         for (ship, plan) in game.ships().iter().zip(&game.plan().ships) {
+            let class = plan
+                .class
+                .as_ref()
+                .map_or(String::new(), |c| format!("a {c}, "));
             println!(
-                "\n{} (from {}, {})",
+                "\n{} ({class}from {}, {})",
                 ship.name, plan.start.label, plan.epoch
             );
+            for b in &ship.breaches {
+                println!("  WARNING  {b}");
+            }
             let items: Vec<_> = ship.items().cloned().collect();
             for item in &items {
                 print!("{}", report::line(eph, item));

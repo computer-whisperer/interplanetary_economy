@@ -292,6 +292,9 @@ pub fn new_ship(id: u64, name: String, t: Epoch, places: &Places) -> Ship {
         start: Spot::named("leo", places).expect("LEO is a place"),
         epoch: Epoch::from_ymd(y, m, d.floor() as u32),
         steps: Vec::new(),
+        class: None,
+        propellant_t: None,
+        cargo: Default::default(),
     }
 }
 

@@ -488,6 +488,12 @@ pub struct Economy {
     pub asteroids: Vec<AsteroidDraw>,
 }
 
+impl Economy {
+    pub fn propellant(&self, p: Propellant) -> &PropellantSpec {
+        &self.propellants[p as usize]
+    }
+}
+
 impl EconomyFile {
     pub fn standard() -> Self {
         toml::from_str(include_str!("../../../data/economy.toml"))

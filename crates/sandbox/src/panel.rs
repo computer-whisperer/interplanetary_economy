@@ -118,6 +118,19 @@ pub fn rows(
         {
             lines.push((why.clone(), Tone::Failure));
         }
+        // What its class does not allow: on the step's first item past
+        // its stay (a leg, or a landing), once it is designed; on the ship,
+        // its start's and those of steps not yet.
+        let past_stay = |step: usize| {
+            ship.items
+                .iter()
+                .position(|i| i.step == step && i.kind != ItemKind::Stay)
+        };
+        for w in &ship.warnings {
+            if w.step.and_then(past_stay).is_none() {
+                lines.push((w.to_string(), Tone::Warning));
+            }
+        }
         let dv: f64 = ship.items.iter().map(|i| i.dv).sum();
         rows.push(Row {
             key: ship_key(s),
@@ -135,6 +148,11 @@ pub fn rows(
         let now = current(ship, t);
         for (k, item) in ship.items.iter().enumerate() {
             let mut row = item_row(eph, item);
+            if past_stay(item.step) == Some(k) {
+                for w in ship.warnings.iter().filter(|w| w.step == Some(item.step)) {
+                    row.lines.push((w.why.clone(), Tone::Warning));
+                }
+            }
             row.key = item_key(s, k);
             row.current = now == Some(k);
             row.selected = selected == Some((s, k));

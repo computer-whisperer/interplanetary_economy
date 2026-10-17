@@ -29,7 +29,7 @@ days = [0.5]
 
 fn designed() -> Loaded {
     let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(QUICK, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(QUICK, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     assert!(plan.done());
     plan
@@ -139,7 +139,7 @@ fn ship_and_burns_on_the_line() {
 fn small_body_focus_before_2040() {
     let eph = Ephemeris::standard();
     let early = QUICK.replace("2045-03-05", "2039-12-30");
-    let mut plan = Loaded::start(Plan::parse(&early, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(&early, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     assert!(plan.ships[0].failure.is_none());
     let bennu = eph.lookup("bennu").unwrap();
@@ -271,11 +271,11 @@ fn an_edited_ship_is_designed_again() {
     let parse = || Plan::parse(SORTIE, eph, Places::standard()).unwrap();
     let mut edited = parse();
     edited.ships[0].steps[2] = Step::Wait(3.0);
-    let mut fresh = Loaded::start(edited.clone());
+    let mut fresh = Loaded::start(edited.clone()).unwrap();
     fresh.wait();
     assert!(fresh.ships.iter().all(|s| s.failure.is_none()));
 
-    let mut plan = Loaded::start(parse());
+    let mut plan = Loaded::start(parse()).unwrap();
     plan.wait();
     let other = plan.ships[1].items.clone();
     let revisions = [plan.ships[0].revision, plan.ships[1].revision];
@@ -294,7 +294,7 @@ fn an_edited_ship_is_designed_again() {
     assert_same(&plan.ships[1].items, &other);
 
     // Edited at once, while its first design is under way.
-    let mut plan = Loaded::start(parse());
+    let mut plan = Loaded::start(parse()).unwrap();
     plan.edit(0, edited.ships[0].clone());
     plan.wait();
     assert_same(&plan.ships[0].items, &fresh.ships[0].items);
@@ -309,7 +309,7 @@ fn an_edit_builds_its_own_ships_lines_alone() {
     let eph = Ephemeris::standard();
     let parse = || Plan::parse(SORTIE, eph, Places::standard()).unwrap();
     let shell = || {
-        let mut plan = Loaded::start(parse());
+        let mut plan = Loaded::start(parse()).unwrap();
         plan.wait();
         let mut app = Shell::new(Epoch::from_ymd(2045, 3, 6));
         app.plan = Some(plan);
@@ -392,7 +392,7 @@ fn a_new_start_drops_the_old_checkpoints() {
         r#"start = { at = "nrho", epoch = "2045-03-05" }"#,
         r#"start = { at = "llo", epoch = "2045-03-05" }"#,
     );
-    let mut plan = Loaded::start(Plan::parse(&src, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(&src, eph, Places::standard()).unwrap()).unwrap();
     // From low lunar orbit, the first leg goes to low lunar orbit: change
     // it to the south pole's, so the plan designs.
     let mut ship = plan.plan().ships[0].clone();
@@ -414,7 +414,7 @@ fn a_new_start_drops_the_old_checkpoints() {
     plan.edit(0, ship.clone());
     plan.wait();
     fresh_plan.ships[0] = ship;
-    let mut fresh = Loaded::start(fresh_plan);
+    let mut fresh = Loaded::start(fresh_plan).unwrap();
     fresh.wait();
     assert!(
         plan.ships[0].failure.is_none(),

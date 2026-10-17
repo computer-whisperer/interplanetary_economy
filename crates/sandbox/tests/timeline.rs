@@ -41,14 +41,12 @@ fn bars_at_their_times_and_clicks() {
     let gpu = render::offscreen::Offscreen::new().expect("a GPU");
     let (device, queue) = (&gpu.device, &gpu.queue);
     let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(TWO, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(TWO, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     assert!(plan.done() && plan.ships.iter().all(|s| s.failure.is_none()));
     for scale in [1.0f32, 2.0] {
         let mut app = Shell::new(plan.epoch());
-        app.plan = Some(Loaded::start(
-            Plan::parse(TWO, eph, Places::standard()).unwrap(),
-        ));
+        app.plan = Some(Loaded::start(Plan::parse(TWO, eph, Places::standard()).unwrap()).unwrap());
         app.plan.as_mut().unwrap().wait();
         app.poll();
 
@@ -226,9 +224,7 @@ fn bars_at_their_times_and_clicks() {
 fn the_plan_is_fitted_with_the_clock_elsewhere() {
     let eph = Ephemeris::standard();
     let mut app = Shell::new(Epoch::from_ymd(2044, 1, 1));
-    app.plan = Some(Loaded::start(
-        Plan::parse(TWO, eph, Places::standard()).unwrap(),
-    ));
+    app.plan = Some(Loaded::start(Plan::parse(TWO, eph, Places::standard()).unwrap()).unwrap());
     app.tick(0.0);
     app.plan.as_mut().unwrap().wait();
     app.tick(0.0);

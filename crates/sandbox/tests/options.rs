@@ -142,7 +142,7 @@ impl Harness {
 #[test]
 fn a_cell_picked_flies_there() {
     let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     assert!(plan.ships.iter().all(|s| s.failure.is_none()));
     let mut app = Shell::new(plan.epoch());
@@ -320,7 +320,7 @@ fn a_cell_picked_flies_there() {
 #[test]
 fn goals_and_windows() {
     let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     let mut app = Shell::new(plan.epoch());
     app.load(plan);
@@ -499,7 +499,7 @@ fn failed_and_redesigned_legs() {
         r#"to = { low = "mars", altitude = 400 }
 pin = { depart = "2032-01-01" }"#,
     );
-    let mut plan = Loaded::start(Plan::parse(&src, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(&src, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     let mut app = Shell::new(plan.epoch());
     app.load(plan);

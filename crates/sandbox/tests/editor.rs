@@ -181,7 +181,7 @@ fn steps(app: &Shell) -> Vec<Step> {
 #[test]
 fn ships_edited() {
     let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap());
+    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap()).unwrap();
     plan.wait();
     let mut app = Shell::new(plan.epoch());
     app.load(plan);

@@ -342,7 +342,8 @@ now = "2045-03-04T06:30"
 [[ship]]
 id = 2
 name = "Tug"
-start = { at = "leo", epoch = "2045-03-01" }
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01", propellant_t = 120.0, cargo = { equipment = 20.0 } }
 
 [[ship.leg]]
 to = "nrho"
@@ -382,10 +383,18 @@ dv = [600.0, 750.0]
         assert_eq!(log.setup.mode, Mode::Career);
         assert_eq!(log.replans.len(), 1);
         assert_eq!(log.replans[0].steps.len(), 2);
+        let tug = &log.plan.ships[0];
+        assert_eq!(tug.class.as_deref(), Some("tug-h"));
+        assert_eq!(tug.propellant_t, Some(120.0));
+        assert_eq!(tug.cargo.get("equipment"), Some(&20.0));
         let text = log.to_toml();
         assert!(text.starts_with("# A career game.\n"), "{text}");
         let back = parse(&text).unwrap();
         assert_eq!(back.to_toml(), text);
+        assert_eq!(
+            format!("{:?}", back.plan.ships),
+            format!("{:?}", log.plan.ships)
+        );
         assert_eq!(back.setup, log.setup);
         assert_eq!(back.replans[0].at, log.replans[0].at);
         assert_eq!(back.checks, log.checks);
