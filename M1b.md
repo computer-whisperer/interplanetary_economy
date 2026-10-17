@@ -1,9 +1,11 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-17: steps 1 and 2 done (their plans below). Decided:
-one engine for both modes, with economy components landing in the
-sandbox first (Modes, below), and the four decisions below, each as
-recommended.
+Status, 2026-10-17: steps 1 and 2 done, step 3 planned (the plans
+below). Decided: one engine for both modes, with economy components
+landing in the sandbox first (Modes, below); the four decisions below,
+each as recommended; and stations as vessels, flown to where they
+stay, with docking a step of its own (Design, Vessels, stations and
+stocks).
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
   going on from a checkpoint gives a fresh design's bits
@@ -464,7 +466,7 @@ Decided 2026-10-16 by the user, each as recommended.
      So a mature economy at a month a second probably outruns 24
      cores. Designs running ahead of departures (a route designs its
      next as soon as the last is designed) absorb bursts, not a
-     sustained deficit. Step 5 measures it on standing routes'
+     sustained deficit. Step 6 measures it on standing routes'
      departures (moved from step 2, which has none), and gate item 4
      holds it.
    - **What fails.** Some departures fail as they did in M1a's sweep:
@@ -505,14 +507,14 @@ In:
   and boil-off;
 - missions: M1c's plans with a ship of a class and a manifest;
 - standing routes (DESIGN.md, Player actions);
-- stations and depots, plants, technology programs and surveys (M2's
-  data);
+- stations and depots as vessels, and docking; plants, technology
+  programs and surveys (M2's data);
 - third-party traffic and the Access Cost Index;
 - money, Standing, mandates, crew and Supplies, and ship losses;
 - pricing authority and revenue bonds (decision 2);
 - inventory projections, the lead-time instrument M3 draws;
 - in the sandbox, the least UI that shows each component as it lands
-  (rows in the plan's panel, a stock at a place);
+  (rows in the plan's panel);
 - scenario scripts and a headless CLI.
 
 Out:
@@ -523,6 +525,9 @@ Out:
 - legs that fail M1a's gate: between stations, slow and near-180°
   departures, and LEO to the DRO's design time. That is playbook work,
   taken up when the economy shows it needs those legs;
+- meeting a vessel in a low orbit, whose plane and phase the target
+  fixes: no transfer type in the playbook arrives so. Playbook work
+  too;
 - upkeep in low orbits (the lunar gravity field and drag; M1a, step
   5d): still none;
 - legs between Mars and asteroids or between asteroids (as in M2);
@@ -590,30 +595,46 @@ Out:
   when they are drawn or when a leg leaves. Which form is chosen in
   step 2.
 
-### Places, stocks and stations
+### Vessels, stations and stocks
 
-- Each place holds a stock of each commodity. At LEO, anything can be
-  bought from Earth at its price plus launch. Earth's surface is not a
-  place, as in M2.
-- **A station is one continuous orbit.** Placing one builds its
-  reference from that moment (`reference::continue_orbit`; a year of
-  the NRHO took 3.6 s in M1a step 5c) and extends it ahead as plans
-  reach further, with upkeep simulated as it goes. Extending is new:
-  `continue_orbit` starts from the catalog orbit, so M1a's yearly
-  pieces and M1c's visits are each a separate orbit. Every leg to or
-  from the station meets that reference, so ships meet the depot
-  itself rather than another orbit of its family at another phase.
-  M1a left the continuous reference to M1b.
-- A depot stores propellant at a station or a surface site. Loading,
-  unloading and refuelling happen while a ship stays at the place, as
-  its manifest says.
+Decided 2026-10-17 by the user. It replaces a station placed by an
+action, its orbit built from then:
+
+- **Ships and stations are one kind of object, a vessel:** anything not
+  on the ephemeris's rails. A station is a vessel that stays, flown
+  there by a mission like any ship. How it is built depends on the
+  station: a big stage, like a parked Starship, is one vessel; an
+  assembly, like the ISS, is modules flown there and docked (step 4).
+  - Rejected: placing a station by an action. It left open what a
+    station is made of and how it got there.
+  - Rejected: one orbit for each station place for the whole game
+    (step 3's first draft). A fly-through, or a second station
+    arriving, would be put on the first one's orbit. Both rejected
+    forms kept each ship's design independent of the others'; a ship
+    that meets a vessel now reads that vessel's design.
+- **Going to an orbit** (`to = "nrho"`) gives the ship an orbit of its
+  own in that family, as in M1c. **Going to a vessel** meets it: the
+  leg arrives on the vessel's orbit, at its phase.
+- **A vessel staying in a station orbit keeps one continuous orbit**
+  from its arrival on, built from the catalog orbit as now and extended
+  ahead in chunks (`reference::continue_orbit`; a year of the NRHO took
+  3.6 s in M1a step 5c) as far as its stay and its visitors need, with
+  upkeep simulated as it goes. Extending is new: `continue_orbit`
+  starts from the catalog orbit, so M1a's yearly pieces and M1c's
+  visits are each a separate orbit. M1a left the continuous reference
+  to M1b.
+- **Stocks are what vessels carry.** Loading, unloading and refuelling
+  happen between two vessels that meet, as the arriving one's manifest
+  says. At LEO, anything can be bought from Earth at its price plus
+  launch. Earth's surface is not a place, as in M2.
 
 ### Plants, programs and surveys
 
 - As in M2 (`data/economy.toml`). Equipment delivered to a site and
   installed adds capacity after the build time. Output goes daily into
-  the site's stock, and deposits run out. A plant can be installed only
-  once its technology program is finished.
+  the site's stock (with stocks in vessels, step 5 decides which), and
+  deposits run out. A plant can be installed only once its technology
+  program is finished.
 - In career, grades stay hidden until surveyed. A survey costs and
   takes `data/economy.toml`'s numbers, and reveals the grade with noise
   [noise to set]. (M2 divided a survey's cost by the chance the deposit
@@ -696,7 +717,7 @@ Out:
 
 ### Projections
 
-- For each place, stock over time from what is scheduled: planned
+- What each vessel holds over time, from what is scheduled: planned
   arrivals and departures, plants at capacity, crew consumption,
   boil-off, and third-party demand at current prices (its mean, not a
   draw). Missions and standing routes are checked against it, and M3
@@ -706,7 +727,7 @@ Out:
 
 - **A scenario** is a career log written by hand: a seed (or the
   central draw), a start, actions at dates, and checks.
-  - Actions: buy a ship, place a station, deliver and install
+  - Actions: buy a ship (a station is one), deliver and install
     equipment, start a program or a survey, plan a mission, set up a
     standing route, set a price, petition for a power.
   - Checks: a stock, the account, Standing, a mandate, or the Access
@@ -743,8 +764,9 @@ Out:
      within 20% of the LP's.
    - Each difference is explained by what the LP leaves out: phasing,
      departures one at a time, lumpy demand, boil-off by the day. Its
-     NRHO-to-Mars payload goes through LEO (Out, above), and the
-     comparison counts that.
+     NRHO-to-Mars payload goes through LEO, and its hand-off in low
+     lunar orbit through a station or the surface (Out, above); the
+     comparison counts both.
 4. **Fast enough.**
    - That scenario runs 2040–2075 headless in 10 minutes on the
      development machine.
@@ -781,16 +803,18 @@ own. Each economy component lands in the sandbox first (Modes, above).
    equation at burns, upkeep, landings and ascents, and boil-off. Stays
    in their lighter form. In the sandbox: each burn's propellant, and
    where a ship runs dry.
-3. **Stations and depots:** placing a station (one reference, extended
-   ahead), stocks, loading and refuelling, purchases at LEO, and
-   projections.
-4. **Plants, programs and surveys,** with keyed draws (survey noise is
+3. **Stations and stocks:** a station is a vessel that stays; legs
+   that meet a vessel; a staying vessel's orbit, continued ahead;
+   transfers between vessels, purchases at LEO, and projections.
+4. **Docking:** vessels that move as one, so that a station can be an
+   assembly.
+5. **Plants, programs and surveys,** with keyed draws (survey noise is
    the first); in career, grades hidden until surveyed.
-5. **Standing routes.**
-6. **The cheapest cost, the Access Cost Index and the traffic
+6. **Standing routes.**
+7. **The cheapest cost, the Access Cost Index and the traffic
    generator.**
-7. **Money, Standing, mandates, crew, losses and powers.**
-8. **The gate.**
+8. **Money, Standing, mandates, crew, losses and powers.**
+9. **The gate.**
 
 ## Step 1 plan (2026-10-16): the engine
 
@@ -985,7 +1009,7 @@ is committed on its own.
      the move, the scenarios of the central draw and seeds 1–3 are
      written out (their `Debug` text); after it, they read the same to
      the bit. M2's tests pass unchanged.
-   - Keyed draws wait for their first consumer, survey noise in step 4.
+   - Keyed draws wait for their first consumer, survey noise in step 5.
      Nothing in step 2 is random after setup.
 2. **Classes and loads in the log** (`sim::ships`).
    - A ship names its class. Its start says what it carries: propellant
@@ -1012,7 +1036,7 @@ is committed on its own.
        ship starts at LEO, where it is bought.
    - Prices wait. A purchase's cost needs the launch price in time,
      which comes with step 3's purchases at LEO; the account is step
-     7's.
+     8's.
 3. **The state and the loop** (`sim::state`).
    - The state: each ship's tanks (LOX and fuel) and hold, and whether
      and where it ran dry.
@@ -1087,8 +1111,194 @@ is committed on its own.
    - The loop's re-run time on the published plan.
    - Decision 1 had step 2 measure design throughput at a month a
      second. That needs standing routes' departures, so it moves to
-     step 5.
+     step 6.
 
 Left out of step 2: refuelling and loading at stops (step 3, with
-stocks and purchases at LEO), turnaround days (step 5, with trips
-counted), and trip costs (step 7).
+stocks and purchases at LEO), turnaround days (step 6, with trips
+counted), and trip costs (step 8).
+
+## Step 3 plan (2026-10-17): stations and stocks
+
+A station is a vessel that stays, flown there like any ship (Design,
+Vessels, stations and stocks: decided with the user, with docking a
+step of its own). Ships meet vessels, take and give what they carry,
+and buy from Earth at LEO. Each part is committed on its own.
+
+As recommended, not yet ruled on: manifests (part 4) and career's
+check against the projection (part 6).
+
+What is hard, and where (found in discussing the first draft):
+
+- A ship's design reads another's: a leg that meets a vessel arrives on
+  its orbit. Today each ship is designed alone, its keys from its own
+  steps (part 3).
+- A staying vessel's orbit has to reach as far ahead as its stay and
+  its visitors need. Today a station orbit is built for one planned
+  stay (parts 1–2).
+- Meeting a vessel in a low orbit needs a leg the planner does not
+  have: the target fixes the plane and the phase. Out of M1b (Scope).
+
+1. **Continued orbits, a kill-test first** (`orbit::reference`).
+   - `continue_orbit` gains a chained form: a chunk of whole
+     revolutions whose first patch is fixed to the end of the chunk
+     before it.
+   - For each of the four station places, from the catalog orbit at a
+     date, continued over 36 years. Checked:
+     - each join continuous to the shooting's tolerance (~4 m, 0.01
+       mm/s);
+     - a chunk the same to the bit, built alone or after the orbit was
+       extended past it;
+     - the shape held (distance from the Moon within ~10% of the
+       catalog orbit's, as M1a step 5b);
+     - the time per year built, and the memory;
+     - upkeep per chunk (`stationkeeping::upkeep`), and its time. The
+       chunk's length is set here: at least four revolutions, which
+       upkeep needs.
+   - If a chain does not hold for an orbit (an L1 halo is the least
+     stable), stop and report. If building is slow, the arcs of each
+     Newton iteration are integrated in parallel.
+2. **The planner on continued orbits.**
+   - A ship arriving at a station orbit place gets its own orbit, built
+     from the catalog orbit at the arriving leg's window opening, as
+     now. It is continued ahead in chunks on demand, and shared by the
+     ship's checkpoints and stays. It reads only the arriving step, so
+     `reads` no longer reaches through the leg after a station.
+   - A design gets the chunks its times need: from when the ship is
+     ready, through its window's close and longest duration, with a
+     margin. What it reads, the span included, then does not depend on
+     how far the orbit has been built.
+   - A stay's upkeep is each chunk's rate over its time in that chunk.
+     Every stay pays it; today a visit shorter than four revolutions
+     pays none.
+   - Deleted: `visit_until`, `Planner::outstays`, and career's refusal
+     of a longer visit (its tests become tests that the visit is
+     designed). `resume_point` no longer steps back to a station's
+     arrival.
+   - Checked:
+     - designs bit-identical across thread counts
+       (`crates/orbit/tests/determinism.rs`);
+     - the published plan and the crew rotation, each leg's Δv and
+       design time before and after. Station orbits start as before,
+       so legs should move little; stays gain upkeep;
+     - memory.
+3. **Meeting a vessel.**
+   - A leg's destination names a vessel, by id (names change and
+     repeat), and the leg of its plan that brings it there:
+     `to = { ship = 3, leg = 2 }`; without `leg`, where it starts. The
+     editor writes the vessel's last leg.
+   - The leg arrives on the vessel's orbit at its phase; the ship then
+     stays on that orbit and leaves from it. The planner designs legs
+     to and between station orbits already (between them, 88.5%
+     converge: M1a's known failure). A vessel on a surface or at a
+     small body is met by going there.
+   - Why the leg is named: the stop met is fixed by the log, not by
+     when the ship gets there. Which designs wait on which is then seen
+     in the log, before any is made, and a re-plan of the vessel after
+     the leg met changes nothing of its visitors' designs.
+   - Refused when the log is read, in both modes: meeting a vessel in a
+     low orbit; meetings that wait on each other (a cycle).
+   - The engine: the meeting step's key adds the vessel's key after
+     the leg met. The ship's walk waits for the vessel's walk to get
+     there. An edit of the vessel at or before that leg designs its
+     visitors again from their meetings.
+   - Career: a re-plan of a vessel is refused if it replaces a leg
+     that another ship's plan meets it after.
+   - Whether the vessel is there when the ship arrives, and while it
+     transfers, is the loop's (part 5), not the design's.
+4. **Manifests in the log** (`orbit::mission::Go`, read by
+   `sim::ships`).
+   - Written on the leg that arrives at a stop, as the start writes its
+     load: the amounts to have after the stop.
+
+     ```toml
+     [[ship.leg]]
+     to = { ship = 3, leg = 1 }
+     days = [4.5]
+     propellant_t = 40.0                     # the tanks' excess given on arrival
+     cargo = { lox = 0.0, equipment = 20.0 } # LOX given on arrival, equipment taken on leaving
+     ```
+
+     - What is above them is given on arrival: at the end of the step's
+       last item, after its burns.
+     - What is below them is taken as the ship leaves: at the start of
+       its next leg, landing or ascent.
+     - A commodity not named is left as it is. A ship that never leaves
+       a stop takes nothing there.
+   - With whom: the vessel met. At LEO, with none, a take is bought
+     from Earth. A take elsewhere with none, or a give with none, has no
+     one: a warning in the sandbox, refused in career.
+   - Kept as written. Design keys leave them out, as they leave out a
+     ship's class and load, so a manifest edit designs nothing.
+   - Class checks: tank and hold amounts within capacity. A transfer
+     needs a class on both sides.
+   - A career re-plan of a staying ship can also set the manifest of
+     the stop it is at (`here`), whose takes are still to come.
+   - Rejected: on the leg that leaves (a last stop could deliver
+     nothing); as steps of their own, like waits (they would shift the
+     step numbers that keys, re-plans, breaches and checks count).
+5. **Transfers and purchases in the loop** (`sim::state`).
+   - What a ship gives goes into the vessel met: the propellant that
+     vessel burns into its tanks, the rest into its hold, within their
+     capacity. What it takes comes from the vessel's hold first, then
+     its tanks. A station keeps no reserve: drained, it runs dry
+     keeping station, which the loop shows (and career refuses).
+   - Events: each vessel's in its own order (an arrival's burns, then
+     its gives; its takes, then the departure's burns). At one time:
+     the tick, then gives, then takes, by ship id. A transfer first
+     pays both vessels' upkeep and boil-off to its time.
+   - A transfer that cannot be made in full is made as far as it can
+     be, and recorded as short: asked for, got, and why (the stock, the
+     capacity, or the vessel not there: not yet arrived, gone, or run
+     dry).
+   - Purchases at LEO (takes, and a career ship's price and start
+     load) are recorded with their cost: the launch price at the time
+     (geometric between the drawn 2040 and 2076 prices, held outside
+     them), plus the goods' price (propellant's, equipment's). Payload
+     pays launch only; metal cannot be bought. There is no account yet
+     (step 8).
+   - The state hash adds purchases and shortfalls.
+   - Measured: the loop's re-run on the published plan.
+6. **Career against the projection.**
+   - An action is pending until its ship is designed to its end. It is
+     refused then if, with it, a vessel runs dry or a transfer falls
+     short, where none did without it. The clock does not pass a
+     pending action's first effect, so nothing of a refused action
+     happens.
+   - Reading a career log back checks each action so again, in the
+     order made. `sim run` fails on one refused.
+   - In step 3 the projection is the loop's state: nothing is random
+     yet. A projection of means, apart from the state, comes with the
+     first draws in the loop (demand, step 7; losses, step 8).
+   - The alternative: career reports a plan that runs dry or short and
+     does not refuse it, until M3's UI designs a plan before it is
+     made.
+7. **The sandbox.**
+   - The editor: a leg's destination lists the plan's vessels, by name
+     and leg; a manifest per leg, as the start's load.
+   - The panel: each stop's transfers (given, taken, with whom; what
+     fell short and why); purchases and their cost.
+8. **Headless.**
+   - `sim run` prints each stop's transfers, and each purchase with its
+     cost.
+   - Checks: a ship's cargo by commodity at a date, within bounds; a
+     transfer short or not.
+   - Scenarios, in career: a hauler bought at LEO flies to the NRHO and
+     stays there as a depot; a tug buys propellant at LEO, meets it and
+     gives; a lander meets it, refuels, lands at the south pole and
+     comes back up. In the sandbox, the same with the tug late: the
+     lander's take falls short, and it runs dry.
+9. **Tests and measurements.**
+   - Transfers and purchases by hand; the event order at one time; a
+     short transfer for each reason; a meeting cycle refused.
+   - Hashes with transfers at 1 and 24 threads; a career log in the
+     sandbox gives the same; a manifest edit designs nothing; an edit of
+     a vessel met designs its visitors again from their meetings, and
+     an edit after the leg met designs nothing of theirs.
+   - Career: an action that runs a vessel dry or short is refused, and
+     so is one reading back that way.
+   - The full workspace suite at the end.
+
+Left out of step 3: docking and assemblies (step 4); meeting a vessel
+in a low orbit (Scope, Out); a station's reserve, kept from its
+visitors; where plants' output goes (step 5); turnaround days (step
+6); selling (steps 7 and 8).
