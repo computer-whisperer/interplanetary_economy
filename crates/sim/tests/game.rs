@@ -375,6 +375,28 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
     assert!((home.end.0 - home.start.0 - 4.0).abs() < 1e-6);
 }
 
+/// A re-plan whose first step is past the steps the log has, its
+/// re-plans passed over among them, is refused: the log the game writes
+/// reads back as the game it was (found in review: it was taken, and the
+/// log did not read back).
+#[test]
+fn a_log_the_game_wrote_reads_back() {
+    let mut game = Game::new(round_trip_in_career("2045-03-04T00:00"), pool(24)).unwrap();
+    let id = game.ships()[0].id;
+    // Its step not yet designed, it is taken; designed, it is passed over.
+    game.replan(id, 0, vec![go("llo", 4.0)]).unwrap();
+    game.wait();
+    assert_eq!(game.ships()[0].refused.len(), 1);
+    assert_eq!(game.plan().ships[0].steps.len(), 2);
+    let why = game.replan(id, 2, vec![go("llo", 3.5)]).unwrap_err();
+    assert_eq!(why, "replan 2: from step 2, but the ship has 1");
+    game.replan(id, 1, vec![go("leo", 4.0)]).unwrap();
+    game.wait();
+    let mut again = Game::new(parse(&game.log().to_toml()), pool(24)).unwrap();
+    again.wait();
+    assert_eq!(hashes(&again), hashes(&game));
+}
+
 /// A ship in LEO with no legs has flown nothing: re-planned, what it does
 /// begins at now, and every day before now is as it was.
 #[test]

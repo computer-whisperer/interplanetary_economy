@@ -145,6 +145,11 @@ below), and the four decisions below, each as recommended.
     was numbered by the ship's steps, not the re-plan's legs; messages
     rounded an overage away and called a small body a planet. Each
     fixed, with a test.
+  - Found by the same review, from step 1: a career game took a re-plan
+    from past the steps its log has, counting them as they stand (a
+    re-plan passed over left out), and the log it wrote did not read
+    back. Every action's log is now checked as reading it back checks
+    it (`Log::check`), so such a re-plan is refused, as the log counts.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

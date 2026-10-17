@@ -592,10 +592,15 @@ impl Game {
         }
     }
 
-    /// The log with `change` made, if the game allows it (`allowed`).
+    /// The log with `change` made, if the game allows it (`allowed`) and
+    /// it reads back as a game (`Log::check`): a re-plan's first step is
+    /// counted in the log's order, its re-plans passed over among them
+    /// (found in review: one from past the steps the log has was taken,
+    /// and the log did not read back).
     fn changed(&self, change: impl FnOnce(&mut Log)) -> Result<Log, String> {
-        let mut log = self.log.clone();
+        let mut log = self.log();
         change(&mut log);
+        log.check()?;
         allowed(&log, self.mode, &self.economy)?;
         Ok(log)
     }
