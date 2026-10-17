@@ -43,10 +43,11 @@ pub struct Replan {
     pub steps: Vec<Step>,
 }
 
-/// A scenario's check (M1b.md, step 1 plan, part 8).
+/// A scenario's check (M1b.md, step 1 plan, part 8; step 2 plan, part 5).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Check {
-    /// Ship `ship` is staying at `place` (as the plan names it) at `at`.
+    /// Ship `ship` is staying at `place` (as the plan names it) at `at`:
+    /// as designed, or stranded there by running dry.
     At { ship: u64, at: Epoch, place: String },
     /// The leg of ship `ship`'s step `step` costs from `dv[0]` to `dv[1]`
     /// m/s.
@@ -55,6 +56,22 @@ pub enum Check {
         step: usize,
         dv: [f64; 2],
     },
+    /// Ship `ship` carries from `t[0]` to `t[1]` t of propellant at `at`.
+    Propellant { ship: u64, at: Epoch, t: [f64; 2] },
+    /// Ship `ship` runs dry at step `step`; with none, it does not.
+    Dry { ship: u64, step: Option<usize> },
+}
+
+impl Check {
+    /// The ship it checks, by id.
+    pub fn ship(&self) -> u64 {
+        match self {
+            Check::At { ship, .. }
+            | Check::Dv { ship, .. }
+            | Check::Propellant { ship, .. }
+            | Check::Dry { ship, .. } => *ship,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +112,11 @@ struct CheckFile {
     step: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dv: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    propellant_t: Option<[f64; 2]>,
+    /// True, with the step it runs dry at; false, it does not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dry: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -187,6 +209,8 @@ impl Log {
                         place: Some(place),
                         step: None,
                         dv: None,
+                        propellant_t: None,
+                        dry: None,
                     } => Ok(Check::At {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -198,9 +222,35 @@ impl Log {
                         place: None,
                         step: Some(step),
                         dv: Some(dv),
+                        propellant_t: None,
+                        dry: None,
                     } => Ok(Check::Dv { ship, step, dv }),
+                    CheckFile {
+                        ship,
+                        at: Some(at),
+                        place: None,
+                        step: None,
+                        dv: None,
+                        propellant_t: Some(t),
+                        dry: None,
+                    } => Ok(Check::Propellant {
+                        ship,
+                        at: date(&at).map_err(fail)?,
+                        t,
+                    }),
+                    CheckFile {
+                        ship,
+                        at: None,
+                        place: None,
+                        step,
+                        dv: None,
+                        propellant_t: None,
+                        dry: Some(dry),
+                    } if dry == step.is_some() => Ok(Check::Dry { ship, step }),
                     _ => Err(fail(
-                        "a check has `at` and `place`, or `step` and `dv`".into(),
+                        "a check has `at` and `place`; `step` and `dv`; `at` and \
+                         `propellant_t`; `step` and `dry = true`; or `dry = false`"
+                            .into(),
                     )),
                 }
             })
@@ -255,8 +305,8 @@ impl Log {
             *n = r.from + r.steps.len();
         }
         for (i, c) in self.checks.iter().enumerate() {
-            let (Check::At { ship, .. } | Check::Dv { ship, .. }) = c;
-            if !steps.iter().any(|(id, _)| id == ship) {
+            let ship = c.ship();
+            if !steps.iter().any(|(id, _)| *id == ship) {
                 return Err(format!("check {}: no ship has id {ship}", i + 1));
             }
         }
@@ -315,6 +365,18 @@ impl Log {
                             dv: Some(*dv),
                             ..CheckFile::default()
                         },
+                        Check::Propellant { ship, at, t } => CheckFile {
+                            ship: *ship,
+                            at: Some(at.stamp()),
+                            propellant_t: Some(*t),
+                            ..CheckFile::default()
+                        },
+                        Check::Dry { ship, step } => CheckFile {
+                            ship: *ship,
+                            step: *step,
+                            dry: Some(step.is_some()),
+                            ..CheckFile::default()
+                        },
                     })
                     .expect("a check serializes"),
                 )
@@ -370,6 +432,20 @@ place = "leo"
 ship = 2
 step = 2
 dv = [600.0, 750.0]
+
+[[check]]
+ship = 2
+at = "2045-03-03"
+propellant_t = [100.0, 120.0]
+
+[[check]]
+ship = 2
+step = 2
+dry = true
+
+[[check]]
+ship = 2
+dry = false
 "#;
 
     fn parse(src: &str) -> Result<Log, String> {
@@ -399,12 +475,27 @@ dv = [600.0, 750.0]
         assert_eq!(back.replans[0].at, log.replans[0].at);
         assert_eq!(back.checks, log.checks);
         assert_eq!(
-            log.checks[1],
-            Check::Dv {
-                ship: 2,
-                step: 2,
-                dv: [600.0, 750.0]
-            }
+            log.checks[1..],
+            [
+                Check::Dv {
+                    ship: 2,
+                    step: 2,
+                    dv: [600.0, 750.0]
+                },
+                Check::Propellant {
+                    ship: 2,
+                    at: Epoch::from_ymd(2045, 3, 3),
+                    t: [100.0, 120.0]
+                },
+                Check::Dry {
+                    ship: 2,
+                    step: Some(2)
+                },
+                Check::Dry {
+                    ship: 2,
+                    step: None
+                },
+            ]
         );
     }
 
@@ -435,9 +526,18 @@ dv = [600.0, 750.0]
         let no_ship = CAREER.replace("ship = 2\nat", "ship = 5\nat");
         assert_eq!(parse(&no_ship).unwrap_err(), "replan 1: no ship has id 5");
         let half = CAREER.replace("step = 2\ndv", "dv");
+        let neither = "check 2: a check has `at` and `place`; `step` and `dv`; `at` and \
+                       `propellant_t`; `step` and `dry = true`; or `dry = false`";
+        assert_eq!(parse(&half).unwrap_err(), neither);
+        let dry_without_step = CAREER.replace("step = 2\ndry = true", "dry = true");
         assert_eq!(
-            parse(&half).unwrap_err(),
-            "check 2: a check has `at` and `place`, or `step` and `dv`"
+            parse(&dry_without_step).unwrap_err(),
+            neither.replace("check 2", "check 4")
+        );
+        let not_dry_at_a_step = CAREER.replace("dry = false", "step = 1\ndry = false");
+        assert_eq!(
+            parse(&not_dry_at_a_step).unwrap_err(),
+            neither.replace("check 2", "check 5")
         );
         let past_the_end = CAREER.replace("from = 1", "from = 2");
         assert_eq!(

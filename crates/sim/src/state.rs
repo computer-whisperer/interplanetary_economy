@@ -44,6 +44,17 @@ pub struct Dry {
     pub short: f64,
 }
 
+impl Dry {
+    /// Where it ran dry, `item` being its item: "at llo → moon-south-pole"
+    /// (a burn), or "keeping station at nrho" (a stay's upkeep).
+    pub fn place(&self, item: &Item) -> String {
+        match self.marker {
+            Some(_) => format!("at {}", item.label),
+            None => format!("keeping station {}", item.label),
+        }
+    }
+}
+
 /// What the loop found of one ship.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShipState {

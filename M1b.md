@@ -228,6 +228,47 @@ below), and the four decisions below, each as recommended.
     needs a class and a wait a wait, and the rest is fixed, each with a
     test. Cleanup: the `bool` `Loaded::poll` returned, unread since step
     1 part 7, is gone with those under it.
+- Part 5: headless.
+  - `sim run` prints, under each item of a ship with a class, the
+    propellant it burned (a stay's upkeep) and what that left, to the
+    kilogram; where it ran dry, how short, and "not flown" after; and
+    the ship's tanks and hold at its start, on the first of each month,
+    and at its end. Per item, as the panel shows it, rather than per
+    burn: a leg's burns are listed by Δv beside it.
+  - Checks: `propellant_t = [lo, hi]` at a date; `step = n, dry = true`,
+    or `dry = false`. Steps count from 0, as the Δv check's do; a ship
+    that runs dry keeping station does so at the wait it was in, else at
+    the leg that leaves the stay.
+  - A ship that ran dry is, for `At`, stranded where its failed burn
+    would have left from, if that was its item's first (a departure, a
+    descent, an ascent): at the stay before it, or at the place the
+    item before it arrived at. Run dry later in a leg, it is in flight;
+    run dry keeping station, it drifts. Either way it is at no place.
+  - Scenarios, each in career from LEO, their propellant computed by
+    hand from the burns' Δv as designed, within what 20 m/s more or
+    less in all would burn: `tug-llo-round-trip.toml` (a hydrolox tug
+    to low lunar orbit and home by aerocapture; its hydrogen's boil-off
+    checked to the kilogram in LEO, before any burn a design could
+    move), `lander-south-pole.toml` (a methalox lander down and up;
+    400 t after a day and a half, nothing boiled),
+    `lander-loaded-short.toml` (200 t: it lands with 6.7 t, runs dry at
+    the ascent, 1,317.2 m/s short, and is still at the south pole
+    after).
+  - Review (a sub-agent, with probes of each item shape `stranded`
+    meets: after an aerocapture and a jump, an aero entry as the first
+    item, career re-plans, a refused one): a ship that ran dry keeping
+    station through a wait was said to run dry at the step after it; the
+    scenarios' bounds were wider than their comments said, and the
+    comments left out some boil-off. Fixed, the first with a test.
+    Cleanup: the month walk `sim run`'s hashes and tanks share
+    (`report::months`), and where a ship ran dry, said by the engine
+    and the panel alike (`Dry::place`).
+  - Left as they are: a stranded ship stays at its place to the end of
+    the game, while one that finished its plan is at no place after its
+    last item (as before). `At` and the propellant check are pending
+    until the loop has run past their time over every ship, though a
+    ship's tanks depend only on its own design (ships share nothing
+    until step 3); `sim run` waits for every design.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

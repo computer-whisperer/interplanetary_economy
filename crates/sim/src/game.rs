@@ -9,9 +9,12 @@ use crate::designs::{Cache, Designed, Ended, Key, apply, walk};
 use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, minute};
 use crate::params::{Draw, Economy, EconomyFile};
+use crate::report;
 use crate::ships::{self, Breach};
-use crate::state::{self, Course, ShipState, State};
-use orbit::mission::{Checkpoint, Item, ItemKind, Plan, Ship, Step, World, resume_point};
+use crate::state::{self, Course, Dry, ShipState, State};
+use orbit::mission::{
+    Checkpoint, Item, ItemKind, MarkerKind, Plan, Ship, Step, World, resume_point, when,
+};
 use orbit::places::Places;
 use orbit::routes::RouteGraph;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -813,30 +816,45 @@ impl Game {
 
     /// Whether `check` holds, saying what the game has either way.
     pub fn check(&self, check: &Check) -> Result<String, String> {
-        let (Check::At { ship, .. } | Check::Dv { ship, .. }) = check;
-        let d = self
-            .index(*ship)
-            .map(|s| &self.ships[s])
-            .ok_or(format!("no ship has id {ship}"))?;
+        let ship = check.ship();
+        let s = self.index(ship).ok_or(format!("no ship has id {ship}"))?;
+        let (d, state) = (&self.ships[s], &self.state.ships[s]);
+        let items: Vec<&Item> = d.items().collect();
+        let pending = |what: String| Err(format!("{what}: the state is pending"));
         match check {
             Check::At { at, place, .. } => {
-                let item = d.items().rfind(|i| i.start.0 <= at.0 && at.0 <= i.end.0);
-                let line = format!(
-                    "{} on {}: {}",
-                    d.name,
-                    at.stamp(),
-                    item.map_or("not designed there", |i| i.label.as_str())
-                );
-                match item
-                    .is_some_and(|i| i.kind == ItemKind::Stay && i.label == format!("at {place}"))
-                {
+                let on = format!("{} on {}", d.name, at.stamp());
+                if !self.state.known(*at) {
+                    return pending(on);
+                }
+                let here = format!("at {place}");
+                let (line, held) = match state.dry_by(*at) {
+                    Some(dry) => match stranded(&self.plan.ships[s], &items, dry) {
+                        Some(label) => (
+                            format!("{on}: {label}, stranded: ran dry {}", when(dry.t)),
+                            label == here,
+                        ),
+                        None => (format!("{on}: {}", ran_dry(&items, dry)), false),
+                    },
+                    None => {
+                        let item = items.iter().rfind(|i| i.start.0 <= at.0 && at.0 <= i.end.0);
+                        (
+                            format!(
+                                "{on}: {}",
+                                item.map_or("not designed there", |i| i.label.as_str())
+                            ),
+                            item.is_some_and(|i| i.kind == ItemKind::Stay && i.label == here),
+                        )
+                    }
+                };
+                match held {
                     true => Ok(line),
-                    false => Err(format!("{line}, not at {place}")),
+                    false => Err(format!("{line}, not {here}")),
                 }
             }
             Check::Dv { step, dv, .. } => {
-                let Some(leg) = d
-                    .items()
+                let Some(leg) = items
+                    .iter()
                     .find(|i| i.step == *step && i.kind == ItemKind::Leg)
                 else {
                     return Err(format!("{}, step {step}: no leg", d.name));
@@ -846,6 +864,38 @@ impl Game {
                 match (dv[0]..=dv[1]).contains(&m) {
                     true => Ok(line),
                     false => Err(format!("{line}, not {:.1}–{:.1}", dv[0], dv[1])),
+                }
+            }
+            Check::Propellant { at, t, .. } => {
+                let on = format!("{} on {}", d.name, at.stamp());
+                if !self.state.known(*at) {
+                    return pending(on);
+                }
+                let Some(load) = state.load(*at) else {
+                    return Err(format!("{on}: no load (no class, or not yet started)"));
+                };
+                let line = format!("{on}: {:.3} t of propellant", load.propellant());
+                match (t[0]..=t[1]).contains(&load.propellant()) {
+                    true => Ok(line),
+                    false => Err(format!("{line}, not {:.3}–{:.3}", t[0], t[1])),
+                }
+            }
+            Check::Dry { step, .. } => {
+                if !self.state.done {
+                    return pending(d.name.clone());
+                }
+                let ship = &self.plan.ships[s];
+                let found = state.dry.map(|dry| dry_step(ship, &items, &dry));
+                let line = match (&state.dry, found) {
+                    (Some(dry), Some(n)) => {
+                        format!("{} {}, at step {n}", d.name, ran_dry(&items, dry))
+                    }
+                    _ => format!("{} did not run dry", d.name),
+                };
+                match step {
+                    _ if found == *step => Ok(line),
+                    Some(n) => Err(format!("{line}; expected: ran dry at step {n}")),
+                    None => Err(format!("{line}; expected: did not run dry")),
                 }
             }
         }
@@ -871,6 +921,73 @@ impl Game {
             })
             .collect()
     }
+}
+
+/// Where a ship ran dry and how short: "ran dry 2045-03-09 14:40 at
+/// moon-south-pole → llo: 1317.2 m/s short".
+fn ran_dry(items: &[&Item], dry: &Dry) -> String {
+    format!(
+        "ran dry {} {}: {} short",
+        when(dry.t),
+        dry.place(items[dry.item]),
+        report::short(dry.short)
+    )
+}
+
+/// Where a ship that ran dry is stranded, as a stay there is labelled ("at
+/// llo"): the place its failed burn would have left, if that was its
+/// item's first (a departure, a descent, an ascent). A ship that ran dry
+/// later in a leg is in flight, and one that ran dry keeping station
+/// drifts from its station.
+fn stranded(ship: &Ship, items: &[&Item], dry: &Dry) -> Option<String> {
+    let first = items[dry.item]
+        .markers
+        .iter()
+        .position(|m| !matches!(m.kind, MarkerKind::Jump { .. }));
+    if dry.marker.is_none() || dry.marker != first {
+        return None;
+    }
+    let Some(before) = items[..dry.item].last() else {
+        return Some(format!("at {}", ship.start.label));
+    };
+    // A leg may leave up to a millisecond before the ship arrives
+    // (`Planner`'s slack); a burn later than its item's start is in flight.
+    if (before.end.0 - dry.t.0).abs() * SECONDS_PER_DAY > 2e-3 {
+        return None;
+    }
+    if before.kind == ItemKind::Stay {
+        return Some(before.label.clone());
+    }
+    let Some(Step::Go(go)) = ship.steps.get(before.step) else {
+        unreachable!("an item's step is a leg's");
+    };
+    Some(format!("at {}", go.to.label))
+}
+
+/// The step a ship ran dry at, as its plan counts them: its item's, but
+/// for upkeep paid during a wait, the wait's. A stay is the step of the leg
+/// that leaves it, and the waits before that leg are spent in it from its
+/// start.
+fn dry_step(ship: &Ship, items: &[&Item], dry: &Dry) -> usize {
+    let item = items[dry.item];
+    if dry.marker.is_some() {
+        return item.step;
+    }
+    let steps = &ship.steps[..item.step.min(ship.steps.len())];
+    let first = steps
+        .iter()
+        .rposition(|s| matches!(s, Step::Go(_)))
+        .map_or(0, |k| k + 1);
+    let mut end = item.start.0;
+    for (k, step) in steps.iter().enumerate().skip(first) {
+        if let Step::Wait(days) = step {
+            end += days;
+            if dry.t.0 < end {
+                return k;
+            }
+        }
+    }
+    item.step
 }
 
 /// Ship's tanks and hold at `t` as the loop has them, hashed into `h`.

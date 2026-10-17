@@ -142,12 +142,10 @@ pub fn rows(
             };
             lines.push((format!("{}{now}", tanks.class), Tone::Muted));
             if let Some(dry) = tanks.dry() {
-                // A stay's label is "at" its place.
-                let label = ship.items.get(dry.item).map_or("", |i| i.label.as_str());
-                let at = match dry.marker {
-                    Some(_) => format!("at {label}"),
-                    None => format!("keeping station {label}"),
-                };
+                let at = ship
+                    .items
+                    .get(dry.item)
+                    .map_or(String::new(), |i| dry.place(i));
                 lines.push((
                     format!(
                         "Ran dry {} {at}: {} short, not flown after",

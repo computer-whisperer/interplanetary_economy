@@ -1,0 +1,55 @@
+# The lander's sortie to the south pole (lander-south-pole.toml), loaded
+# with 200 t of its 400 (M1b.md, step 2 plan, part 5): it lands with
+# 6.7 t, and its ascent needs 18.7. It runs dry there and is stranded on
+# the surface; its design after is not flown.
+
+name = "Methalox lander loaded short, stranded at the south pole"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Lander"
+class = "lander"
+start = { at = "leo", epoch = "2045-03-01", propellant_t = 200.0 }
+
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+
+# 6.680 t on the surface: 157.366 t burned for the leg, 35.953 t for the
+# descent, as designed (2026-10-16). The bounds are what 20 m/s more or
+# less in all would burn, ±0.254 t.
+[[check]]
+ship = 0
+at = "2045-03-08"
+propellant_t = [6.426, 6.934]
+
+# The ascent, its fourth step: 6.680 t gives 568.0 m/s of its 1,885.2,
+# 1,317.2 short.
+[[check]]
+ship = 0
+step = 3
+dry = true
+
+# Still on the surface after the ascent was to fly, with what it had.
+[[check]]
+ship = 0
+at = "2045-03-12"
+place = "moon-south-pole"
+
+[[check]]
+ship = 0
+at = "2045-03-12"
+propellant_t = [6.426, 6.934]

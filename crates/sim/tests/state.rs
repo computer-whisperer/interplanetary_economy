@@ -1,13 +1,14 @@
-//! The state and the loop (M1b.md, step 2 plan, parts 3 and 7): burns
+//! The state and the loop (M1b.md, step 2 plan, parts 3, 5 and 7): burns
 //! empty the tanks by the rocket equation, a station stay burns its
 //! upkeep, hydrogen boils off and methane keeps, a ship loaded short runs
-//! dry at the burn it cannot make, and the day's hash covers the tanks.
+//! dry at the burn it cannot make, and the day's hash covers the tanks;
+//! the checks of the tanks, and where a ship that ran dry is.
 
 use orbit::mission::{Item, ItemKind, MarkerKind};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::game::{Game, world};
-use sim::log::Log;
+use sim::log::{Check, Log};
 use sim::ships::Commodity;
 use sim::state::Course;
 use std::sync::Arc;
@@ -336,6 +337,168 @@ fn hashes_cover_the_tanks() {
     let edited = hashes(&game);
     assert_ne!(edited, hashes(&one));
     assert_eq!(edited, hashes(&self::game(&sortie(300.0), 24)));
+}
+
+/// The lander's sortie from LEO (`data/scenarios/lander-south-pole.toml`,
+/// in career), loaded with `propellant_t`.
+fn sortie_from_leo(propellant_t: f64) -> Game {
+    let path = format!(
+        "{}/../../data/scenarios/lander-south-pole.toml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let src = std::fs::read_to_string(path).unwrap();
+    let mut log = Log::parse(&src, world().eph, Places::standard()).unwrap();
+    log.plan.ships[0].propellant_t = Some(propellant_t);
+    let mut game = Game::new(log, pool(24)).unwrap();
+    game.wait();
+    game
+}
+
+fn at(t: &str, place: &str) -> Check {
+    Check::At {
+        ship: 0,
+        at: t.parse().unwrap(),
+        place: place.into(),
+    }
+}
+
+/// What the checks of a ship's tanks say when they fail (M1b.md, step 2
+/// plan, part 5); and where a ship that ran dry is: stranded where its
+/// failed burn would have left from, the surface or low lunar orbit, or in
+/// flight.
+#[test]
+fn checks_say_where_a_ship_ran_dry() {
+    // 200 t: it lands, and runs dry at the ascent.
+    let game = sortie_from_leo(200.0);
+    let ran_dry = "Lander ran dry 2045-03-09 14:40 at moon-south-pole → llo: 1317.2 m/s short, \
+                   at step 3";
+    assert_eq!(
+        game.check(&Check::Dry {
+            ship: 0,
+            step: None
+        }),
+        Err(format!("{ran_dry}; expected: did not run dry"))
+    );
+    assert_eq!(
+        game.check(&Check::Dry {
+            ship: 0,
+            step: Some(1)
+        }),
+        Err(format!("{ran_dry}; expected: ran dry at step 1"))
+    );
+    assert_eq!(
+        game.check(&at("2045-03-12", "llo")),
+        Err(
+            "Lander on 2045-03-12: at moon-south-pole, stranded: ran dry 2045-03-09 14:40, \
+             not at llo"
+                .into()
+        )
+    );
+    assert_eq!(
+        game.check(&Check::Propellant {
+            ship: 0,
+            at: "2045-03-12".parse().unwrap(),
+            t: [1.0, 2.0]
+        }),
+        Err("Lander on 2045-03-12: 6.680 t of propellant, not 1.000–2.000".into())
+    );
+
+    // 150 t: it runs dry at the descent, which leaves as it arrives in low
+    // lunar orbit (no stay between).
+    let game = sortie_from_leo(150.0);
+    let items: Vec<&Item> = game.ships()[0].items().collect();
+    let dry = game.state().ships[0].dry.unwrap();
+    assert_eq!(items[dry.item].kind, ItemKind::Landing);
+    assert_eq!(items[dry.item - 1].kind, ItemKind::Leg);
+    assert_eq!(
+        game.check(&at("2045-03-08", "llo")),
+        Ok("Lander on 2045-03-08: at llo, stranded: ran dry 2045-03-06 12:16".into())
+    );
+
+    // 70 t: it runs dry at the leg's second burn, arriving at the Moon,
+    // and flies on past it; before then, it is where it was designed to be.
+    let game = sortie_from_leo(70.0);
+    let items: Vec<&Item> = game.ships()[0].items().collect();
+    let dry = game.state().ships[0].dry.unwrap();
+    assert_eq!(
+        (items[dry.item].kind.clone(), dry.marker),
+        (ItemKind::Leg, Some(1))
+    );
+    let found = game.check(&at("2045-03-08", "llo")).unwrap_err();
+    assert!(
+        found.starts_with("Lander on 2045-03-08: ran dry 2045-03-06 12:16 at leo → llo: ")
+            && found.ends_with(" short, not at llo"),
+        "{found}"
+    );
+    assert_eq!(
+        game.check(&at("2045-03-02", "leo")),
+        Ok("Lander on 2045-03-02: at leo".into())
+    );
+}
+
+/// A ship that runs dry keeping station drifts from its station, and runs
+/// dry at the wait it was keeping station through (found in review: at
+/// the leg after it, whose step the stay has); a ship without a class
+/// carries nothing, and never runs dry.
+#[test]
+fn checks_of_a_drifting_ship_and_a_massless_one() {
+    let src = r#"
+name = "station"
+
+[[ship]]
+name = "Tug"
+class = "tug-h"
+start = { at = "nrho", epoch = "2045-03-01", propellant_t = 0.0 }
+
+[[ship.leg]]
+wait = 5
+
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+"#;
+    let drifting = game(src, 24);
+    let found = drifting.check(&at("2045-03-03", "nrho")).unwrap_err();
+    assert!(
+        found.starts_with("Tug on 2045-03-03: ran dry 2045-03-0")
+            && found.contains(" keeping station at nrho: ")
+            && found.ends_with(" mm/s short, not at nrho"),
+        "{found}"
+    );
+    let at_the_wait = drifting
+        .check(&Check::Dry {
+            ship: 0,
+            step: Some(0),
+        })
+        .unwrap();
+    assert!(
+        at_the_wait.ends_with(" mm/s short, at step 0"),
+        "{at_the_wait}"
+    );
+    let massless = game(
+        &src.replace("class = \"tug-h\"\n", "")
+            .replace(", propellant_t = 0.0", ""),
+        24,
+    );
+    assert_eq!(
+        massless.check(&at("2045-03-03", "nrho")),
+        Ok("Tug on 2045-03-03: at nrho".into())
+    );
+    assert_eq!(
+        massless.check(&Check::Propellant {
+            ship: 0,
+            at: "2045-03-03".parse().unwrap(),
+            t: [0.0, 1.0]
+        }),
+        Err("Tug on 2045-03-03: no load (no class, or not yet started)".into())
+    );
+    assert_eq!(
+        massless.check(&Check::Dry {
+            ship: 0,
+            step: None
+        }),
+        Ok("Tug did not run dry".into())
+    );
 }
 
 /// A measurement (M1b.md, step 2 plan, parts 3 and 8): the published plan,

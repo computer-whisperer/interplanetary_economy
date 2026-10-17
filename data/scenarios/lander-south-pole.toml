@@ -1,0 +1,58 @@
+# A methalox lander's sortie in career (M1b.md, step 2 plan, part 5): from
+# LEO, where it is bought, to low lunar orbit, down to the south pole for
+# three days, and up again. Its methane keeps.
+
+name = "Methalox lander to the lunar south pole and up"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Lander"
+class = "lander"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+
+# A full tank, 400 t, a day and a half on: nothing boils off.
+[[check]]
+ship = 0
+at = "2045-03-02T12:00"
+propellant_t = [399.999, 400.001]
+
+[[check]]
+ship = 0
+at = "2045-03-08"
+place = "moon-south-pole"
+
+# 45.581 t on the surface: 288.505 t burned for the leg's 3,921.0 m/s,
+# 65.915 t for the descent's 2,100.2 m/s, as designed (2026-10-16). The
+# bounds are what 20 m/s more or less in all would burn, ±0.465 t.
+[[check]]
+ship = 0
+at = "2045-03-08"
+propellant_t = [45.116, 46.046]
+
+# 11.256 t in low lunar orbit: 34.325 t burned for the ascent's 1,885.2
+# m/s. ±20 m/s in all is ±0.279 t.
+[[check]]
+ship = 0
+at = "2045-03-10"
+propellant_t = [10.977, 11.535]
+
+[[check]]
+ship = 0
+dry = false

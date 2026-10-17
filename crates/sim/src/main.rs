@@ -8,6 +8,7 @@ use orbit::time::Epoch;
 use sim::game::{Game, world};
 use sim::log::Log;
 use sim::report;
+use sim::ships::{self, Commodity};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,8 +22,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Design a game's log (a mission plan, or a career game) to its end:
-    /// each ship's items, the state hashed on the first of each month, and
-    /// a scenario's checks; a check that fails exits nonzero.
+    /// each ship's items, with what each burned of a ship with a class, and
+    /// its tanks monthly; the state hashed on the first of each month; and
+    /// a scenario's checks. A check that fails exits nonzero.
     Run {
         log: PathBuf,
         /// Design each ship alone, one after another, so that each item's
@@ -54,7 +56,11 @@ fn run(file: &PathBuf, alone: bool, tracks: Option<PathBuf>) -> Result<()> {
     let games =
         sim::run::run(&log, alone, &pool).map_err(|e| anyhow!("{}: {e}", file.display()))?;
     for game in &games {
-        for (ship, plan) in game.ships().iter().zip(&game.plan().ships) {
+        let ships = game.ships().iter().zip(&game.plan().ships);
+        for ((ship, plan), state) in ships.zip(&game.state().ships) {
+            let fuel = ships::read(plan, game.economy())
+                .map_err(|e| anyhow!("{}: {e}", file.display()))?
+                .map(|f| Commodity::fuel(game.economy().ships[f.class].propellant));
             let class = plan
                 .class
                 .as_ref()
@@ -67,11 +73,17 @@ fn run(file: &PathBuf, alone: bool, tracks: Option<PathBuf>) -> Result<()> {
                 println!("  WARNING  {b}");
             }
             let items: Vec<_> = ship.items().cloned().collect();
-            for item in &items {
+            for (k, item) in items.iter().enumerate() {
                 print!("{}", report::line(eph, item));
+                if let Some(fuel) = fuel {
+                    print!("{}", report::burned(state, fuel, item, k));
+                }
             }
             if let Some(totals) = report::totals(&items) {
                 println!("{totals}");
+            }
+            if let Some(tanks) = fuel.and_then(|f| report::tanks(state, f, plan.epoch, &items)) {
+                print!("{tanks}");
             }
             // A failure no item says: a refused start, a panic.
             let said = items.iter().any(|i| matches!(i.kind, ItemKind::Failed(_)));
@@ -128,16 +140,8 @@ fn monthly(game: &Game) -> Vec<(Epoch, u64)> {
         .flat_map(|s| s.items().last())
         .map(|i| i.end.0)
         .fold(start.0, f64::max);
-    let (mut y, mut m, _) = start.ymd();
-    let mut out = Vec::new();
-    loop {
-        let t = Epoch::from_ymd(y, m, 1);
-        if t.0 > end {
-            return out;
-        }
-        if t.0 >= start.0 {
-            out.push((t, game.day_hashes(t, 1)[0]));
-        }
-        (y, m) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-    }
+    report::months(start, Epoch(end))
+        .into_iter()
+        .map(|t| (t, game.day_hashes(t, 1)[0]))
+        .collect()
 }

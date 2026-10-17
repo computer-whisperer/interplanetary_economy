@@ -3,7 +3,7 @@
 //! time is its own; and a scenario's checks against it.
 
 use crate::game::Game;
-use crate::log::{Check, Log};
+use crate::log::Log;
 use std::sync::Arc;
 
 /// `log` designed to its end: one game, or a game for each ship alone (its
@@ -20,10 +20,7 @@ pub fn run(log: &Log, alone: bool, pool: &Arc<rayon::ThreadPool>) -> Result<Vec<
                 let mut one = log.clone();
                 one.plan.ships = vec![ship.clone()];
                 one.replans.retain(|r| r.ship == ship.id);
-                one.checks.retain(|c| {
-                    let (Check::At { ship: s, .. } | Check::Dv { ship: s, .. }) = c;
-                    *s == ship.id
-                });
+                one.checks.retain(|c| c.ship() == ship.id);
                 one
             })
             .collect(),
@@ -43,11 +40,10 @@ pub fn checks(log: &Log, games: &[Game]) -> Vec<Result<String, String>> {
     log.checks
         .iter()
         .map(|c| {
-            let (Check::At { ship, .. } | Check::Dv { ship, .. }) = c;
             games
                 .iter()
-                .find(|g| g.index(*ship).is_some())
-                .ok_or(format!("no ship has id {ship}"))?
+                .find(|g| g.index(c.ship()).is_some())
+                .ok_or(format!("no ship has id {}", c.ship()))?
                 .check(c)
         })
         .collect()

@@ -1,9 +1,12 @@
 //! Items as text and as CSV, for `sim run` (M1b.md, step 1 plan, part 8;
-//! M1c.md's `orbit mission`, which it replaces).
+//! M1c.md's `orbit mission`, which it replaces); a ship's propellant and
+//! tanks (step 2 plan, part 5).
 
+use crate::ships::{Commodity, Load};
+use crate::state::ShipState;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Item, ItemKind, MarkerKind, when};
-use orbit::time::SECONDS_PER_DAY;
+use orbit::time::{Epoch, SECONDS_PER_DAY};
 use std::fmt::Write as _;
 
 /// An item: what, when, how long and its Δv, and the time designing it
@@ -82,6 +85,122 @@ pub fn line(eph: &Ephemeris, item: &Item) -> String {
         writeln!(s, "           {note}").unwrap();
     }
     s
+}
+
+/// What item `k` of a ship whose state is `state` burned, and what it left;
+/// where it ran dry, and that what follows is not flown.
+pub fn burned(state: &ShipState, fuel: Commodity, item: &Item, k: usize) -> String {
+    let mut s = String::new();
+    let used = state.used.get(k).copied().unwrap_or(0.0);
+    if used > 0.0 {
+        let what = match item.kind {
+            ItemKind::Stay => "upkeep",
+            _ => "propellant",
+        };
+        write!(s, "           {what} {}", tonnes(used)).unwrap();
+        if let Some(load) = state.after.get(k).copied().flatten() {
+            write!(s, ", leaving {}", carried(&load, fuel)).unwrap();
+        }
+        s.push('\n');
+    }
+    match state.dry {
+        Some(dry) if dry.item == k => {
+            let what = match dry.marker {
+                Some(_) => format!("the burn of {:.1} m/s", dry.dv * 1e3),
+                None => "keeping station".into(),
+            };
+            writeln!(
+                s,
+                "           RAN DRY  {} {what}: {} short, not flown after",
+                when(dry.t),
+                short(dry.short)
+            )
+            .unwrap();
+        }
+        Some(dry) if k > dry.item => writeln!(s, "           not flown: the ship ran dry").unwrap(),
+        _ => {}
+    }
+    s
+}
+
+/// What a ship carries, to the kilogram: its tanks' LOX and fuel, and its
+/// hold, if it holds anything.
+pub fn carried(load: &Load, fuel: Commodity) -> String {
+    let mut s = format!(
+        "{} {:.3} t, {} {:.3} t",
+        Commodity::Lox.name(),
+        load.lox,
+        fuel.name(),
+        load.fuel
+    );
+    if load.cargo() > 0.0 {
+        write!(s, ", hold {:.3} t", load.cargo()).unwrap();
+    }
+    s
+}
+
+/// Tonnes to the kilogram; under half a kilogram, grams (a stay's upkeep).
+fn tonnes(t: f64) -> String {
+    match t {
+        t if t >= 5e-4 => format!("{t:.3} t"),
+        t => format!("{:.0} g", t * 1e6),
+    }
+}
+
+/// The first of each month from `start` to `end`, both included.
+pub fn months(start: Epoch, end: Epoch) -> Vec<Epoch> {
+    let (mut y, mut m, _) = start.ymd();
+    let mut out = Vec::new();
+    loop {
+        let t = Epoch::from_ymd(y, m, 1);
+        if t.0 > end.0 {
+            return out;
+        }
+        if t.0 >= start.0 {
+            out.push(t);
+        }
+        (y, m) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    }
+}
+
+/// A shortfall, km/s: in m/s, to a tenth; under a tenth, in mm/s (a day's
+/// upkeep).
+pub fn short(dv: f64) -> String {
+    match dv * 1e3 {
+        m if m >= 0.1 => format!("{m:.1} m/s"),
+        m => format!("{:.1} mm/s", m * 1e3),
+    }
+}
+
+/// A ship's tanks and hold at its start, on the first of each month, and
+/// at its last item's end; `None` for a ship without a class.
+pub fn tanks(state: &ShipState, fuel: Commodity, start: Epoch, items: &[Item]) -> Option<String> {
+    state.load(start)?;
+    let end = items.last().map_or(start, |i| i.end);
+    let mut times = vec![(start, Some("start"))];
+    let inside = months(start, end)
+        .into_iter()
+        .filter(|t| start.0 < t.0 && t.0 < end.0);
+    times.extend(inside.map(|t| (t, None)));
+    if end.0 > start.0 {
+        times.push((end, Some("end")));
+    }
+    let mut s = String::from("  tanks and hold, t:\n");
+    for (t, what) in times {
+        let load = state
+            .load(t)
+            .expect("a ship with a load at its start has one after");
+        let notes: Vec<&str> = what
+            .into_iter()
+            .chain(state.dry_by(t).map(|_| "dry"))
+            .collect();
+        let note = match notes.is_empty() {
+            true => String::new(),
+            false => format!("  ({})", notes.join(", ")),
+        };
+        writeln!(s, "    {}  {}{note}", when(t), carried(&load, fuel)).unwrap();
+    }
+    Some(s)
 }
 
 /// The ship's totals: Δv, days, junctions not flown, and a failure.

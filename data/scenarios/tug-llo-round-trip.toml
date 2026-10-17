@@ -1,0 +1,57 @@
+# A hydrolox tug's round trip from LEO to low lunar orbit, home by
+# aerocapture, in career (M1b.md, step 2 plan, part 5). Its hydrogen boils
+# off all the way, at 0.05%/day in the central draw; its LOX keeps.
+
+name = "Hydrolox tug, LEO to low lunar orbit and back"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+
+[[ship.leg]]
+to = "leo"
+days = [3.5]
+aero = true
+
+# A full tank, 150 t, less 1.5 days' boil-off of its 21.429 t of hydrogen
+# (16.1 kg) before it leaves LEO, at 2045-03-03 00:16.
+[[check]]
+ship = 0
+at = "2045-03-02T12:00"
+propellant_t = [149.983, 149.985]
+
+[[check]]
+ship = 0
+at = "2045-03-08"
+place = "llo"
+
+# 51.065 t: 150 t, less 21.5 kg boiled off in LEO, 98.892 t burned for
+# the leg's 3,921.0 m/s as designed (2026-10-16), 16.3 kg boiled off on
+# the way and 5.4 kg in low lunar orbit. The bounds are what 20 m/s more
+# or less in all would burn, ±0.313 t.
+[[check]]
+ship = 0
+at = "2045-03-08"
+propellant_t = [50.752, 51.378]
+
+# 36.845 t: 12.6 kg more boiled off in low lunar orbit, 14.195 t burned
+# for the return's 1,015.5 m/s, 9.4 kg boiled off on the way and 2.7 kg
+# since; the aerocapture burns nothing. ±20 m/s in all is ±0.249 t.
+[[check]]
+ship = 0
+at = "2045-03-16"
+propellant_t = [36.596, 37.094]
+
+[[check]]
+ship = 0
+dry = false
