@@ -150,6 +150,51 @@ below), and the four decisions below, each as recommended.
     re-plan passed over left out), and the log it wrote did not read
     back. Every action's log is now checked as reading it back checks
     it (`Log::check`), so such a re-plan is refused, as the log counts.
+- Part 3: the state and the loop (`sim::state`), run again from the
+  start whenever designs or the log change; the day's hash adds each
+  ship's tanks and hold and whether it ran dry. Settled in building it:
+  - What burns: a leg's, landing's or ascent's markers, and a station
+    stay's Δv. A capture's circularizing burn does not (its leg's pass
+    counts the rule's Δv, as its note says), nor a jump. Each leg's,
+    landing's and ascent's markers add up to its Δv (checked over the
+    published plan).
+  - A burn the tanks cannot make is not made: the tanks keep what they
+    had, and it falls short by its Δv less what they could give at the
+    mixture ratio (the scarcer of LOX and fuel, once hydrogen has
+    boiled off).
+  - Upkeep and boil-off are paid at each event, before it: a burn, a
+    midnight's tick, and where the loop stops. A stay's upkeep is its
+    Δv spread evenly over it; boil-off is each fuel's at its
+    propellant's rate (hydrogen's, methane's none), part-days and all.
+    With a tick each midnight, upkeep that runs a ship dry strands it
+    within the day. Between events a load is its last boiled off since, and with
+    every ship designed, the loop runs to the last item's end and
+    hydrogen boils off past it.
+  - An unfinished ship's next step may burn at the time its design has
+    reached, so the state is pending from it, not after it.
+  - Measured (release, load ~24): the published plan, every ship a
+    hauler (18 ships, 13,379 days from 2031 to 2067), the loop alone
+    2.8 ms, a new load 2.9 ms with the game's own work; 50 ships of
+    2,000 items each over as long, 59–78 ms. Against the gate's 1 s:
+    no snapshots. Designing the published plan took 27.4 s
+    (`tests/state.rs`, ignored: a measurement).
+  - Review (a sub-agent): each tick read every item (2 s for 50 ships
+    of 2,000 items); a stay's last part-day of upkeep was paid at the
+    next midnight, after the leg's burns, and not at all at the game's
+    end, so a ship could run dry in a stay it had left; hydrogen stopped
+    boiling at the last item; the state at the time an unfinished
+    design reached counted as known. The loop was rebuilt to pay at
+    each event, each fixed with a test. A second review, mutating the
+    rebuilt loop, found five of its rules no test held (the payment
+    where the loop stops, its boil-off before a burn, a burn at the
+    game's end, no upkeep once dry, the earlier of two unfinished
+    ships), and a burn a moment before a ship's start recorded out of
+    order. Each now has a test that its mutant fails.
+  - Part 7's tests for burns, upkeep, boil-off, running dry and hashes
+    are written with it: `crates/sim/src/state.rs` and
+    `crates/sim/tests/state.rs` (1 and 24 threads; a new load designs
+    nothing and gives a fresh game's), and `crates/sim/tests/game.rs`
+    (a career log read back, and in the sandbox, tanks and all).
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

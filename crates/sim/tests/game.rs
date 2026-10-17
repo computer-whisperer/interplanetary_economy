@@ -170,6 +170,8 @@ fn career_replans_from_now() {
     log.plan
         .ships
         .retain(|s| s.name == "Low lunar orbit round trip");
+    // A hydrolox tug: the hashes cover its tanks.
+    log.plan.ships[0].class = Some("tug-h".into());
     let mut sandbox = Game::new(log.clone(), pool(24)).unwrap();
     sandbox.wait();
     let stay = sandbox.ships()[0].items().next().unwrap().clone();
@@ -282,13 +284,14 @@ fn every_scenario_holds() {
     assert!(ran > 0);
 }
 
-/// The low lunar orbit round trip in career, from `now`.
+/// The low lunar orbit round trip in career, from `now`, a hydrolox tug.
 fn round_trip_in_career(now: &str) -> Log {
     let all = parse(&mission("published.toml"));
     let mut log = Log::sandbox(all.plan.clone());
     log.plan
         .ships
         .retain(|s| s.name == "Low lunar orbit round trip");
+    log.plan.ships[0].class = Some("tug-h".into());
     log.setup.mode = Mode::Career;
     log.setup.now = Some(now.parse().unwrap());
     log
@@ -484,7 +487,8 @@ fn a_new_class_keeps_the_replans() {
     let log = parse(&std::fs::read_to_string(path).unwrap());
     let mut game = Game::in_mode(log, Mode::Sandbox, pool(24)).unwrap();
     game.wait();
-    let (made, before) = (game.designs_made(), hashes(&game));
+    let items = |g: &Game| shown(&g.ships()[0].items().cloned().collect::<Vec<_>>());
+    let (made, before) = (game.designs_made(), items(&game));
     let id = game.ships()[0].id;
     let mut tug = game.plan().ships[0].clone();
     tug.class = Some("tug-h".into());
@@ -492,7 +496,8 @@ fn a_new_class_keeps_the_replans() {
     game.wait();
     assert_eq!(game.log().replans.len(), 1);
     assert_eq!(game.designs_made(), made);
-    assert_eq!(hashes(&game), before);
+    // The same path (the day's hash now covers the tanks it adds).
+    assert_eq!(items(&game), before);
     assert_eq!(game.plan().ships[0].class.as_deref(), Some("tug-h"));
 }
 

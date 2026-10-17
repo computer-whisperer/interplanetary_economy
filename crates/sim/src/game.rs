@@ -1,15 +1,16 @@
 //! A game (M1b.md, step 1 plan, parts 4 and 5): its log, its economy as
-//! drawn, each ship's design as it stands, and its mode's policies. Ships
-//! are designed in the background, on the host's pool, by walks
-//! (`designs::walk`) that take what the cache has and design the rest; an
-//! edit or an undo walks again, and finds what it did not change in the
-//! cache.
+//! drawn, each ship's design as it stands, the state the loop reaches over
+//! them (`state`), and its mode's policies. Ships are designed in the
+//! background, on the host's pool, by walks (`designs::walk`) that take
+//! what the cache has and design the rest; an edit or an undo walks
+//! again, and finds what it did not change in the cache.
 
 use crate::designs::{Cache, Designed, Ended, Key, apply, walk};
 use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, minute};
 use crate::params::{Draw, Economy, EconomyFile};
 use crate::ships::{self, Breach};
+use crate::state::{self, Course, ShipState, State};
 use orbit::mission::{Checkpoint, Item, ItemKind, Plan, Ship, Step, World, resume_point};
 use orbit::places::Places;
 use orbit::routes::RouteGraph;
@@ -112,6 +113,8 @@ pub struct Game {
     mode: Mode,
     /// Drawn from the log's seed, on the standard route graph.
     economy: Economy,
+    /// The loop's, over the designs as they stand.
+    state: State,
     /// Career: the time the game has reached.
     now: Epoch,
     path: Option<PathBuf>,
@@ -230,6 +233,7 @@ impl Game {
             log,
             mode,
             economy,
+            state: State::default(),
             now,
             path: None,
             undo: Vec::new(),
@@ -305,6 +309,29 @@ impl Game {
         &self.economy
     }
 
+    /// The state the loop reached (M1b.md, step 2 plan, part 3).
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// Runs the loop again from the start, over the designs as they stand.
+    fn rerun(&mut self) {
+        let courses: Vec<Course> = self
+            .ships
+            .iter()
+            .zip(&self.plan.ships)
+            .map(|(d, ship)| Course {
+                id: d.id,
+                fitted: ships::read(ship, &self.economy).expect("a game's ships read (`allowed`)"),
+                epoch: ship.epoch,
+                items: d.items().collect(),
+                done: d.done,
+            })
+            .collect();
+        let state = state::run(&courses, &self.economy);
+        self.state = state;
+    }
+
     /// The plan as it stands: each ship with its re-plans.
     pub fn plan(&self) -> &Plan {
         &self.plan
@@ -364,6 +391,7 @@ impl Game {
             .chain(self.kept.iter().flatten().copied())
             .collect();
         self.cache.retain(|k| keep.contains(&k));
+        self.rerun();
     }
 
     /// Ship `k` of the plan as it stands: the log's, with its re-plans
@@ -504,18 +532,23 @@ impl Game {
         while let Ok((live, event)) = self.receiver.try_recv() {
             any |= self.take(&live, event);
         }
+        if any {
+            self.rerun();
+        }
         any
     }
 
     /// Waits until every ship is designed.
     pub fn wait(&mut self) {
+        let mut any = false;
         while !self.done() {
             match self.receiver.recv() {
-                Ok((live, event)) => {
-                    self.take(&live, event);
-                }
-                Err(_) => return,
+                Ok((live, event)) => any |= self.take(&live, event),
+                Err(_) => break,
             }
+        }
+        if any {
+            self.rerun();
         }
     }
 
@@ -819,20 +852,46 @@ impl Game {
     }
 
     /// The state at the start of each of `days` days from `from`, hashed
-    /// (M1b.md, step 1 plan, part 5): each ship's place, its position (by
-    /// bits) and its Δv so far; a ship not designed that far, as pending.
+    /// (M1b.md, step 1 plan, part 5; step 2 plan, part 3): each ship's
+    /// place, its position (by bits) and its Δv so far, its tanks and hold
+    /// (by bits) and whether it ran dry; a ship not designed that far, or
+    /// beyond where the loop ran, as pending.
     pub fn day_hashes(&self, from: Epoch, days: usize) -> Vec<u64> {
         (0..days)
             .map(|d| {
                 let t = from.plus_days(d as f64);
                 let mut h = Fixed::default();
-                for ship in &self.ships {
+                assert_eq!(self.ships.len(), self.state.ships.len(), "the loop ran");
+                for (ship, s) in self.ships.iter().zip(&self.state.ships) {
                     h.u64(ship.id);
                     state(&mut h, ship, t);
+                    tanks(&mut h, &self.state, s, t);
                 }
                 h.finish()
             })
             .collect()
+    }
+}
+
+/// Ship's tanks and hold at `t` as the loop has them, hashed into `h`.
+fn tanks(h: &mut Fixed, state: &State, s: &ShipState, t: Epoch) {
+    if !state.known(t) {
+        h.str("load pending");
+        return;
+    }
+    match s.load(t) {
+        Some(load) => {
+            h.f64(load.lox).f64(load.fuel);
+            for x in load.cargo {
+                h.f64(x);
+            }
+        }
+        None => {
+            h.str("no load");
+        }
+    }
+    if let Some(dry) = s.dry_by(t) {
+        h.str("dry").f64(dry.short);
     }
 }
 
