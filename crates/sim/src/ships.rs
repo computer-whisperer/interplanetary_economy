@@ -43,6 +43,18 @@ impl Commodity {
         }
     }
 
+    /// As it is shown.
+    pub fn name(self) -> &'static str {
+        match self {
+            Commodity::Lox => "LOX",
+            Commodity::Ch4 => "CH4",
+            Commodity::Lh2 => "LH2",
+            Commodity::Equipment => "equipment",
+            Commodity::Payload => "payload",
+            Commodity::Metal => "metal",
+        }
+    }
+
     /// As plans write it (`data/economy.toml`'s outputs write the first
     /// three so).
     pub fn id(self) -> &'static str {

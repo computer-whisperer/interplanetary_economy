@@ -224,13 +224,11 @@ impl Windows {
         });
     }
 
-    /// Takes the lanes computed; `true` if any were.
-    pub fn poll(&mut self) -> bool {
-        let mut any = false;
+    /// Takes the lanes computed.
+    pub fn poll(&mut self) {
         while let Ok((key, cheapest)) = self.receiver.try_recv() {
-            any |= self.take(&key, cheapest);
+            self.take(&key, cheapest);
         }
-        any
     }
 
     /// Waits until every lane is computed.
@@ -246,9 +244,9 @@ impl Windows {
     }
 
     /// Lane `key`'s days, if it is still a lane.
-    fn take(&mut self, key: &str, cheapest: Arc<Vec<f32>>) -> bool {
+    fn take(&mut self, key: &str, cheapest: Arc<Vec<f32>>) {
         let Some(lane) = self.lanes.iter_mut().find(|l| l.key == key) else {
-            return false;
+            return;
         };
         lane.least = cheapest
             .iter()
@@ -256,6 +254,5 @@ impl Windows {
             .filter(|v| !v.is_nan())
             .fold(f32::NAN, f32::min);
         lane.cheapest = Some(cheapest);
-        true
     }
 }

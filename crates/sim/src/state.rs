@@ -45,7 +45,7 @@ pub struct Dry {
 }
 
 /// What the loop found of one ship.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShipState {
     pub id: u64,
     /// Its load at its start, and after each burn made and each payment
@@ -57,6 +57,9 @@ pub struct ShipState {
     /// `ShipDesign::items`: a leg's, landing's or ascent's burns, a
     /// station stay's upkeep.
     pub used: Vec<f64>,
+    /// What it carried after each item's last burn made, by its place:
+    /// none for an item that burned nothing.
+    pub after: Vec<Option<Load>>,
     pub dry: Option<Dry>,
 }
 
@@ -247,6 +250,7 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         let mut s = ShipState {
             id: c.id,
             used: vec![0.0; c.items.len()],
+            after: vec![None; c.items.len()],
             ..ShipState::default()
         };
         runs.push(c.fitted.map(|f| {
@@ -323,6 +327,7 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
                 match burn(&mut r.load, r.dry, r.spec, dv) {
                     Ok(used) => {
                         s.used[i] += used;
+                        s.after[i] = Some(r.load);
                         changed = true;
                     }
                     Err(could) => {
@@ -514,6 +519,7 @@ mod tests {
         let after = state.ships[0].load(Epoch(day0() + 10.0)).unwrap();
         assert!(close(after.lox, lox - used * s));
         assert!(close(after.fuel, fuel - used * (1.0 - s)));
+        assert_eq!(state.ships[0].after[0], Some(after));
     }
 
     /// A stay's upkeep the tanks cannot pay strands the ship in it, at the

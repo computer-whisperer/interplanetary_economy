@@ -455,6 +455,7 @@ fn panel_rows_carry_dv_and_failures() {
             failure: Some(why.into()),
             first_leg: 0,
             revision: 0,
+            tanks: None,
             warnings: Vec::new(),
         },
         Ship {
@@ -468,6 +469,7 @@ fn panel_rows_carry_dv_and_failures() {
             failure: Some(why.into()),
             first_leg: 0,
             revision: 0,
+            tanks: None,
             warnings: Vec::new(),
         },
     ];
@@ -486,6 +488,7 @@ fn panel_rows_carry_dv_and_failures() {
             failure: Some(panicked.into()),
             first_leg: 0,
             revision: 0,
+            tanks: None,
             warnings: Vec::new(),
         },
     ];
@@ -523,6 +526,7 @@ fn panel_rows_carry_class_warnings() {
         failure: None,
         first_leg: 0,
         revision: 0,
+        tanks: None,
         warnings: vec![
             breach(None, "a tug-h's hold takes 50 t, not 60"),
             breach(Some(1), "a tug-h can't land at moon-south-pole"),

@@ -14,7 +14,8 @@ use orbit::track::Track;
 use rayon::prelude::*;
 use sim::game::{Game, world};
 use sim::log::{Log, Mode};
-use sim::ships::Breach;
+use sim::ships::{Breach, Commodity, Load};
+use sim::state::{Dry, ShipState};
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -51,6 +52,51 @@ pub struct Ship {
     pub revision: u64,
     /// What its class does not allow of it (`ShipDesign::breaches`).
     pub warnings: Vec<Breach>,
+    /// Its class and what the game's loop found of it; `None` for a ship
+    /// without a class (massless).
+    pub tanks: Option<Tanks>,
+}
+
+/// A ship with a class as the game's loop found it (`sim::state`, M1b.md,
+/// step 2 plan, parts 3 and 4).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tanks {
+    pub class: String,
+    /// Its propellant's fuel: methane or hydrogen.
+    pub fuel: Commodity,
+    pub state: ShipState,
+    /// From when its state is pending: where the loop stopped, while a
+    /// ship is still being designed.
+    pub pending_from: Option<Epoch>,
+}
+
+impl Tanks {
+    /// Whether its state at `t` is pending.
+    pub fn pending(&self, t: Epoch) -> bool {
+        self.pending_from.is_some_and(|p| t.0 >= p.0)
+    }
+
+    /// What it carries at `t`: `None` before its start, or where it is
+    /// pending.
+    pub fn load(&self, t: Epoch) -> Option<Load> {
+        match self.pending(t) {
+            true => None,
+            false => self.state.load(t),
+        }
+    }
+
+    /// Where it ran dry, if it did where the state is known (one found
+    /// where it is pending may move as designs arrive).
+    pub fn dry(&self) -> Option<Dry> {
+        self.state.dry.filter(|d| !self.pending(d.t))
+    }
+}
+
+impl Ship {
+    /// Where it ran dry, if it did (`Tanks::dry`).
+    pub fn dry(&self) -> Option<Dry> {
+        self.tanks.as_ref().and_then(Tanks::dry)
+    }
 }
 
 /// A sweep's result: ship and step swept, the sweep's id, its options.
@@ -144,12 +190,26 @@ impl Loaded {
     }
 
     /// Each ship's view as the game has its design: views whose design
-    /// did not change are kept; `true` if any changed.
-    fn shown(&mut self) -> bool {
+    /// did not change are kept, their name, warnings and tanks as they
+    /// stand.
+    fn shown(&mut self) {
         let firsts = first_legs(self.game.plan());
         let mut old = std::mem::take(&mut self.ships);
-        let mut any = old.len() != self.game.ships().len();
-        for (d, first_leg) in self.game.ships().iter().zip(firsts) {
+        let (economy, state) = (self.game.economy(), self.game.state());
+        for (k, (d, first_leg)) in self.game.ships().iter().zip(firsts).enumerate() {
+            let tanks = self.game.plan().ships[k].class.as_ref().map(|id| {
+                let class = economy
+                    .ships
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .expect("a game's ships read (`Game::new`)");
+                Tanks {
+                    class: id.clone(),
+                    fuel: Commodity::fuel(class.propellant),
+                    state: state.ships[k].clone(),
+                    pending_from: (!state.done).then_some(state.until),
+                }
+            });
             let kept = old
                 .iter()
                 .position(|v| v.id == d.id && v.revision == d.revision)
@@ -158,33 +218,31 @@ impl Loaded {
                 Some(mut v) => {
                     v.name.clone_from(&d.name);
                     v.first_leg = first_leg;
-                    any |= v.warnings != d.breaches;
                     v.warnings.clone_from(&d.breaches);
+                    v.tanks = tanks;
                     v
                 }
-                None => {
-                    any = true;
-                    Ship {
-                        id: d.id,
-                        name: d.name.clone(),
-                        items: d.items().cloned().collect(),
-                        done: d.done,
-                        failure: d.failure.clone(),
-                        first_leg,
-                        revision: d.revision,
-                        warnings: d.breaches.clone(),
-                    }
-                }
+                None => Ship {
+                    id: d.id,
+                    name: d.name.clone(),
+                    items: d.items().cloned().collect(),
+                    done: d.done,
+                    failure: d.failure.clone(),
+                    first_leg,
+                    revision: d.revision,
+                    warnings: d.breaches.clone(),
+                    tanks,
+                },
             };
             self.ships.push(ship);
         }
-        any
     }
 
     /// Replaces ship `s` with `ship`, designing it again from where it
     /// first changed (a new name alone is only a rename, and a new class
-    /// or load designs nothing); undoable.
-    pub fn edit(&mut self, s: usize, ship: orbit::mission::Ship) {
+    /// or load designs nothing); undoable. Why not, if the game refuses it
+    /// (a class or load that does not read).
+    pub fn edit(&mut self, s: usize, ship: orbit::mission::Ship) -> Result<(), String> {
         let id = self.ships[s].id;
         let before = &self.game.plan().ships[s];
         let mut renamed = before.clone();
@@ -194,18 +252,15 @@ impl Loaded {
                 self.game.rename(id, &ship.name);
                 self.shown();
             }
-            return;
+            return Ok(());
         }
         let inputs = self.game.ships()[s].inputs();
-        // Refused only for a class or load that does not read, which the
-        // editor keeps as the game had them.
-        self.game
-            .edit(id, ship)
-            .expect("the sandbox edits any ship whose class and load read");
+        self.game.edit(id, ship)?;
         if self.game.ships()[s].inputs() != inputs {
             self.sweeps.retain(|&(ship, _), _| ship != s);
         }
         self.changed();
+        Ok(())
     }
 
     /// Renames ship `s`: nothing to design or draw again.
@@ -322,36 +377,27 @@ impl Loaded {
         });
     }
 
-    /// Takes what has arrived; `true` if anything did.
-    pub fn poll(&mut self) -> bool {
-        let mut any = self.windows.poll();
+    /// Takes what has arrived.
+    pub fn poll(&mut self) {
+        self.windows.poll();
         if self.game.poll() {
-            any |= self.shown();
+            self.shown();
         }
         while let Ok((s, step, id, options)) = self.receiver.try_recv() {
-            any |= self.swept(s, step, id, options);
+            self.swept(s, step, id, options);
         }
-        any
     }
 
     /// A sweep's options, if the sweep is still wanted: the ship
     /// unchanged since.
-    fn swept(
-        &mut self,
-        s: usize,
-        step: usize,
-        id: u64,
-        options: Result<Vec<Choice>, String>,
-    ) -> bool {
+    fn swept(&mut self, s: usize, step: usize, id: u64, options: Result<Vec<Choice>, String>) {
         let Some(sweep) = self.sweeps.get_mut(&(s, step)) else {
-            return false;
+            return;
         };
         let inputs = self.game.ships().get(s).map(|d| d.inputs());
-        if sweep.id != id || inputs != Some(sweep.inputs) {
-            return false;
+        if sweep.id == id && inputs == Some(sweep.inputs) {
+            sweep.options = Some(options);
         }
-        sweep.options = Some(options);
-        true
     }
 
     /// Waits until every ship is designed, and every window lane

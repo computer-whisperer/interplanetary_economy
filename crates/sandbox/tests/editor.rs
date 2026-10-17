@@ -2,7 +2,7 @@
 //! opened from a ship's row; a leg's durations typed and committed with
 //! Enter, the leg designed again; a wait added; a destination the
 //! planner cannot reach saying why at once; undo; ships added and
-//! removed.
+//! removed. Its class and load (M1b.md, step 2 plan, part 4).
 
 use damascene_core::prelude::*;
 use damascene_wgpu::Runner;
@@ -178,18 +178,9 @@ fn steps(app: &Shell) -> Vec<Step> {
     app.plan.as_ref().unwrap().plan().ships[0].steps.clone()
 }
 
-#[test]
-fn ships_edited() {
-    let eph = Ephemeris::standard();
-    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap()).unwrap();
-    plan.wait();
-    let mut app = Shell::new(plan.epoch());
-    app.load(plan);
-    let mut h = Harness::new(&app, (1400.0, 1000.0));
-    h.draw(&mut app);
-
-    // The ship's row, found down the panel's list (damascene does not
-    // index keyed nodes in a virtual list's rows).
+/// Opens the editor on the first ship by its row, found down the panel's
+/// list (damascene does not index keyed nodes in a virtual list's rows).
+fn open_editor(h: &mut Harness, app: &mut Shell) {
     let list = h.ui.rect_of_key(panel::LIST_KEY).unwrap();
     let x = list.x + list.w / 2.0;
     let y = (0..100)
@@ -202,16 +193,13 @@ fn ships_edited() {
                 .any(|e| e.route() == Some(panel::ship_key(0).as_str()))
         })
         .expect("the ship's row");
-    h.click(&mut app, (x, y));
-    h.draw(&mut app);
+    h.click(app, (x, y));
+    h.draw(app);
     assert_eq!(app.editor.as_ref().map(|e| e.ship), Some(0));
-    h.shot(&mut app, "editor");
+}
 
-    // The leg's durations: 1.5 days, typed over what was there; the
-    // period does not warp time while typing.
-    let rate = app.clock.rate;
-    h.click_key(&mut app, &Field::Days(0).key());
-    assert!(app.editor.as_ref().unwrap().typing);
+/// Selects all of the focused field's text.
+fn select_all(h: &mut Harness, app: &mut Shell) {
     let ctrl = KeyModifiers {
         ctrl: true,
         ..KeyModifiers::default()
@@ -226,6 +214,26 @@ fn ships_edited() {
     for e in events {
         app.on_event(e, &cx);
     }
+}
+
+#[test]
+fn ships_edited() {
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap()).unwrap();
+    plan.wait();
+    let mut app = Shell::new(plan.epoch());
+    app.load(plan);
+    let mut h = Harness::new(&app, (1400.0, 1000.0));
+    h.draw(&mut app);
+    open_editor(&mut h, &mut app);
+    h.shot(&mut app, "editor");
+
+    // The leg's durations: 1.5 days, typed over what was there; the
+    // period does not warp time while typing.
+    let rate = app.clock.rate;
+    h.click_key(&mut app, &Field::Days(0).key());
+    assert!(app.editor.as_ref().unwrap().typing);
+    select_all(&mut h, &mut app);
     h.type_text(&mut app, "1.5");
     assert_eq!(app.clock.rate, rate, "no warp while typing");
     assert!(
@@ -268,6 +276,10 @@ fn ships_edited() {
     assert!(problems[0].1.contains("left by ascent"));
 
     // Undo, twice: the last leg, then the destination.
+    let ctrl = KeyModifiers {
+        ctrl: true,
+        ..KeyModifiers::default()
+    };
     let ctrl_z = |h: &mut Harness, app: &mut Shell| {
         let events = h.ui.key_down(
             LogicalKey::Character("z".into()),
@@ -295,4 +307,89 @@ fn ships_edited() {
     assert_eq!(app.plan.as_ref().unwrap().plan().ships.len(), 1);
     assert!(app.editor.is_none());
     app.plan.as_mut().unwrap().wait();
+}
+
+/// A class from its menu, a load typed (M1b.md, step 2 plan, part 4):
+/// nothing designed again; a hold overfilled, a warning; a negative load,
+/// refused; "none", a massless ship carrying nothing. A load typed, then
+/// the class undone: the draft goes with it (found in review: committed
+/// to the classless ship, it panicked).
+#[test]
+fn class_and_load_edited() {
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(PLAN, eph, Places::standard()).unwrap()).unwrap();
+    plan.wait();
+    let mut app = Shell::new(plan.epoch());
+    app.load(plan);
+    let mut h = Harness::new(&app, (1400.0, 1000.0));
+    h.draw(&mut app);
+    open_editor(&mut h, &mut app);
+    let made = app.plan.as_ref().unwrap().game().designs_made();
+    let revision = app.plan.as_ref().unwrap().ships[0].revision;
+    let ship = |app: &Shell| app.plan.as_ref().unwrap().plan().ships[0].clone();
+
+    h.click_key(&mut app, &Field::Class.key());
+    h.shot(&mut app, "class-menu");
+    h.click_key(&mut app, &format!("{}:option:lander", Field::Class.key()));
+    assert_eq!(ship(&app).class.as_deref(), Some("lander"));
+    assert_eq!(app.plan.as_ref().unwrap().ships[0].revision, revision);
+
+    let typed = |h: &mut Harness, app: &mut Shell, field: Field, text: &str| {
+        h.click_key(app, &field.key());
+        select_all(h, app);
+        h.type_text(app, text);
+        h.key(app, NamedKey::Enter, KeyModifiers::default());
+    };
+    typed(&mut h, &mut app, Field::Propellant, "300");
+    typed(
+        &mut h,
+        &mut app,
+        Field::Cargo(sim::ships::Commodity::Equipment),
+        "120",
+    );
+    assert_eq!(ship(&app).propellant_t, Some(300.0));
+    assert_eq!(ship(&app).cargo.get("equipment"), Some(&120.0));
+    app.plan.as_mut().unwrap().wait();
+    h.draw(&mut app);
+    let view = &app.plan.as_ref().unwrap().ships[0];
+    assert_eq!(view.warnings.len(), 1, "{:?}", view.warnings);
+    assert_eq!(view.warnings[0].why, "a lander's hold takes 100 t, not 120");
+    assert!(view.tanks.is_some());
+    h.shot(&mut app, "load");
+
+    typed(&mut h, &mut app, Field::Propellant, "-1");
+    assert_eq!(ship(&app).propellant_t, Some(300.0));
+    assert!(app.editor.as_ref().unwrap().refused.is_some());
+
+    h.click_key(&mut app, &Field::Class.key());
+    h.click_key(&mut app, &format!("{}:option:none", Field::Class.key()));
+    assert_eq!(ship(&app).class, None);
+    assert!(ship(&app).propellant_t.is_none() && ship(&app).cargo.is_empty());
+
+    h.click_key(&mut app, &Field::Class.key());
+    h.click_key(&mut app, &format!("{}:option:lander", Field::Class.key()));
+    h.click_key(&mut app, &Field::Propellant.key());
+    select_all(&mut h, &mut app);
+    h.type_text(&mut app, "100");
+    let ctrl = KeyModifiers {
+        ctrl: true,
+        ..KeyModifiers::default()
+    };
+    let events = h.ui.key_down(
+        LogicalKey::Character("z".into()),
+        PhysicalKey::Unidentified,
+        ctrl,
+        false,
+    );
+    let cx = EventCx::new().with_ui_state(h.ui.ui_state());
+    for e in events {
+        app.on_event(e, &cx);
+    }
+    h.draw(&mut app);
+    assert_eq!(ship(&app).class, None);
+    assert!(app.editor.as_ref().unwrap().drafts.is_empty());
+    h.click_key(&mut app, &Field::Done.key());
+    assert!(app.editor.is_none());
+    assert!(ship(&app).class.is_none() && ship(&app).propellant_t.is_none());
+    assert_eq!(app.plan.as_ref().unwrap().game().designs_made(), made);
 }

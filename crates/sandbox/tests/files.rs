@@ -122,7 +122,7 @@ fn a_career_log_opens_in_the_sandbox() {
     assert_eq!(plan.game().mode(), sim::log::Mode::Sandbox);
     let mut ship = plan.plan().ships[0].clone();
     ship.steps.pop();
-    plan.edit(0, ship);
+    plan.edit(0, ship).unwrap();
     plan.wait();
     assert!(plan.game().log().replans.is_empty(), "folded into the ship");
     assert!(!plan.game().log().to_toml().contains("mode = \"career\""));

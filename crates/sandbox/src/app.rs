@@ -110,12 +110,19 @@ struct BuiltFor {
     stations: bool,
 }
 
-/// A ship's lines and events as built, and the ship's revision and first
-/// leg (its colors) they were built for.
+/// A ship's lines and events as built, and the ship's revision, first leg
+/// (its colors) and where it ran dry (what it flies, by item, marker and
+/// time; a new load changes it alone) they were built for.
 struct ShipSet {
     revision: u64,
     first_leg: usize,
+    dry: Option<(usize, Option<usize>, f64)>,
     built: paths::Built,
+}
+
+/// Where `ship` ran dry, as its lines are built for it.
+fn dry_at(ship: &crate::plan::Ship) -> Option<(usize, Option<usize>, f64)> {
+    ship.dry().map(|d| (d.item, d.marker, d.t.0))
 }
 
 pub struct Shell {
@@ -462,7 +469,8 @@ impl Shell {
 
     /// Replaces ship `s` with `ship`, designing it again from where it
     /// first changed (a new name, class or load alone designs nothing);
-    /// the plan keeps what it was for undo.
+    /// the plan keeps what it was for undo. A change the game refuses says
+    /// why in the editor.
     pub fn change(&mut self, s: usize, ship: orbit::mission::Ship) {
         let Some(plan) = self.plan.as_mut() else {
             return;
@@ -478,14 +486,20 @@ impl Shell {
             let course = |x: &orbit::mission::Ship| format!("{:?}", (&x.start, x.epoch, &x.steps));
             course(&plan.plan().ships[s]) == course(&ship)
         };
-        plan.edit(s, ship);
+        if let Err(why) = plan.edit(s, ship) {
+            if let Some(ed) = self.editor.as_mut() {
+                ed.refused = Some(why);
+            }
+            return;
+        }
         if !same_course {
             self.selected = None;
         }
     }
 
     /// Back to the plan before the last change, its designs from the
-    /// cache.
+    /// cache. The editor's drafts go: they were typed into the ship as it
+    /// was (found in review: one committed after outlived its field).
     pub fn undo(&mut self) {
         let Some(plan) = self.plan.as_mut() else {
             return;
@@ -493,6 +507,10 @@ impl Shell {
         let ships = plan.plan().ships.len();
         if plan.undo() {
             self.selected = None;
+            if let Some(ed) = self.editor.as_mut() {
+                ed.drafts.clear();
+                ed.typing = false;
+            }
             if plan.plan().ships.len() != ships {
                 self.leg = None;
                 self.editor = None;
@@ -512,12 +530,16 @@ impl Shell {
         }
     }
 
-    /// Commits `text` typed into `field` of the ship edited.
+    /// Commits `text` typed into `field` of the ship edited: nothing, if
+    /// it reads as the field does (its value shown rounded is not set).
     fn commit(&mut self, field: Field, text: &str) {
         let (Some(ed), Some(plan)) = (self.editor.as_ref(), self.plan.as_ref()) else {
             return;
         };
         let s = ed.ship;
+        if text.trim() == editor::value(&plan.plan().ships[s], field) {
+            return;
+        }
         let result = editor::set(&plan.plan().ships[s], field, text);
         match result {
             Ok(ship) => {
@@ -562,6 +584,7 @@ impl Shell {
             return false;
         };
         let ship = plan.plan().ships[s].clone();
+        let classes = plan.game().economy().ships.clone();
         // Typing into a field.
         if let Some(f) = target.or(routed).filter(|f| f.typed()) {
             let ed = self.editor.as_mut().unwrap();
@@ -604,12 +627,12 @@ impl Shell {
             }
         }
         let clicked = matches!(event.kind, UiEventKind::Click | UiEventKind::Activate);
-        // A place menu's option, or its trigger.
+        // A menu's option (a place, or the class), or its trigger.
         let ed = self.editor.as_mut().unwrap();
         if let Some(f) = ed.menu {
             if clicked && let Some(id) = event.route_suffix(&format!("{}:option", f.key())) {
                 ed.menu = None;
-                let changed = editor::place(&ship, f, id, Places::standard());
+                let changed = editor::choose(&ship, f, id, Places::standard(), &classes);
                 match changed {
                     Ok(ship) => self.change(s, ship),
                     Err(why) => self.editor.as_mut().unwrap().refused = Some(why),
@@ -627,7 +650,7 @@ impl Shell {
             return false;
         }
         match routed {
-            Some(f @ (Field::Start | Field::To(_))) => {
+            Some(f @ (Field::Start | Field::To(_) | Field::Class)) => {
                 ed.menu = if ed.menu == Some(f) { None } else { Some(f) };
             }
             Some(Field::Done) => {
@@ -762,12 +785,13 @@ impl Shell {
             changed = true;
         }
         // A ship's set is kept where the ship at its place has the same
-        // revision (unique) and first leg: a ship moved by a removal is
-        // built again, its colors and events' place changed.
+        // revision (unique), first leg and running dry: a ship moved by a
+        // removal is built again, its colors and events' place changed.
         let (eph, frame, focus) = (self.eph, self.frame, self.camera.focus);
         for (s, ship) in ships.iter().enumerate() {
             let kept = self.ship_sets.get(s).is_some_and(|set| {
-                (set.revision, set.first_leg) == (ship.revision, ship.first_leg)
+                (set.revision, set.first_leg, set.dry)
+                    == (ship.revision, ship.first_leg, dry_at(ship))
             });
             if kept {
                 continue;
@@ -776,6 +800,7 @@ impl Shell {
             let set = ShipSet {
                 revision: ship.revision,
                 first_leg: ship.first_leg,
+                dry: dry_at(ship),
                 built: paths::build(eph, &frame, focus, s, ship),
             };
             match self.ship_sets.get_mut(s) {
@@ -1214,6 +1239,7 @@ impl App for Shell {
                                     ed,
                                     &plan.plan().ships[ed.ship],
                                     &orbit::mission::check(self.eph, &plan.plan().ships[ed.ship]),
+                                    &plan.game().economy().ships,
                                     &self.selection,
                                 ),
                             ])),
@@ -1321,8 +1347,12 @@ impl App for Shell {
         if self.settings_open {
             layers.push(settings::menu(&self.settings));
         }
-        if let Some(f) = self.editor.as_ref().and_then(|e| e.menu) {
-            layers.push(editor::place_menu(f, Places::standard()));
+        if let (Some(f), Some(plan)) = (self.editor.as_ref().and_then(|e| e.menu), &self.plan) {
+            layers.push(editor::menu(
+                f,
+                Places::standard(),
+                &plan.game().economy().ships,
+            ));
         }
         stack(layers).width(Size::Fill(1.0)).height(Size::Fill(1.0))
     }

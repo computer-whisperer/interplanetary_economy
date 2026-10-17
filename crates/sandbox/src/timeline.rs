@@ -464,10 +464,10 @@ pub fn strip(
         }
         // Markers over the bars.
         for (k, item) in ship.items.iter().enumerate() {
-            for m in &item.markers {
+            for (i, m) in item.markers.iter().enumerate() {
                 let f = tl.fraction(event_time(item, m));
                 if (0.0..=1.0).contains(&f) {
-                    let (_, c, _) = paths::marker_style(m.kind, colors[k]);
+                    let (_, c, _) = paths::event_style(ship, &colors, k, i);
                     places.push(Place {
                         from: f,
                         to: f,

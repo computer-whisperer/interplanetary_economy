@@ -2,11 +2,12 @@
 //! ship and its items, with their times and Δv, the failures and why.
 
 use crate::labels::{grouped, mps};
-use crate::plan::Ship;
+use crate::plan::{Ship, Tanks};
 use damascene_core::prelude::*;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Item, ItemKind, MarkerKind, when};
 use orbit::time::Epoch;
+use sim::ships::{Commodity, Load};
 use std::sync::Arc;
 
 /// The panel's list's key.
@@ -131,6 +132,32 @@ pub fn rows(
                 lines.push((w.to_string(), Tone::Warning));
             }
         }
+        // Its class, its tanks and hold at the clock, and where it ran
+        // dry (M1b.md, step 2 plan, part 4).
+        if let Some(tanks) = &ship.tanks {
+            let now = match tanks.load(t) {
+                _ if tanks.pending(t) => " · tanks pending".to_string(),
+                Some(load) => format!(" · {}", carried(&load, tanks.fuel)),
+                None => String::new(),
+            };
+            lines.push((format!("{}{now}", tanks.class), Tone::Muted));
+            if let Some(dry) = tanks.dry() {
+                // A stay's label is "at" its place.
+                let label = ship.items.get(dry.item).map_or("", |i| i.label.as_str());
+                let at = match dry.marker {
+                    Some(_) => format!("at {label}"),
+                    None => format!("keeping station {label}"),
+                };
+                lines.push((
+                    format!(
+                        "Ran dry {} {at}: {} short, not flown after",
+                        when(dry.t),
+                        short(dry.short)
+                    ),
+                    Tone::Failure,
+                ));
+            }
+        }
         let dv: f64 = ship.items.iter().map(|i| i.dv).sum();
         rows.push(Row {
             key: ship_key(s),
@@ -153,6 +180,9 @@ pub fn rows(
                     row.lines.push((w.why.clone(), Tone::Warning));
                 }
             }
+            if let Some(tanks) = &ship.tanks {
+                row.lines.extend(burned(tanks, item, k));
+            }
             row.key = item_key(s, k);
             row.current = now == Some(k);
             row.selected = selected == Some((s, k));
@@ -160,6 +190,89 @@ pub fn rows(
         }
     }
     rows
+}
+
+/// A shortfall, km/s: in m/s, to a tenth under 100; under a tenth, in
+/// mm/s (a day's upkeep).
+fn short(dv: f64) -> String {
+    let m = dv * 1e3;
+    if m >= 100.0 {
+        mps(dv)
+    } else if m >= 0.1 {
+        format!("{m:.1} m/s")
+    } else {
+        format!("{:.1} mm/s", m * 1e3)
+    }
+}
+
+/// Tonnes, to a precision that reads, down to grams.
+fn mass(t: f64) -> String {
+    if t >= 10.0 {
+        format!("{t:.1} t")
+    } else if t >= 1.0 {
+        format!("{t:.2} t")
+    } else if t >= 1e-3 {
+        format!("{:.1} kg", t * 1e3)
+    } else {
+        format!("{:.0} g", t * 1e6)
+    }
+}
+
+/// What a ship carries: its tanks' LOX and fuel, and its hold, if it
+/// holds anything.
+fn carried(load: &Load, fuel: Commodity) -> String {
+    let mut s = format!(
+        "{} {}, {} {}",
+        Commodity::Lox.name(),
+        mass(load.lox),
+        fuel.name(),
+        mass(load.fuel)
+    );
+    if load.cargo() > 0.0 {
+        s.push_str(&format!(" · hold {}", mass(load.cargo())));
+    }
+    s
+}
+
+/// What item `k` of a ship with `tanks` burned, and what it left; where
+/// the ship ran dry, and that what follows is not flown; pending where the
+/// loop has not run to its end.
+fn burned(tanks: &Tanks, item: &Item, k: usize) -> Vec<(String, Tone)> {
+    if tanks.pending(item.end) {
+        return vec![("tanks pending".into(), Tone::Muted)];
+    }
+    let state = &tanks.state;
+    let mut lines = Vec::new();
+    let used = state.used.get(k).copied().unwrap_or(0.0);
+    if used > 0.0 {
+        let what = match item.kind {
+            ItemKind::Stay => "upkeep",
+            _ => "propellant",
+        };
+        let left = state
+            .after
+            .get(k)
+            .copied()
+            .flatten()
+            .map_or(String::new(), |load| {
+                format!(" · left {}", carried(&load, tanks.fuel))
+            });
+        lines.push((format!("{what} {}{left}", mass(used)), Tone::Muted));
+    }
+    match tanks.dry() {
+        Some(dry) if dry.item == k => lines.push((
+            match dry.marker {
+                Some(_) => format!("Ran dry: the burn is {} short", short(dry.short)),
+                None => format!("Ran dry keeping station: {} short", short(dry.short)),
+            },
+            Tone::Failure,
+        )),
+        Some(dry) if k > dry.item => {
+            lines.push(("Not flown: the ship ran dry".into(), Tone::Muted))
+        }
+        _ => {}
+    }
+    lines
 }
 
 /// An item's row, unkeyed.

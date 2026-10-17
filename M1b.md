@@ -195,6 +195,39 @@ below), and the four decisions below, each as recommended.
     `crates/sim/tests/state.rs` (1 and 24 threads; a new load designs
     nothing and gives a fresh game's), and `crates/sim/tests/game.rs`
     (a career log read back, and in the sandbox, tanks and all).
+- Part 4: the sandbox.
+  - The editor: a class menu ("none": massless, carrying nothing; each
+    class with its propellant, tanks and hold), and, with a class, the
+    start's propellant (empty: a full tank) and cargo by commodity,
+    typed as the engine reads them. A new class or load designs
+    nothing (the ship keeps its revision); the loop runs again. An edit
+    the game refuses is said in the editor (`Loaded::edit` returns why).
+  - The panel: the ship's class and its tanks and hold at the clock;
+    each item's propellant (a stay's upkeep), and what a burn left;
+    "tanks pending" where the loop has not run.
+  - A ship that ran dry: said on its row and on the item (how far
+    short, in mm/s for a day's upkeep), the items after it "not flown".
+    On the map, the burn marked with a red block, the dry item's path
+    after then dimmed (split there, but for a stay, which is drawn a
+    revolution about the clock), and its later items and markers dimmed
+    on the map and the timeline. A dry found where the state is pending
+    is not shown: it may move as designs arrive. A ship's lines are
+    built again when where it runs dry changes, its design the same (a
+    test fails without it).
+  - Seen in screenshots: a lander loaded short in the panel and on the
+    map (a scratch plan, `sandbox --plan … --screenshot`); the class
+    menu and the load fields (`OPTIONS_SHOT=dir cargo test -p sandbox
+    --test editor`).
+  - Review (a sub-agent): undo kept the editor's drafts, so a load typed
+    and then its class undone was committed to a classless ship and
+    panicked (and a wait's draft outliving its step, since M1c); a
+    stay that ran dry was split into two halves each drawing its
+    revolution; a pass's or jump's marker after it was not dimmed; the
+    ship row said "at at" and an upkeep's shortfall "0.0 m/s"; the
+    dry burn's mark looked like a jump's. Undo drops the drafts, a load
+    needs a class and a wait a wait, and the rest is fixed, each with a
+    test. Cleanup: the `bool` `Loaded::poll` returned, unread since step
+    1 part 7, is gone with those under it.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and

@@ -1,14 +1,17 @@
 //! Editing a ship (M1c.md, step 7 plan, item 6): its name, its start,
-//! and its steps (a leg's destination, durations, window and
-//! aerocapture; a wait's days), steps added, removed and moved. Each
-//! change makes a new ship, which the plan designs again from the first
-//! step it changes; legs that cannot be flown say why at once, by the
+//! its class and load (M1b.md, step 2 plan, part 4), and its steps (a
+//! leg's destination, durations, window and aerocapture; a wait's days),
+//! steps added, removed and moved. Each change makes a new ship, which the
+//! plan designs again from the first step it changes (a new class or load
+//! designs nothing); legs that cannot be flown say why at once, by the
 //! planner's own rules (`mission::check`).
 
 use damascene_core::prelude::*;
 use orbit::mission::{Go, Ship, Spot, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
+use sim::params::ShipClass;
+use sim::ships::{COMMODITIES, Commodity};
 use std::collections::HashMap;
 
 /// A control of the editor.
@@ -18,6 +21,12 @@ pub enum Field {
     /// The ship's start: its place, and when.
     Start,
     Epoch,
+    /// The ship's class (a menu; "none": massless), and what it carries
+    /// at its start: propellant, t (empty: a full tank), and cargo, t by
+    /// commodity.
+    Class,
+    Propellant,
+    Cargo(Commodity),
     /// Step `i`: a leg's destination, durations (days, by commas), window
     /// (its opening and close) and aerocapture; a wait's days.
     To(usize),
@@ -42,6 +51,9 @@ impl Field {
             Field::Name => "edit:name".into(),
             Field::Start => "edit:start".into(),
             Field::Epoch => "edit:epoch".into(),
+            Field::Class => "edit:class".into(),
+            Field::Propellant => "edit:propellant".into(),
+            Field::Cargo(c) => format!("edit:cargo:{}", c.id()),
             Field::To(i) => format!("edit:{i}:to"),
             Field::Days(i) => format!("edit:{i}:days"),
             Field::Open(i) => format!("edit:{i}:open"),
@@ -66,10 +78,16 @@ impl Field {
             "name" => Field::Name,
             "start" => Field::Start,
             "epoch" => Field::Epoch,
+            "class" => Field::Class,
+            "propellant" => Field::Propellant,
             "add-leg" => Field::AddLeg,
             "add-wait" => Field::AddWait,
             "remove-ship" => Field::RemoveShip,
             "done" => Field::Done,
+            _ if rest.starts_with("cargo:") => {
+                let id = rest.strip_prefix("cargo:")?;
+                Field::Cargo(*COMMODITIES.iter().find(|c| c.id() == id)?)
+            }
             _ => {
                 let (i, what) = rest.split_once(':')?;
                 let i: usize = i.parse().ok()?;
@@ -95,6 +113,8 @@ impl Field {
             self,
             Field::Name
                 | Field::Epoch
+                | Field::Propellant
+                | Field::Cargo(_)
                 | Field::Days(_)
                 | Field::Open(_)
                 | Field::Close(_)
@@ -110,7 +130,7 @@ pub struct Editor {
     pub ship: usize,
     /// Text typed into fields and not yet committed, by field.
     pub drafts: HashMap<Field, String>,
-    /// The place menu open: the start's or a leg's.
+    /// The menu open: the start's or a leg's place, or the class.
     pub menu: Option<Field>,
     /// Why the last change was refused.
     pub refused: Option<String>,
@@ -123,8 +143,8 @@ fn date(t: Epoch) -> String {
     t.stamp()
 }
 
-/// Days as a field shows them: "5", "0.5", "190.25".
-fn days(d: f64) -> String {
+/// A number as a field shows it, days or tonnes: "5", "0.5", "190.25".
+fn figure(d: f64) -> String {
     let s = format!("{d:.4}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -139,11 +159,14 @@ pub fn value(ship: &Ship, field: Field) -> String {
         Field::Name => ship.name.clone(),
         Field::Start => ship.start.label.clone(),
         Field::Epoch => date(ship.epoch),
+        Field::Class => ship.class.clone().unwrap_or_else(|| "none".into()),
+        Field::Propellant => ship.propellant_t.map_or(String::new(), figure),
+        Field::Cargo(c) => ship.cargo.get(c.id()).map_or(String::new(), |&t| figure(t)),
         Field::To(i) => go(i).map_or(String::new(), |g| g.to.label.clone()),
         Field::Days(i) => go(i).map_or(String::new(), |g| {
             g.days
                 .iter()
-                .map(|&d| days(d))
+                .map(|&d| figure(d))
                 .collect::<Vec<_>>()
                 .join(", ")
         }),
@@ -154,7 +177,7 @@ pub fn value(ship: &Ship, field: Field) -> String {
             .and_then(|g| g.window)
             .map_or(String::new(), |w| date(w.1)),
         Field::Wait(i) => match ship.steps.get(i) {
-            Some(Step::Wait(d)) => days(*d),
+            Some(Step::Wait(d)) => figure(*d),
             _ => String::new(),
         },
         _ => String::new(),
@@ -176,6 +199,21 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
         Ok(d)
     };
     let epoch = |s: &str| s.parse::<Epoch>();
+    // Tonnes, as the engine reads them (`sim::ships::read`); empty, none.
+    let tonnes = |s: &str| -> Result<Option<f64>, String> {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        let t: f64 = s.parse().map_err(|_| format!("{s:?} is not a number"))?;
+        if !t.is_finite() || t < 0.0 {
+            return Err("a load is a number of tonnes, not negative".into());
+        }
+        // Not "-0".
+        Ok(Some(if t == 0.0 { 0.0 } else { t }))
+    };
+    if matches!(field, Field::Propellant | Field::Cargo(_)) && ship.class.is_none() {
+        return Err("a load needs a class: choose one first".into());
+    }
     match field {
         Field::Name => {
             if text.is_empty() {
@@ -184,6 +222,15 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
             ship.name = text.to_string();
         }
         Field::Epoch => ship.epoch = epoch(text)?,
+        Field::Propellant => ship.propellant_t = tonnes(text)?,
+        Field::Cargo(c) => match tonnes(text)?.filter(|&t| t > 0.0) {
+            Some(t) => {
+                ship.cargo.insert(c.id().to_string(), t);
+            }
+            None => {
+                ship.cargo.remove(c.id());
+            }
+        },
         Field::Wait(i) => {
             let d: f64 = text
                 .parse()
@@ -191,7 +238,11 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
             if !d.is_finite() || d < 0.0 {
                 return Err("a wait is a number of days, not negative".into());
             }
-            ship.steps[i] = Step::Wait(d);
+            // A draft outliving its step (an undo) sets nothing.
+            let Some(Step::Wait(wait)) = ship.steps.get_mut(i) else {
+                return Err("not a wait".into());
+            };
+            *wait = d;
         }
         Field::Days(i) | Field::Open(i) | Field::Close(i) => {
             let Some(Step::Go(go)) = ship.steps.get_mut(i) else {
@@ -236,9 +287,35 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
     Ok(ship)
 }
 
+/// `ship` with a menu's option `id` chosen: its start's place or step
+/// `i`'s destination, from `places`; its class, from `classes` ("none":
+/// massless, carrying nothing).
+pub fn choose(
+    ship: &Ship,
+    field: Field,
+    id: &str,
+    places: &Places,
+    classes: &[ShipClass],
+) -> Result<Ship, String> {
+    if field != Field::Class {
+        return place(ship, field, id, places);
+    }
+    let mut ship = ship.clone();
+    if id == "none" {
+        ship.class = None;
+        ship.propellant_t = None;
+        ship.cargo.clear();
+    } else if classes.iter().any(|c| c.id == id) {
+        ship.class = Some(id.to_string());
+    } else {
+        return Err(format!("no class {id:?}"));
+    }
+    Ok(ship)
+}
+
 /// `ship` with its start's place, or step `i`'s destination, set to the
 /// place `id`.
-pub fn place(ship: &Ship, field: Field, id: &str, places: &Places) -> Result<Ship, String> {
+fn place(ship: &Ship, field: Field, id: &str, places: &Places) -> Result<Ship, String> {
     let spot = Spot::named(id, places).ok_or_else(|| format!("no place {id:?}"))?;
     let mut ship = ship.clone();
     match field {
@@ -315,11 +392,13 @@ fn small(label: &str, field: Field) -> El {
 }
 
 /// The editor's section for `ship`, with the legs that cannot be flown
-/// (`problems`, by step) and the selection the fields share.
+/// (`problems`, by step), the classes a ship may have, and the selection
+/// the fields share.
 pub fn section(
     editor: &Editor,
     ship: &Ship,
     problems: &[(usize, String)],
+    classes: &[ShipClass],
     selection: &Selection,
 ) -> El {
     let caption = |s: &str| text(s.to_string()).caption().muted();
@@ -353,7 +432,47 @@ pub fn section(
         ])
         .gap(tokens::SPACE_2)
         .align(Align::Center),
+        row([caption("Class"), menu(Field::Class)])
+            .gap(tokens::SPACE_2)
+            .align(Align::Center),
     ];
+    // What it carries at its start: a classless ship, nothing.
+    if let Some(class) = classes.iter().find(|c| ship.class.as_ref() == Some(&c.id)) {
+        let full = if ship.propellant_t.is_none() {
+            ", full"
+        } else {
+            ""
+        };
+        rows.push(
+            row([
+                caption("propellant"),
+                input(editor, ship, Field::Propellant, selection, 70.0),
+                caption(&format!("t of {}{full}", figure(class.tank))),
+            ])
+            .gap(tokens::SPACE_1)
+            .align(Align::Center),
+        );
+        rows.push(caption(&format!(
+            "cargo, t (a hold of {})",
+            figure(class.cargo)
+        )));
+        for three in COMMODITIES.chunks(3) {
+            rows.push(
+                row(three.iter().flat_map(|&c| {
+                    [
+                        caption(c.name()),
+                        input(editor, ship, Field::Cargo(c), selection, 50.0),
+                    ]
+                }))
+                .gap(tokens::SPACE_1)
+                .align(Align::Center)
+                .padding(Sides {
+                    left: 16.0,
+                    ..Sides::zero()
+                }),
+            );
+        }
+    }
     for (i, step) in ship.steps.iter().enumerate() {
         let moves = [
             small("↑", Field::Up(i)),
@@ -418,7 +537,7 @@ pub fn section(
                     let depart = pin
                         .depart
                         .map(|d| format!(" leaving {}", orbit::mission::when(d)));
-                    let days = pin.days.map(|d| format!(" taking {} d", days(d)));
+                    let days = pin.days.map(|d| format!(" taking {} d", figure(d)));
                     rows.push(caption(&format!(
                         "    pinned{}{} (the options' Unpin takes it off)",
                         depart.unwrap_or_default(),
@@ -463,15 +582,31 @@ pub fn section(
     .width(Size::Fill(1.0))
 }
 
-/// The place menu for `field`: every place by id, with its name.
-pub fn place_menu(field: Field, places: &Places) -> El {
-    select_menu(
-        field.key(),
-        places
+/// The menu for `field`: every place by id, with its name; or, for the
+/// class, "none" and every class, with its propellant, tanks and hold.
+pub fn menu(field: Field, places: &Places, classes: &[ShipClass]) -> El {
+    let options: Vec<(String, String)> = match field {
+        Field::Class => std::iter::once(("none".to_string(), "none — massless".to_string()))
+            .chain(classes.iter().map(|c| {
+                (
+                    c.id.clone(),
+                    format!(
+                        "{} — {:?}, tanks {} t, hold {} t",
+                        c.id,
+                        c.propellant,
+                        figure(c.tank),
+                        figure(c.cargo)
+                    )
+                    .to_lowercase(),
+                )
+            }))
+            .collect(),
+        _ => places
             .iter()
             .map(|p| (p.id.clone(), format!("{} — {}", p.id, p.name)))
-            .collect::<Vec<_>>(),
-    )
+            .collect(),
+    };
+    select_menu(field.key(), options)
 }
 
 #[cfg(test)]
@@ -507,6 +642,10 @@ window = ["2045-03-08", "2045-03-10"]
             Field::Name,
             Field::Start,
             Field::Epoch,
+            Field::Class,
+            Field::Propellant,
+            Field::Cargo(Commodity::Lh2),
+            Field::Cargo(Commodity::Equipment),
             Field::To(3),
             Field::Days(0),
             Field::Open(1),
@@ -524,6 +663,7 @@ window = ["2045-03-08", "2045-03-10"]
             assert_eq!(Field::parse(&f.key()), Some(f));
         }
         assert_eq!(Field::parse("edit:2:to:option:llo"), None);
+        assert_eq!(Field::parse("edit:cargo:water"), None);
         assert_eq!(Field::parse("plan"), None);
     }
 
@@ -564,6 +704,10 @@ window = ["2045-03-08", "2045-03-10"]
         assert!(set(&s, Field::Open(2), "2045-03-11").is_err());
         assert!(set(&s, Field::Epoch, "2045-02-30").is_err());
         assert!(set(&s, Field::Name, "  ").is_err());
+        // A wait's draft set into what is not a wait, or no step at all (an
+        // undo under it: found in review, it panicked).
+        assert!(set(&s, Field::Wait(0), "2").is_err());
+        assert!(set(&s, Field::Wait(9), "2").is_err());
     }
 
     /// Steps move, go and come; places change.
@@ -590,5 +734,48 @@ window = ["2045-03-08", "2045-03-10"]
             "a wait has no place"
         );
         assert!(place(&s, Field::Start, "nowhere", places).is_err());
+    }
+
+    /// A class from its menu ("none" carries nothing), and a load typed as
+    /// the engine reads it: empty propellant, a full tank; empty or no
+    /// cargo, none.
+    #[test]
+    fn class_and_load_set_and_read() {
+        let s = ship();
+        let classes = sim::params::EconomyFile::standard()
+            .draw(
+                orbit::ephem::Ephemeris::standard(),
+                orbit::routes::RouteGraph::standard(),
+                &mut sim::params::Draw::Central,
+            )
+            .ships;
+        let places = Places::standard();
+        assert_eq!(value(&s, Field::Class), "none");
+        assert!(
+            set(&s, Field::Propellant, "100").is_err(),
+            "a load needs a class"
+        );
+        let t = choose(&s, Field::Class, "tug-h", places, &classes).unwrap();
+        assert_eq!(value(&t, Field::Class), "tug-h");
+        let t = set(&t, Field::Propellant, "120.5").unwrap();
+        let t = set(&t, Field::Cargo(Commodity::Equipment), "20").unwrap();
+        assert_eq!(value(&t, Field::Propellant), "120.5");
+        assert_eq!(value(&t, Field::Cargo(Commodity::Equipment)), "20");
+        assert_eq!(t.cargo.get("equipment"), Some(&20.0));
+        let u = set(&t, Field::Cargo(Commodity::Equipment), "0").unwrap();
+        assert!(u.cargo.is_empty());
+        let u = set(&t, Field::Propellant, "").unwrap();
+        assert_eq!(u.propellant_t, None);
+        assert!(set(&t, Field::Propellant, "-1").is_err());
+        assert!(set(&t, Field::Cargo(Commodity::Lh2), "NaN").is_err());
+        assert!(choose(&s, Field::Class, "barge", places, &classes).is_err());
+        let none = choose(&t, Field::Class, "none", places, &classes).unwrap();
+        assert_eq!(none.class, None);
+        assert_eq!(none.propellant_t, None);
+        assert!(none.cargo.is_empty());
+        assert_eq!(
+            choose(&s, Field::To(0), "nrho", places, &classes).map(|t| value(&t, Field::To(0))),
+            Ok("nrho".into())
+        );
     }
 }
