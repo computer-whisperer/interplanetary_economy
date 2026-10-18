@@ -468,7 +468,7 @@ pub fn run(opts: &Options, out: &Path) -> Result<()> {
             // A start that does not converge is retried a day or two later.
             let r = (0..3).find_map(|late| {
                 let start = first.plus_days(k as f64 * PIECE_DAYS + late as f64);
-                continue_orbit(eph, &cislunar, cat, m.orbit, start, revs, 16).ok()
+                continue_orbit(eph, &cislunar, cat, m.orbit, start, revs, 1).ok()
             });
             (s, k, r)
         })

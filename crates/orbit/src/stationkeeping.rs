@@ -59,11 +59,18 @@ pub struct Policy {
     pub deadband_km: f64,
 }
 
-/// What holding the orbit cost over one simulated run.
+/// One burn: when, in seconds after the reference's epoch, and how much.
 #[derive(Clone, Copy, Debug)]
+pub struct Burn {
+    pub t: f64,
+    pub dv_kms: f64,
+}
+
+/// What holding the orbit cost over one simulated run.
+#[derive(Clone, Debug)]
 pub struct Run {
     pub dv_per_year_kms: f64,
-    pub maneuvers: usize,
+    pub burns: Vec<Burn>,
     /// The ship's largest distance from the reference at a maneuver time.
     pub worst_deviation_km: f64,
 }
@@ -100,7 +107,7 @@ pub fn simulate(
 ) -> Option<Run> {
     let mut rng = Rng(seed);
     let (ode, stm) = (field.ode(reference.epoch), field.ode_stm(reference.epoch));
-    let span = reference.path.span().1;
+    let (t0, span) = reference.path.span();
     let noisy = |state: &[f64; 6], rng: &mut Rng| -> [f64; 6] {
         std::array::from_fn(|i| {
             state[i]
@@ -112,10 +119,10 @@ pub fn simulate(
                     }
         })
     };
-    let start = noisy(&reference.path.at(0.0), &mut rng);
-    let mut ship = Dop853::new(&ode, 0.0, start, TOL);
-    let (mut dv, mut maneuvers, mut worst) = (0.0, 0, 0.0f64);
-    let mut t = policy.interval_s;
+    let start = noisy(&reference.path.at(t0), &mut rng);
+    let mut ship = Dop853::new(&ode, t0, start, TOL);
+    let (mut burns, mut worst) = (Vec::new(), 0.0f64);
+    let mut t = t0 + policy.interval_s;
     while t + policy.horizon_s <= span {
         ship.advance_to(&ode, t).ok()?;
         let reference_now = reference.path.at(t);
@@ -158,15 +165,14 @@ pub fn simulate(
                 state[3 + i] += burn[i] + size * errors.execution * rng.gaussian();
             }
             ship = Dop853::new(&ode, t, state, TOL);
-            dv += size;
-            maneuvers += 1;
+            burns.push(Burn { t, dv_kms: size });
         }
         t += policy.interval_s;
     }
-    let simulated = t - policy.interval_s;
+    let simulated = t - policy.interval_s - t0;
     Some(Run {
-        dv_per_year_kms: dv * YEAR_S / simulated,
-        maneuvers,
+        dv_per_year_kms: burns.iter().map(|b| b.dv_kms).sum::<f64>() * YEAR_S / simulated,
+        burns,
         worst_deviation_km: worst,
     })
 }
@@ -213,9 +219,10 @@ pub fn upkeep(field: &Field, reference: &Reference, errors: Errors, runs: u64) -
             }
             let n = results.len() as f64;
             let dv = results.iter().map(|r| r.dv_per_year_kms).sum::<f64>() / n;
-            let simulated_years = (reference.path.span().1 - horizon * period) / YEAR_S;
+            let (t0, t1) = reference.path.span();
+            let simulated_years = (t1 - t0 - horizon * period) / YEAR_S;
             let maneuvers =
-                results.iter().map(|r| r.maneuvers).sum::<usize>() as f64 / n / simulated_years;
+                results.iter().map(|r| r.burns.len()).sum::<usize>() as f64 / n / simulated_years;
             if best.is_none_or(|b| dv < b.dv_per_year_kms) {
                 best = Some(Upkeep {
                     policy,

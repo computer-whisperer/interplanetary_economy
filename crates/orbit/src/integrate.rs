@@ -359,14 +359,31 @@ impl<const N: usize> Trajectory<N> {
     /// Steps from one forward run, in order.
     pub fn new(steps: Vec<DenseStep<N>>) -> Self {
         assert!(!steps.is_empty(), "a trajectory needs at least one step");
-        let adjacent = |a: &DenseStep<N>, b: &DenseStep<N>| {
-            (b.t0 - (a.t0 + a.h)).abs() <= 1e-12 * b.t0.abs().max(1.0)
-        };
         assert!(
-            steps.iter().all(|s| s.h > 0.0) && steps.windows(2).all(|w| adjacent(&w[0], &w[1])),
+            steps.iter().all(|s| s.h > 0.0)
+                && steps.windows(2).all(|w| Self::adjacent(&w[0], &w[1])),
             "steps must run forward, end to end"
         );
         Trajectory { steps }
+    }
+
+    fn adjacent(a: &DenseStep<N>, b: &DenseStep<N>) -> bool {
+        (b.t0 - (a.t0 + a.h)).abs() <= 1e-12 * b.t0.abs().max(1.0)
+    }
+
+    /// Steps from a forward run that starts where this one ends.
+    pub fn append(&mut self, steps: Vec<DenseStep<N>>) {
+        let more = Trajectory::new(steps);
+        assert!(
+            Self::adjacent(self.steps.last().unwrap(), &more.steps[0]),
+            "steps must run on from the end"
+        );
+        self.steps.extend(more.steps);
+    }
+
+    /// Its steps, in order.
+    pub fn steps(&self) -> &[DenseStep<N>] {
+        &self.steps
     }
 
     /// First and last times covered.

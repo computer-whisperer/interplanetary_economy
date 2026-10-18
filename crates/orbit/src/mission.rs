@@ -1598,7 +1598,7 @@ impl<'w> Planner<'w> {
             .find_map(|early| {
                 let start = from.plus_days(-VISIT_MARGIN_DAYS - early as f64);
                 let revs = ((span + early as f64) / days).ceil() as usize + 1;
-                continue_orbit(eph, field, cat, m.orbit, start, revs, 16).ok()
+                continue_orbit(eph, field, cat, m.orbit, start, revs, 1).ok()
             })
             .map(|reference| {
                 Arc::new(Visit {
@@ -2255,6 +2255,7 @@ fn own_reference(
         center: field.center(),
         revolutions: ((span / period).round() as usize).max(1),
         patches: Vec::new(),
+        ahead: Vec::new(),
         path: Trajectory::new(steps),
     })
 }

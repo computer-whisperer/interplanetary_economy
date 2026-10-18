@@ -617,8 +617,8 @@ action, its orbit built from then:
   leg arrives on the vessel's orbit, at its phase.
 - **A vessel staying in a station orbit keeps one continuous orbit**
   from its arrival on, built from the catalog orbit as now and extended
-  ahead in chunks (`reference::continue_orbit`; a year of the NRHO took
-  3.6 s in M1a step 5c) as far as its stay and its visitors need, with
+  a year at a time (`Reference::extend`, anchored on the solve before;
+  step 3 plan, part 1) as far as its stay and its visitors need, with
   upkeep simulated as it goes. Extending is new: `continue_orbit`
   starts from the catalog orbit, so M1a's yearly pieces and M1c's
   visits are each a separate orbit. M1a left the continuous reference
@@ -1124,8 +1124,10 @@ Vessels, stations and stocks: decided with the user, with docking a
 step of its own). Ships meet vessels, take and give what they carry,
 and buy from Earth at LEO. Each part is committed on its own.
 
-As recommended, not yet ruled on: manifests (part 4) and career's
-check against the projection (part 6).
+Ruled with the user (2026-10-17): manifests on the leg that arrives
+(part 4); career refuses a plan that runs a vessel dry or short (part
+6); a meeting names the vessel's leg (part 3); a station keeps no
+reserve (part 5).
 
 What is hard, and where (found in discussing the first draft):
 
@@ -1134,42 +1136,160 @@ What is hard, and where (found in discussing the first draft):
   steps (part 3).
 - A staying vessel's orbit has to reach as far ahead as its stay and
   its visitors need. Today a station orbit is built for one planned
-  stay (parts 1–2).
+  stay, and a station has no one orbit for its life (parts 1–2).
 - Meeting a vessel in a low orbit needs a leg the planner does not
   have: the target fixes the plane and the phase. Out of M1b (Scope).
 
-1. **Continued orbits, a kill-test first** (`orbit::reference`).
-   - `continue_orbit` gains a chained form: a chunk of whole
-     revolutions whose first patch is fixed to the end of the chunk
-     before it.
-   - For each of the four station places, from the catalog orbit at a
-     date, continued over 36 years. Checked:
-     - each join continuous to the shooting's tolerance (~4 m, 0.01
-       mm/s);
-     - a chunk the same to the bit, built alone or after the orbit was
-       extended past it;
-     - the shape held (distance from the Moon within ~10% of the
-       catalog orbit's, as M1a step 5b);
-     - the time per year built, and the memory;
-     - upkeep per chunk (`stationkeeping::upkeep`), and its time. The
-       chunk's length is set here: at least four revolutions, which
-       upkeep needs.
-   - If a chain does not hold for an orbit (an L1 halo is the least
-     stable), stop and report. If building is slow, the arcs of each
-     Newton iteration are integrated in parallel.
-2. **The planner on continued orbits.**
+Found in part 1's first kill-test (2026-10-17), and the design that
+follows from it:
+
+- A solve from the catalog orbit lands on the member of the family
+  nearest its guess, not on "the" orbit. Year-long pieces solved a year
+  apart differ by 240–900 km (the halos), 700–38,000 km (the NRHO) and
+  1,400–35,000 km (the DRO, stable: any nearby torus is a solution).
+  The station-keeping loop switched from one piece to the next paid
+  0.04–5.5, 3.5–9.7, 4.7–111 and 17–63 m/s a switch, against yearly
+  upkeep of 3.1–3.7, 4.5–5.0, 0.8–5.4 and 0.6–0.8 m/s. A station's
+  orbit must therefore be extended from the one it is on, never solved
+  afresh.
+- A solve's end is free, so its last revolutions leave the orbit by the
+  guess's error divided by the unstable direction's growth per
+  revolution: ×68 (L1 halo), ×353 (L2 halo), ×1.9 (NRHO), ×1 (DRO),
+  from the catalog's stability index. Every join tried was made at a
+  piece's end, where it is already leaving. Rejected: a join fixed in
+  position (it is a maneuver, m/s); fixed in state (forward flight, an
+  unstable orbit leaves); pieces solved apart with the loop paying the
+  switch (the costs above); a controller with no reference (the
+  prototype failed within days at hundreds of m/s a year, cause not
+  found; it would also make a station's future path a simulation
+  output every visitor's design must run).
+- Chosen: anchored extension. A reference is solved `settle` revolutions
+  past its usable end and the first of them, the anchor revolution, is
+  kept. Extending it solves the next revolutions together with the
+  anchor revolution, whose patches are weighted to stay
+  (`ANCHOR_SCALE`: moving one 1 m costs the minimum-norm step as much
+  as moving a free one 10 km), and `settle` more beyond, the first of
+  which is the next anchor. `settle` = 1 + ceil(ln 10⁷ / ln λ) for the
+  growth λ per revolution (L1 5, L2 4, NRHO 26); an orbit that would
+  take more than 40 settles with 2, the anchor and the free end (the
+  DRO: ν = 1 + 2·10⁻¹⁰ in the catalog; solves that long do not converge
+  either). A catalog guess's arcs break by up to 10⁻¹ scaled (an NRHO's
+  8·10⁻², 30,000 km), and that has decayed to the shooting's tolerance
+  (10⁻⁸) at the anchor's end. The usable path never changes once
+  extended over. The station-keeping loop is unchanged, and its burns
+  across a seam are the test of the whole.
+- Found building it (2026-10-17):
+  - The minimum-norm step minimizes itself, not the distance from the
+    guess: with the guess's whole residual to fix, the first iterations
+    moved the anchor 150 m and nothing moved it back. The step now
+    counts the anchor's displacement from where the solve before put it
+    as its own, so each iteration draws the anchor back. Measured
+    anchor moves: halos 10⁻¹⁰–10⁻¹¹ scaled, NRHO 2·10⁻⁹ (at
+    `ANCHOR_SCALE` 10⁻³ it was 3·10⁻⁸, its share of the free patches'
+    moves), DRO 0.
+  - The guess past the anchor: the anchor's last patch flown on for
+    `settle` − 1 revolutions, as long as the departure it inherited
+    stays below the guess error (for ever on the DRO, whose settle is
+    the least), then the catalog orbit phased on from the anchor.
+    Rejected: flying on while within 10⁻¹ of the catalog orbit (a DRO's
+    solved member sits that far from the catalog's, so its guess fell
+    back to the catalog and the solve wandered off); the anchor
+    revolution carried on in the rotating frame (its patch times, shifted
+    by the solve to its own lunar distance, mismatch later revolutions';
+    an NRHO's arcs broke by 30,000 km and the line search failed);
+    fixing the anchor's first patch (an L1 extension then does not
+    converge).
+  - An anchored solve must connect to one state, and a long one of the
+    NRHO does not converge from the catalog guess (83 revolutions stall
+    at 10⁻⁴ residual; 54 converge slowly; 34 in two seconds), where a
+    halo's year (36) does. `extend` solves in steps of at most 40
+    revolutions with the settle, halves a step that does not converge,
+    and keeps the size that did for the steps after: past its first
+    years the NRHO's steps of 14, 7 and 4 revolutions fail nearly every
+    time and 2 converge, each failure costing seconds (a year took 118 s
+    with every step tried from 14). Its tail guess is the catalog orbit
+    moved onto the anchor's member, by the anchor's offset from the
+    catalog at the same phase (the solved member sits up to 40,000 km
+    from the catalog's; from the bare catalog the NRHO's fifth year did
+    not converge at any step size). Rejected: anchoring loosely first, then
+    tightening from the converged solution (the loose pass displaces the
+    anchor in directions the stiff pass can only undo by changing the
+    whole free part, prohibitive on an unstable orbit: 3% back an
+    iteration).
+  - A first solve that does not converge is retried a day or two later,
+    as the gate and the planner already retry.
+
+1. **Extended orbits, a kill-test first** (`orbit::reference`).
+   - `continue_orbit` takes `settle` (`settle_revolutions` from the
+     catalog's stability index; 1 for a reference left as built) and
+     keeps the anchor revolution; `Reference::extend` adds revolutions
+     as above. Patches per revolution become a constant (16, as every
+     caller passed). The first draft's chained form (a chunk's first
+     patch fixed to the end of the one before) is dropped.
+   - Each station orbit from 2045-03-01, extended a year at a time over
+     34 years (to 2079; the ephemeris ends in 2080), each orbit on its
+     own thread
+     (`station_orbits_extended_for_years`, ignored; the short form,
+     `extended_orbits_run_on`, in the suite). Checked:
+     - the anchor's move and the seam's discontinuity, both within the
+       shooting's tolerance (10⁻⁸ scaled: ~4 m, 0.01 mm/s);
+     - the shape held every year (distance from the Moon as M1a step
+       5b);
+     - the time per year built, and the memory per year;
+     - the loop across seams: a ship held to the extended reference
+       (`stationkeeping::simulate`'s loop, Δv bucketed before, in the
+       four revolutions after, and after each seam), the seam's extra
+       within a tenth of a year's upkeep; `upkeep` of two years against
+       the first year's.
+   - If an orbit fails, stop and report before part 2.
+   - Measured (2026-10-18; release, one thread an orbit, 24 cores):
+
+     | Orbit | Years | Build a year | Path a year | Anchor moved | Seam | Shape held | A seam's four revolutions over the rate after (upkeep a year) |
+     |---|---|---|---|---|---|---|---|
+     | L1 halo | 34 | 1.4 s | 1.9 MB | ≤ 3·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.04 to +0.40 m/s (3.4–3.6) |
+     | L2 halo | 34 | 0.7 s | 1.6 MB | ≤ 2·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.01 to +0.15 (4.7–4.8) |
+     | NRHO | 24, then none | 44 s | 4.3 MB | ≤ 6·10⁻⁹ | ≤ 3·10⁻⁹ | 21 of 24 | −0.07 to +0.13 (1.6–2.1) |
+     | DRO | 34 | 0.2 s | 1.5 MB | 0 | ≤ 4·10⁻¹² | 34 of 34 | −0.03 to +0.09 (0.56–0.64) |
+
+     Anchors and seams are scaled (10⁻⁸ is ~4 m). Upkeep over the first
+     two years matched the first year's within the Monte Carlo's noise
+     (L1 3.40 against 3.61, L2 4.77 against 4.67, NRHO 2.09 against
+     1.61, DRO 0.56 against 0.64 m/s a year), and a seam's four
+     revolutions cost what any four do, over three seeded runs: the
+     loop does not see a seam.
+   - **The NRHO fails the kill-test** (2026-10-18): its extension
+     converges only in steps of two revolutions (44 s a year; a
+     34-year station is ~25 minutes on one core), its perilune drifts
+     from 2,733 to 2,322 km over 24 years (the shape not held in 3 of
+     them; whether the drift is the orbit's or the chain's is not
+     established), and its 25th year did not converge at any step size.
+     Stopped here, as planned, before part 2. Open: the drift's cause;
+     the Newton's line search on perilune arcs; the planned parallel
+     integration of each iteration's arcs (24 cores would make the NRHO
+     ~2 s a year).
+2. **The planner on extended orbits.**
    - A ship arriving at a station orbit place gets its own orbit, built
      from the catalog orbit at the arriving leg's window opening, as
-     now. It is continued ahead in chunks on demand, and shared by the
-     ship's checkpoints and stays. It reads only the arriving step, so
-     `reads` no longer reaches through the leg after a station.
-   - A design gets the chunks its times need: from when the ship is
+     now, and extended a year at a time on demand (shared behind a
+     lock, appended only) by the ship's checkpoints and stays. It reads
+     only the arriving step, so `reads` no longer reaches through the
+     leg after a station.
+   - A design gets the extent its times need: from when the ship is
      ready, through its window's close and longest duration, with a
-     margin. What it reads, the span included, then does not depend on
-     how far the orbit has been built.
-   - A stay's upkeep is each chunk's rate over its time in that chunk.
-     Every stay pays it; today a visit shorter than four revolutions
-     pays none.
+     margin of the loop's horizon. What it reads, the span included,
+     then does not depend on how far the orbit has been built.
+   - A stay's track is the loop's flight (`stationkeeping::simulate`
+     with a seed from the ship and the stay), as the user ruled: the
+     station flies the closed loop, its burns are the stay's Δv, kept
+     with their times so the loop pays them as made (part 5). The
+     Monte Carlo rate stays for projections and the gate. Every stay
+     pays; today a visit shorter than four revolutions pays none.
+   - A `Reference` carries the catalog orbit and the settle it was built
+     with, so that extending it cannot be handed another member (found
+     in part 1's review).
+   - Memory: from part 1's numbers. If a station's life does not fit
+     as dense steps, the past is kept as patches and re-integrated on
+     demand.
    - Deleted: `visit_until`, `Planner::outstays`, and career's refusal
      of a longer visit (its tests become tests that the visit is
      designed). `resume_point` no longer steps back to a station's

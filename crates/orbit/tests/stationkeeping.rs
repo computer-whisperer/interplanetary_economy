@@ -37,7 +37,7 @@ fn upkeep_matches_published_ranges() {
         ("DRO", "dro", 14.0, 8, 0.0, 1.0),
     ] {
         let m = cat.nearest(family, days).unwrap();
-        let reference = continue_orbit(eph, &field, cat, m.orbit, start, revs, 16).unwrap();
+        let reference = continue_orbit(eph, &field, cat, m.orbit, start, revs, 1).unwrap();
         let u = upkeep(&field, &reference, Errors::TYPICAL, 20).unwrap();
         let period = reference.period_s();
         let ms = u.dv_per_year_kms * 1e3;

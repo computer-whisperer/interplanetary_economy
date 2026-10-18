@@ -102,7 +102,7 @@ fn station_for(w: &World, which: &str, span: f64) -> Reference {
         m.orbit,
         start(),
         revs,
-        16,
+        1,
     )
     .unwrap()
 }
