@@ -2256,6 +2256,7 @@ fn own_reference(
         revolutions: ((span / period).round() as usize).max(1),
         patches: Vec::new(),
         ahead: Vec::new(),
+        step: None,
         path: Trajectory::new(steps),
     })
 }

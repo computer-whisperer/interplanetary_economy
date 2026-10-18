@@ -266,6 +266,7 @@ fn window(reference: &Reference, (t0, t1): (f64, f64)) -> Reference {
         revolutions: ((t1 - t0) / reference.period_s()).round() as usize,
         patches: Vec::new(),
         ahead: Vec::new(),
+        step: None,
         path: Trajectory::new(steps),
     }
 }

@@ -1,6 +1,7 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-17: steps 1 and 2 done, step 3 planned (the plans
+Status, 2026-10-18: steps 1 and 2 done; step 3's part 1 done (the
+extended station orbits pass their kill-test), part 2 next (the plans
 below). Decided: one engine for both modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they
@@ -1242,23 +1243,25 @@ follows from it:
        within a tenth of a year's upkeep; `upkeep` of two years against
        the first year's.
    - If an orbit fails, stop and report before part 2.
-   - Measured (2026-10-18; release, one thread an orbit, 24 cores):
+   - Measured (2026-10-18; release, each orbit on its own thread, its
+     arcs on all 24 cores, other work on the machine):
 
      | Orbit | Years | Build a year | Path a year | Anchor moved | Seam | Shape held | A seam's four revolutions over the rate after (upkeep a year) |
      |---|---|---|---|---|---|---|---|
-     | L1 halo | 34 | 1.2 s | 1.9 MB | ≤ 3·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.04 to +0.40 m/s (3.4–3.6) |
-     | L2 halo | 34 | 0.6 s | 1.6 MB | ≤ 2·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.01 to +0.15 (4.7–4.8) |
-     | NRHO | 34 | 50 s | 4.2 MB | ≤ 6·10⁻⁹ | ≤ 3·10⁻⁹ | 34 of 34 | −0.09 to +0.01 (1.8–3.2) |
+     | L1 halo | 34 | 0.4 s | 1.9 MB | ≤ 3·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.04 to +0.40 m/s (3.4–3.6) |
+     | L2 halo | 34 | 0.2 s | 1.6 MB | ≤ 2·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.01 to +0.15 (4.7–4.8) |
+     | NRHO | 34 | 5.8 s | 4.2 MB | ≤ 6·10⁻⁹ | ≤ 4·10⁻⁹ | 34 of 34 | −0.09 to +0.01 (1.8–3.2) |
      | DRO | 34 | 0.1 s | 1.5 MB | 0 | ≤ 4·10⁻¹² | 34 of 34 | −0.03 to +0.09 (0.56–0.64) |
 
      Anchors and seams are scaled (10⁻⁸ is ~4 m). Upkeep over the first
      two years matched the first year's within the Monte Carlo's noise
-     (L1 3.40 against 3.61, L2 4.77 against 4.67, NRHO 2.01 against
+     (L1 3.40 against 3.61, L2 4.77 against 4.67, NRHO 2.07 against
      1.61, DRO 0.56 against 0.64 m/s a year), and a seam's four
      revolutions cost what any four do, over three seeded runs: the
-     loop does not see a seam. The NRHO's row is the rerun after the
-     fixes below; its first run built 24 years at 44 s a year and
-     failed in its 25th at every step size.
+     loop does not see a seam. The rows are the rerun after the fixes
+     and the speed-up below. The NRHO's first run built 24 years at 44 s
+     a year and failed in its 25th at every step size; fixed, it built
+     34 at 50 s a year.
    - **The NRHO failed the kill-test** (2026-10-18): its extension
      converged only in steps of one or two revolutions and its 25th year
      did not converge at any step size. Stopped, as planned, before part
@@ -1357,10 +1360,23 @@ follows from it:
        is most sensitive where the orbit is fastest). The guess and the
        scaling stay as they were; the squeeze above is real but was not
        what ended the chain.
-     - Open: speed (50 s a year, most of it every year's first attempts
-       at 14, 7 and 4 revolutions, which fail; a step size remembered
-       across calls would spare them); the 9:2 member (M1a's choice,
-       eclipse phasing); parallel integration of each iteration's arcs.
+     - **Sped up** (2026-10-18), 50 s a year to 5.8 for the NRHO: the
+       step size that converged is kept on the reference
+       (`Reference::step`) for the calls after, so a size that failed is
+       not tried again (each of the NRHO's years had tried 14, 7 and 4
+       revolutions first, each failing, for most of its time); and each
+       iteration's arcs, independent, are integrated in parallel and
+       collected in order (the serial result to the bit: the suite's
+       anchors and seams are unchanged to the digit, and the halos' and
+       the DRO's 34 years too). The halos' years went from 1.2 and 0.6 s
+       to 0.4 and 0.2. The NRHO's path differs from the fixed solver's
+       only where a year had converged at a larger step before (seams
+       ≤ 4·10⁻⁹, were ≤ 3·10⁻⁹; the third seam's loop 2.09 against 2.13
+       m/s a year after it). At a month a second a game year passes in
+       12 s of wall time, so an NRHO station's orbit now keeps ahead of
+       the clock; 34 years built headless took 3.2 min with the cores to
+       itself, against gate item 4's 10 min for a whole scenario.
+     - Open: the 9:2 member (M1a's choice, eclipse phasing).
 2. **The planner on extended orbits.**
    - A ship arriving at a station orbit place gets its own orbit, built
      from the catalog orbit at the arriving leg's window opening, as

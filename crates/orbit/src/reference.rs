@@ -25,6 +25,7 @@ use crate::integrate::{DenseStep, Dop853, Tolerance, Trajectory};
 use crate::linalg::{self, SparseRows};
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use glam::DVec3;
+use rayon::prelude::*;
 
 const TOL: Tolerance = Tolerance {
     rtol: 1e-12,
@@ -65,7 +66,8 @@ const ANCHOR_SCALE: f64 = 1e-4;
 /// years steps of 14, 7 and 4 revolutions (40, 33 and 30 with the settle)
 /// fail nearly every time where 2 (28) converge; a halo's year (36)
 /// converges. [`Reference::extend`] solves in steps of this less the settle,
-/// and halves a step that does not converge.
+/// halves a step that does not converge, and keeps the size that did
+/// ([`Reference::step`]).
 const MOST_SOLVE: usize = 40;
 
 /// Two bodies' rotating frame at one moment (Earth and the Moon, or the Sun
@@ -138,6 +140,12 @@ pub struct Reference {
     /// anchors. Empty for a reference built to be left as it is (a
     /// `settle` of one).
     pub ahead: Vec<(f64, [f64; 6])>,
+    /// Revolutions the last converged solve of [`Self::extend`] spanned,
+    /// the settle excluded, where the next starts: a size that failed is
+    /// not tried again (an NRHO's steps of 14, 7 and 4 revolutions fail
+    /// nearly every time past its first years, where 2 converge, and each
+    /// failure costs seconds). `None` before the first extension.
+    pub step: Option<usize>,
     pub path: Trajectory<6>,
 }
 
@@ -179,21 +187,23 @@ impl Reference {
             "a solve's end is free: at least one revolution settles"
         );
         // A step that did not converge is halved, and the size that did
-        // is kept for the steps after: an NRHO's steps of 14, 7 and 4
-        // revolutions fail nearly every time where 2 converge, and each
-        // failure costs seconds.
-        let mut step = MOST_SOLVE.saturating_sub(settle).max(1);
+        // is kept for the steps after, this call's and the next calls'
+        // (`step`). Before it was kept across calls, each of an NRHO's
+        // years tried 14, 7 and 4 revolutions first and failed each
+        // (2026-10-18).
+        let most = MOST_SOLVE.saturating_sub(settle).max(1);
+        let mut size = self.step.map_or(most, |s| s.clamp(1, most));
         let mut left = revs;
         while left > 0 {
-            step = step.min(left);
-            loop {
-                match self.extend_once(eph, field, cat, orbit, step, settle) {
-                    Ok(()) => break,
-                    Err(_) if step > 1 => step = step.div_ceil(2),
-                    Err(e) => return Err(e),
+            let step = size.min(left);
+            match self.extend_once(eph, field, cat, orbit, step, settle) {
+                Ok(()) => {
+                    left -= step;
+                    self.step = Some(size);
                 }
+                Err(_) if step > 1 => size = step.div_ceil(2),
+                Err(e) => return Err(e),
             }
-            left -= step;
         }
         Ok(())
     }
@@ -341,6 +351,7 @@ pub fn continue_orbit(
         revolutions: revs,
         patches: patches(&times[..=kept], &states[..=kept]),
         ahead: anchor(&times, &states, kept, settle),
+        step: None,
         path: Trajectory::new(integrate(field, start, &times[..=kept], &states[..=kept])?),
     })
 }
@@ -552,33 +563,39 @@ fn shoot(
     };
     let stm = field.ode_stm(epoch);
     // Each arc's end (with its state transition matrix when asked), and the
-    // scaled discontinuities.
+    // scaled discontinuities. The arcs are independent and integrated in
+    // parallel, collected in order, so the result is the serial one's to
+    // the bit.
     let arcs = |times: &[f64],
                 states: &[[f64; 6]],
                 with_stm: bool|
      -> Option<(Vec<[f64; 42]>, Vec<f64>)> {
-        let mut ends = Vec::with_capacity(n);
-        let mut f = vec![0.0; 6 * n];
-        for i in 0..n {
-            let mut y = [0.0; 42];
-            y[..6].copy_from_slice(&states[i]);
-            if with_stm {
-                for d in 0..6 {
-                    y[6 + d * 7] = 1.0;
+        let ends: Vec<[f64; 42]> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let mut y = [0.0; 42];
+                y[..6].copy_from_slice(&states[i]);
+                if with_stm {
+                    for d in 0..6 {
+                        y[6 + d * 7] = 1.0;
+                    }
+                    let mut arc = Dop853::new(&stm, times[i], y, TOL);
+                    arc.advance_to(&stm, times[i + 1]).ok()?;
+                    Some(arc.y)
+                } else {
+                    let mut arc = Dop853::new(&ode, times[i], states[i], TOL);
+                    arc.advance_to(&ode, times[i + 1]).ok()?;
+                    y[..6].copy_from_slice(&arc.y);
+                    Some(y)
                 }
-                let mut arc = Dop853::new(&stm, times[i], y, TOL);
-                arc.advance_to(&stm, times[i + 1]).ok()?;
-                y = arc.y;
-            } else {
-                let mut arc = Dop853::new(&ode, times[i], states[i], TOL);
-                arc.advance_to(&ode, times[i + 1]).ok()?;
-                y[..6].copy_from_slice(&arc.y);
-            }
-            for d in 0..6 {
-                f[6 * i + d] = -(y[d] - states[i + 1][d]) / unit(d);
-            }
-            ends.push(y);
-        }
+            })
+            .collect::<Option<_>>()?;
+        let f = (0..6 * n)
+            .map(|r| {
+                let (i, d) = (r / 6, r % 6);
+                -(ends[i][d] - states[i + 1][d]) / unit(d)
+            })
+            .collect();
         Some((ends, f))
     };
     let squares = |f: &[f64]| f.iter().map(|x| x * x).sum::<f64>();
