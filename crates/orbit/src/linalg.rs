@@ -141,7 +141,10 @@ pub struct SparseRows {
 /// [`min_norm`] for a sparse `j` whose rows touch columns only near their
 /// neighbors' (multiple shooting): `j jᵀ` is then banded, and a banded
 /// Cholesky factorization makes the cost linear in the number of rows.
-pub fn min_norm_sparse(j: &SparseRows, f: &[f64]) -> Option<Vec<f64>> {
+/// `damping` raises `j jᵀ`'s diagonal by that share (Levenberg–Marquardt):
+/// 0 is the minimum-norm step, and a larger value shortens the step along
+/// the directions the rows nearly share, toward a scaled gradient step.
+pub fn min_norm_sparse(j: &SparseRows, f: &[f64], damping: f64) -> Option<Vec<f64>> {
     let m = j.rows.len();
     assert_eq!(f.len(), m);
     // Which rows touch each column, and so the band of j jᵀ.
@@ -177,21 +180,42 @@ pub fn min_norm_sparse(j: &SparseRows, f: &[f64]) -> Option<Vec<f64>> {
                 .sum();
         }
     }
-    // Cholesky: a = l lᵀ, l in the same band storage.
+    // Cholesky: a = l lᵀ, l in the same band storage. Where a pivot comes
+    // out non-positive (rows nearly dependent, or so differently scaled
+    // that cancellation swamps a small row's pivot: multiple shooting's
+    // anchored rows are 10⁻⁸ of the free ones), the factorization is
+    // retried with the diagonal raised by a growing share, which damps the
+    // step a little along the near-dependent directions and leaves it exact
+    // elsewhere. Measured 2026-10-18: an NRHO's extension failed in its 25th
+    // year at every step size, at 6·10⁻⁵ residual with the Newton
+    // converging quadratically, on this breakdown alone.
     let at = |l: &[f64], r: usize, c: usize| l[r * width + (r - c)];
-    for c in 0..m {
-        let lo = c.saturating_sub(bw);
-        let d = band[c * width] - (lo..c).map(|k| at(&band, c, k).powi(2)).sum::<f64>();
-        if d <= 0.0 {
-            return None;
+    let normal = band.clone();
+    let mut ridge = damping;
+    'factor: loop {
+        band.copy_from_slice(&normal);
+        for c in 0..m {
+            band[c * width] *= 1.0 + ridge;
         }
-        let d = d.sqrt();
-        band[c * width] = d;
-        for r in c + 1..(c + width).min(m) {
-            let lo = r.saturating_sub(bw);
-            let s: f64 = (lo..c).map(|k| at(&band, r, k) * at(&band, c, k)).sum();
-            band[r * width + (r - c)] = (band[r * width + (r - c)] - s) / d;
+        for c in 0..m {
+            let lo = c.saturating_sub(bw);
+            let d = band[c * width] - (lo..c).map(|k| at(&band, c, k).powi(2)).sum::<f64>();
+            if d <= 0.0 {
+                ridge = if ridge == 0.0 { 1e-10 } else { ridge * 100.0 };
+                if ridge > 1e2 {
+                    return None;
+                }
+                continue 'factor;
+            }
+            let d = d.sqrt();
+            band[c * width] = d;
+            for r in c + 1..(c + width).min(m) {
+                let lo = r.saturating_sub(bw);
+                let s: f64 = (lo..c).map(|k| at(&band, r, k) * at(&band, c, k)).sum();
+                band[r * width + (r - c)] = (band[r * width + (r - c)] - s) / d;
+            }
         }
+        break;
     }
     // Forward and back substitution for y, then dx = jᵀ y.
     let mut y = f.to_vec();
@@ -289,7 +313,7 @@ mod tests {
         let f: Vec<f64> = (0..m).map(|r| (r as f64 * 0.37).sin()).collect();
         let (a, b) = (
             min_norm(m, n, &dense, &f).unwrap(),
-            min_norm_sparse(&sparse, &f).unwrap(),
+            min_norm_sparse(&sparse, &f, 0.0).unwrap(),
         );
         for (x, y) in a.iter().zip(&b) {
             assert!((x - y).abs() < 1e-12, "{a:?} vs {b:?}");

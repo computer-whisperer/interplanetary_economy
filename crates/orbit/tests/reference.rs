@@ -32,6 +32,46 @@ fn frame_round_trip() {
     }
 }
 
+/// The least and greatest of `f` over `(a, b)`: `samples` evenly spaced,
+/// then each local extreme of those refined twice, 100 points over the
+/// two intervals around it and 100 again around the best of them (one in
+/// 5,000 of the spacing). A perilune pass lasts hours: sampled 300 times
+/// a year, one per 29 h, an NRHO's 2,134-km perilune read 2,399 km and the
+/// shape check failed 3 of 24 years (2026-10-18).
+fn extremes(f: impl Fn(f64) -> f64, (a, b): (f64, f64), samples: usize) -> (f64, f64) {
+    let step = (b - a) / samples as f64;
+    let coarse: Vec<f64> = (0..=samples).map(|k| f(a + step * k as f64)).collect();
+    let refine = |k: usize, better: fn(f64, f64) -> bool| {
+        let (mut at, mut best) = (a + step * k as f64, coarse[k]);
+        let mut half = step;
+        for _ in 0..2 {
+            let (lo, hi) = ((at - half).max(a), (at + half).min(b));
+            for j in 0..=100 {
+                let t = lo + (hi - lo) * j as f64 / 100.0;
+                let v = f(t);
+                if better(v, best) {
+                    (at, best) = (t, v);
+                }
+            }
+            half /= 100.0;
+        }
+        best
+    };
+    let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
+    for k in 0..coarse.len() {
+        let v = coarse[k];
+        let prev = k.checked_sub(1).map(|j| coarse[j]);
+        let next = coarse.get(k + 1).copied();
+        if prev.is_none_or(|p| v <= p) && next.is_none_or(|n| v <= n) {
+            lo = lo.min(refine(k, |x, y| x < y));
+        }
+        if prev.is_none_or(|p| v >= p) && next.is_none_or(|n| v >= n) {
+            hi = hi.max(refine(k, |x, y| x > y));
+        }
+    }
+    (lo, hi)
+}
+
 /// The CR3BP orbit's closest and farthest distances from the Moon, km.
 fn cr3bp_range(cat: &Catalog, orbit: &PeriodicOrbit) -> (f64, f64) {
     let ode = cat.system.ode();
@@ -44,20 +84,19 @@ fn cr3bp_range(cat: &Catalog, orbit: &PeriodicOrbit) -> (f64, f64) {
             atol: 1e-15,
         },
     );
-    let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
-    for k in 1..=400 {
-        run.advance_to(&ode, orbit.period * k as f64 / 400.0)
-            .unwrap();
-        let d = ((run.y[0] - 1.0 + cat.system.mu).powi(2) + run.y[1].powi(2) + run.y[2].powi(2))
-            .sqrt()
-            * cat.length_km;
-        (lo, hi) = (lo.min(d), hi.max(d));
-    }
-    (lo, hi)
+    let mut steps = Vec::new();
+    run.advance_dense(&ode, orbit.period, &mut steps).unwrap();
+    let one_period = Trajectory::new(steps);
+    let distance = |t: f64| {
+        let y = one_period.at(t);
+        ((y[0] - 1.0 + cat.system.mu).powi(2) + y[1].powi(2) + y[2].powi(2)).sqrt() * cat.length_km
+    };
+    extremes(distance, (0.0, orbit.period), 400)
 }
 
-/// `reference`'s closest and farthest distances from the Moon, km, at
-/// `samples` times over `(t0, t1)` (seconds after its epoch).
+/// `reference`'s closest and farthest distances from the Moon, km, over
+/// `(t0, t1)` (seconds after its epoch), from `samples` refined as
+/// [`extremes`].
 fn moon_range(
     eph: &Ephemeris,
     reference: &Reference,
@@ -65,16 +104,13 @@ fn moon_range(
     samples: usize,
 ) -> (f64, f64) {
     let (earth, moon) = (eph.lookup("earth").unwrap(), eph.lookup("moon").unwrap());
-    let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
-    for k in 0..=samples {
-        let sec = t0 + (t1 - t0) * k as f64 / samples as f64;
+    let distance = |sec: f64| {
         let t = Epoch(reference.epoch.0 + sec / SECONDS_PER_DAY);
         let s = reference.path.at(sec);
         let to_moon = eph.barycentric_position(moon, t) - eph.barycentric_position(earth, t);
-        let d = (glam::DVec3::new(s[0], s[1], s[2]) - to_moon).length();
-        (lo, hi) = (lo.min(d), hi.max(d));
-    }
-    (lo, hi)
+        (glam::DVec3::new(s[0], s[1], s[2]) - to_moon).length()
+    };
+    extremes(distance, (t0, t1), samples)
 }
 
 /// Whether distances from the Moon `(lo, hi)` keep the CR3BP orbit's

@@ -583,6 +583,7 @@ fn shoot(
     };
     let squares = |f: &[f64]| f.iter().map(|x| x * x).sum::<f64>();
     let mut residual = f64::INFINITY;
+    let mut damping = 0.0;
     for _ in 0..40 {
         let (ends, f) = arcs(&times, &states, true).ok_or(fail(residual))?;
         residual = f.iter().fold(0.0, |a: f64, x| a.max(x.abs()));
@@ -625,31 +626,56 @@ fn shoot(
                     .sum::<f64>()
             })
             .collect();
-        let step = linalg::min_norm_sparse(&jac, &rhs).ok_or(fail(residual))?;
-        let change = |c: usize| step[c] * unknown_scale(c) - displacement(c, &times, &states);
-        let mut size = 1.0;
-        loop {
-            let mut trial_states = states.clone();
-            for k in 0..6 * (n + 1) {
-                trial_states[k / 6][k % 6] += size * change(k);
+        // The step and the line search, damped more (Levenberg–Marquardt)
+        // while no size of the step down to 1/64 reduces the sum of squares
+        // and keeps the epochs in order, and less again after a step that
+        // does. Undamped, an NRHO's extension crawled: at 3·10⁻⁴ residual
+        // the full step raised the sum of squares 4,000-fold at one arc of
+        // the tail's first revolution, each 1/32 step gained 3%, and 40
+        // iterations ran out (its 33rd year, 2026-10-18).
+        let (next_times, next_states) = loop {
+            let step = linalg::min_norm_sparse(&jac, &rhs, damping).ok_or(fail(residual))?;
+            let change = |c: usize| step[c] * unknown_scale(c) - displacement(c, &times, &states);
+            let mut size = 1.0;
+            let accepted = loop {
+                let mut trial_states = states.clone();
+                for k in 0..6 * (n + 1) {
+                    trial_states[k / 6][k % 6] += size * change(k);
+                }
+                let mut trial_times = times.clone();
+                for (i, t) in trial_times.iter_mut().enumerate().skip(1) {
+                    *t += size * change(epoch_col(i));
+                }
+                let forward = trial_times.windows(2).all(|w| w[1] > w[0]);
+                if forward
+                    && let Some((_, tf)) = arcs(&trial_times, &trial_states, false)
+                    && squares(&tf) < squares(&f)
+                {
+                    break Some((trial_times, trial_states));
+                }
+                size /= 2.0;
+                if size < 1.0 / 64.0 {
+                    break None;
+                }
+            };
+            match accepted {
+                Some(next) => {
+                    damping = if damping <= 1e-8 { 0.0 } else { damping / 10.0 };
+                    break next;
+                }
+                None => {
+                    damping = if damping == 0.0 {
+                        1e-6
+                    } else {
+                        damping * 100.0
+                    };
+                    if damping > 1e2 {
+                        return Err(fail(residual));
+                    }
+                }
             }
-            let mut trial_times = times.clone();
-            for (i, t) in trial_times.iter_mut().enumerate().skip(1) {
-                *t += size * change(epoch_col(i));
-            }
-            let forward = trial_times.windows(2).all(|w| w[1] > w[0]);
-            if forward
-                && let Some((_, tf)) = arcs(&trial_times, &trial_states, false)
-                && squares(&tf) < squares(&f)
-            {
-                (times, states) = (trial_times, trial_states);
-                break;
-            }
-            size /= 2.0;
-            if size < 1.0 / 64.0 {
-                return Err(fail(residual));
-            }
-        }
+        };
+        (times, states) = (next_times, next_states);
     }
     if residual >= CONTINUOUS {
         return Err(fail(residual));

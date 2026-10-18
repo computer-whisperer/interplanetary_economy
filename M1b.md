@@ -1246,23 +1246,24 @@ follows from it:
 
      | Orbit | Years | Build a year | Path a year | Anchor moved | Seam | Shape held | A seam's four revolutions over the rate after (upkeep a year) |
      |---|---|---|---|---|---|---|---|
-     | L1 halo | 34 | 1.4 s | 1.9 MB | ≤ 3·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.04 to +0.40 m/s (3.4–3.6) |
-     | L2 halo | 34 | 0.7 s | 1.6 MB | ≤ 2·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.01 to +0.15 (4.7–4.8) |
-     | NRHO | 24, then none | 44 s | 4.3 MB | ≤ 6·10⁻⁹ | ≤ 3·10⁻⁹ | 21 of 24 | −0.07 to +0.13 (1.6–2.1) |
-     | DRO | 34 | 0.2 s | 1.5 MB | 0 | ≤ 4·10⁻¹² | 34 of 34 | −0.03 to +0.09 (0.56–0.64) |
+     | L1 halo | 34 | 1.2 s | 1.9 MB | ≤ 3·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.04 to +0.40 m/s (3.4–3.6) |
+     | L2 halo | 34 | 0.6 s | 1.6 MB | ≤ 2·10⁻⁹ | ≤ 2·10⁻⁹ | 34 of 34 | +0.01 to +0.15 (4.7–4.8) |
+     | NRHO | 34 | 50 s | 4.2 MB | ≤ 6·10⁻⁹ | ≤ 3·10⁻⁹ | 34 of 34 | −0.09 to +0.01 (1.8–3.2) |
+     | DRO | 34 | 0.1 s | 1.5 MB | 0 | ≤ 4·10⁻¹² | 34 of 34 | −0.03 to +0.09 (0.56–0.64) |
 
      Anchors and seams are scaled (10⁻⁸ is ~4 m). Upkeep over the first
      two years matched the first year's within the Monte Carlo's noise
-     (L1 3.40 against 3.61, L2 4.77 against 4.67, NRHO 2.09 against
+     (L1 3.40 against 3.61, L2 4.77 against 4.67, NRHO 2.01 against
      1.61, DRO 0.56 against 0.64 m/s a year), and a seam's four
      revolutions cost what any four do, over three seeded runs: the
-     loop does not see a seam.
-   - **The NRHO fails the kill-test** (2026-10-18): its extension
-     converges only in steps of one or two revolutions (44 s a year; a
-     34-year station is ~25 minutes on one core) and its 25th year did
-     not converge at any step size. Stopped here, as planned, before
-     part 2. (The perilune drift reported then, 2,733 to 2,322 km, was
-     not real: see the diagnosis.)
+     loop does not see a seam. The NRHO's row is the rerun after the
+     fixes below; its first run built 24 years at 44 s a year and
+     failed in its 25th at every step size.
+   - **The NRHO failed the kill-test** (2026-10-18): its extension
+     converged only in steps of one or two revolutions and its 25th year
+     did not converge at any step size. Stopped, as planned, before part
+     2; diagnosed and fixed the same day, below. (The perilune drift
+     reported then, 2,733 to 2,322 km, was not real: see the diagnosis.)
    - **Diagnosed** (2026-10-18, a scratch test since deleted; its
      outputs stayed in the session's scratchpad):
      - No drift. The 2,322 km was the path's 24-year minimum sampled
@@ -1283,8 +1284,12 @@ follows from it:
        beating against a non-resonant period: this member makes 4.65
        revolutions a synodic month, where the 9:2 of M1a (6.56 d) lies
        between catalog samples and `nearest` picks the 6.48-day one (the
-       published 15-year Gateway reference holds 3,195–3,557 km).
-     - The failures are the Newton's. At every failing line search the
+       published 15-year Gateway reference holds 3,195–3,557 km). Over
+       34 years the yearly perilune cycles 2,179–3,556 km with the
+       Sun–Earth–Moon geometry (lowest in years 13 and 32, highest in
+       years 1 and 21), no trend. The tests' range checks now refine
+       every local extreme of their samples (`extremes`).
+     - The large steps' failures are the Newton's. At every failing line search the
        sum of squares falls as the linear model predicts (the linear
        solve is exact to 1e-7), but two adjacent patch epochs have been
        driven together (gaps of 0.00–0.04 h, from 9.5 h) and the trial
@@ -1307,12 +1312,55 @@ follows from it:
        guess's own breaks: the catalog tail's perilune arcs 1e-1–2e-1
        scaled (the catalog cannot know the swing's phase; the member
        offset at perilune patches is 5,000–14,000 km, mostly phase), the
-       junction with the flown part 1e-2–3e-2 and 2.8 h of phase.
-     - Open: a step that keeps epochs in order (epochs scaled by their
-       arc's duration or the state's rate rather than the time unit, or
-       the step capped by the gaps instead of halved to 1/64); the
-       junction's phase; the 9:2 member (M1a's choice, eclipse phasing);
-       parallel integration of each iteration's arcs for speed.
+       junction with the flown part 1e-2–3e-2 and 2.8 h of phase. The
+       25th year's failure was another's: see below.
+   - **Fixed** (2026-10-18): two faults of the solver, neither the
+     epoch scaling.
+     - The 25th year's failure was the linear solve's. With the Newton
+       converging quadratically (2·10⁻², 4·10⁻³, 6·10⁻⁵) the banded
+       Cholesky of J Jᵀ met a non-positive pivot: the anchored rows are
+       10⁻⁸ of the free ones, and where rows are nearly dependent
+       cancellation swamps their pivots. `min_norm_sparse` retries with
+       the diagonal raised by a growing share (10⁻¹⁰, ×100 a retry, up
+       to 10²). With that the chain reached its 33rd year and crawled:
+       at 3·10⁻⁴ residual the full step raised the sum of squares
+       4,000-fold at one arc of the tail's first revolution, each 1/32
+       step gained 3%, and 40 iterations ran out. The step is now damped
+       (Levenberg–Marquardt, the same diagonal share: 10⁻⁶ and ×100
+       while no size down to 1/64 reduces the sum of squares, ÷10 after
+       a step that does). All 34 years build; the halos and the DRO are
+       unchanged.
+     - Measured and rejected first, each on the suite, a six-year chain
+       and where it got that far the 34 years: epochs scaled by the
+       shorter of their two arcs (too stiff: an NRHO's fresh solves
+       fail, since a long solve's far end must shift its epochs hours
+       for the real period); by the length unit over the speed (the
+       chain failed in its sixth year); by √(length unit /
+       acceleration), the time an epoch's move takes to turn nonlinear
+       (no faster, failed in its eighth year); the step capped so no arc
+       shortens by more than half (slower, no better); the epochs of any
+       arc a step would close below a quarter of the spacing pinned and
+       the step solved again (steps of 7 and 14 revolutions converge at
+       times, 50 s a year on balance, and the chain still failed in its
+       25th year: the Cholesky); the tail guessed as the first flown
+       revolution replayed by Earth–Moon angle (the real NRHO's
+       revolutions turn the line 1.29–1.74 rad and take 6.1–6.7 d one
+       to the next, so no constant period predicts its phase: the tail
+       broke by up to 5.8·10⁻¹); the catalog tail phased by clock time
+       from the flown part's last perilune (up to 1.4: the CR3BP's time
+       is the angle, so a tail on any other clock is non-ballistic at
+       every arc); the same on the angle grid (breaks 8.5·10⁻²–9.3·10⁻²,
+       a fresh guess's, but the L1 halo's chain then failed in its
+       seventh year and the NRHO's in its 13th); the junction moved to
+       the first patch after the flown part's last perilune (the NRHO's
+       chain failed in its third year: a seam between two trajectories
+       is most sensitive where the orbit is fastest). The guess and the
+       scaling stay as they were; the squeeze above is real but was not
+       what ended the chain.
+     - Open: speed (50 s a year, most of it every year's first attempts
+       at 14, 7 and 4 revolutions, which fail; a step size remembered
+       across calls would spare them); the 9:2 member (M1a's choice,
+       eclipse phasing); parallel integration of each iteration's arcs.
 2. **The planner on extended orbits.**
    - A ship arriving at a station orbit place gets its own orbit, built
      from the catalog orbit at the arriving leg's window opening, as
