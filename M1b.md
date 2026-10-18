@@ -1258,15 +1258,61 @@ follows from it:
      revolutions cost what any four do, over three seeded runs: the
      loop does not see a seam.
    - **The NRHO fails the kill-test** (2026-10-18): its extension
-     converges only in steps of two revolutions (44 s a year; a
-     34-year station is ~25 minutes on one core), its perilune drifts
-     from 2,733 to 2,322 km over 24 years (the shape not held in 3 of
-     them; whether the drift is the orbit's or the chain's is not
-     established), and its 25th year did not converge at any step size.
-     Stopped here, as planned, before part 2. Open: the drift's cause;
-     the Newton's line search on perilune arcs; the planned parallel
-     integration of each iteration's arcs (24 cores would make the NRHO
-     ~2 s a year).
+     converges only in steps of one or two revolutions (44 s a year; a
+     34-year station is ~25 minutes on one core) and its 25th year did
+     not converge at any step size. Stopped here, as planned, before
+     part 2. (The perilune drift reported then, 2,733 to 2,322 km, was
+     not real: see the diagnosis.)
+   - **Diagnosed** (2026-10-18, a scratch test since deleted; its
+     outputs stayed in the session's scratchpad):
+     - No drift. The 2,322 km was the path's 24-year minimum sampled
+       300 times a year (one sample per 29 h, where a perilune pass
+       lasts hours) against the CR3BP's 2,733 km; the same sampling is
+       why the shape check failed 3 years (on the first year it reads
+       2,399 km where the refined perilune is 2,134 km). Refined, the
+       perilune swings 2,090–3,560 km from one revolution to the next in
+       an ~8-revolution cycle, the same band in year 0 and year 23; the
+       yearly minimum is 2,089–2,319 km with no trend, the period
+       6.349–6.368 d every year (the catalog's 6.48 d in its own time
+       unit is 6.358 real days), the mean Jacobi constant
+       3.0485–3.0496. Chains started in 2050, 2055, 2060 and 2065 and
+       fresh catalog solves at years 5–23 sit in the same band. The
+       chain is ballistic: 22,000 arcs each continuous to 1e-8 scaled
+       (1e-5 m/s) are at most 0.2 m/s in all, 17 km of perilune at the
+       NRHO's 79 km per m/s at apolune. The swing is the Sun's phase
+       beating against a non-resonant period: this member makes 4.65
+       revolutions a synodic month, where the 9:2 of M1a (6.56 d) lies
+       between catalog samples and `nearest` picks the 6.48-day one (the
+       published 15-year Gateway reference holds 3,195–3,557 km).
+     - The failures are the Newton's. At every failing line search the
+       sum of squares falls as the linear model predicts (the linear
+       solve is exact to 1e-7), but two adjacent patch epochs have been
+       driven together (gaps of 0.00–0.04 h, from 9.5 h) and the trial
+       that would cross them is rejected down to 1/64. Converged solves
+       show the same squeeze: the shortest arc is under 3.8 h in a tenth
+       of them, 1.0 h at the least, where the guess's is 8.2 h. Epoch
+       unknowns are scaled by the CR3BP time unit (4.4 days), so moving
+       a perilune patch's epoch an hour (9e-3 scaled) is the cheapest
+       way to close a 7,000-km break (2e-2) at 2 km/s, and the
+       minimum-norm step takes it every iteration. More catalog
+       revolutions in a step are more perilune arcs and more iterations,
+       so more chances to close a gap: steps of 4 and more fail nearly
+       always, 2 usually converge, 1 rarely fails (a chain from 2065
+       failed in its second year the same way). Ruled out: the anchor's
+       stiffness (at `ANCHOR_SCALE` 1 and 1e-2 the solves fail the same
+       way at 1e-7 residual); the flown part (without it, or 5 or 10
+       revolutions shorter, the first extension fails at every step
+       size); the member offset (without it 14-revolution steps converge
+       in year 1, 15 s, and year 3 fails at every step size). The
+       guess's own breaks: the catalog tail's perilune arcs 1e-1–2e-1
+       scaled (the catalog cannot know the swing's phase; the member
+       offset at perilune patches is 5,000–14,000 km, mostly phase), the
+       junction with the flown part 1e-2–3e-2 and 2.8 h of phase.
+     - Open: a step that keeps epochs in order (epochs scaled by their
+       arc's duration or the state's rate rather than the time unit, or
+       the step capped by the gaps instead of halved to 1/64); the
+       junction's phase; the 9:2 member (M1a's choice, eclipse phasing);
+       parallel integration of each iteration's arcs for speed.
 2. **The planner on extended orbits.**
    - A ship arriving at a station orbit place gets its own orbit, built
      from the catalog orbit at the arriving leg's window opening, as
