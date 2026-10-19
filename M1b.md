@@ -1485,25 +1485,31 @@ follows from it:
        NRHO's "every revolution aiming one", ~6 m/s a year against
        the chain's 1.6–2.0 and Gateway's ~1). The flown version is in
        the session's scratchpad (`station_flown_loop.rs`).
-   - Measured (2026-10-18, release; the machine shared with another
-     build, load ~20–27, so design times are inflated and the step 2
-     part 8 figures are the reference):
-     - The crew rotation: 9,359 m/s over 51.4 days (M1c: 9,343 over
-       51.5); its legs 3,484, 682, 696 and 512 m/s; its NRHO stays pay
+   - Measured (2026-10-18, release, load 5–8 from other work on the
+     machine; step 2 part 8 measured at 3.4–6.8):
+     - The published plan's legs are M1c's within a few m/s (LEO to the
+       DRO 3,380, NRHO to low lunar orbit 687, DRO to low lunar orbit
+       812, LEO to the NRHO 3,483). A leg reaching a station now builds
+       the orbit's first year in its design time (NRHO 1.3 s, DRO 0.4)
+       and the first to each member judges its policy once per process
+       (NRHO ~3 s): LEO to the NRHO 5.5 s, LEO to the DRO 25.1 s
+       (16.7–16.9 before, at the lower load), the NRHO to LEO 1.2 s, the
+       other legs 0.1–3.6 s as before.
+     - The crew rotation: 9,354 m/s over 51.4 days (M1c: 9,343 over
+       51.5); its legs 3,485, 680, 695 and 508 m/s; its NRHO stays pay
        0.4 and 0.1 m/s at 6.57 m/s a year ("every revolution aiming
-       one", the member policy at the reference's own phase: above).
-       The published plan's legs are M1c's within a few m/s (LEO to the
-       DRO 3,388 m/s, 20.6 s under that load against 16.7–16.9).
+       one", the member policy at the reference's own phase: above);
+       designed in 12.3 s (10 before: the first NRHO orbit's year and
+       the member's policy).
      - Memory: the two ships parked a year (one in the NRHO), designed
        in the sandbox: 57 MB resident, 49 before (the NRHO's orbit is
        built a year long and its stay follows a window copied from it;
        a game of hundreds of NRHO visits at ~4 MB each wants the orbit
        kept as patches and re-integrated by window: open).
-     - The full workspace suite passed before the last fix (the first
-       build a year long), with the two sandbox plan tests it fixed
-       the only failures; after it, the sandbox plan tests and the
-       orbit station, career and missions suites pass. The full suite
-       is owed a rerun.
+     - The full workspace suite after the last fix: 271 passed, one
+       failed, a sandbox test of a dry stay's drawing whose leg now left
+       at its window's opening, the moment the ship started (no stay to
+       draw); given a wait before the leg, its suite passes.
      - Open: the solver's extension from a short fresh base (above);
        the station-keeping controller's phase robustness (above);
        memory as patches.

@@ -156,7 +156,10 @@ fn a_new_load_draws_the_ship_again() {
 /// home (its state set here): the stay, drawn a revolution about the
 /// clock, is not split (found in review: both halves drew their
 /// revolutions); the leg's pass, its own color, dimmed with the rest (found
-/// in review: it was not); the panel says where, in mm/s.
+/// in review: it was not); the panel says where, in mm/s. The wait makes
+/// the stay: without one, the leg may leave at its window's opening, the
+/// moment the ship starts (it did once station orbits were built from the
+/// arrival, M1b.md, step 3 plan, part 2).
 #[test]
 fn a_stay_that_ran_dry_keeps_its_line() {
     let eph = Ephemeris::standard();
@@ -167,6 +170,9 @@ name = "aerocapture"
 name = "Tug"
 class = "tug-h"
 start = { at = "nrho", epoch = "2045-03-01" }
+
+[[ship.leg]]
+wait = 3
 
 [[ship.leg]]
 to = "leo"
