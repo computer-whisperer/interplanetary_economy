@@ -927,7 +927,16 @@ fn upkeeps(sweep: &Sweep, out: &Path, report: &mut String) -> Result<()> {
         .par_iter()
         .map(|&(s, k)| {
             let u = sweep.pieces[s].refs[k].as_ref().and_then(|r| {
-                guarded(|| upkeep(&sweep.cislunar, r, Errors::TYPICAL, UPKEEP_RUNS)).flatten()
+                guarded(|| {
+                    upkeep(
+                        &sweep.cislunar,
+                        r,
+                        r.path.span(),
+                        Errors::TYPICAL,
+                        UPKEEP_RUNS,
+                    )
+                })
+                .flatten()
             });
             (s, k, u.map(|u| u.dv_per_year_kms * 1e3))
         })

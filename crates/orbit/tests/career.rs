@@ -131,10 +131,11 @@ fn waits_count_from_the_arrival() {
 }
 
 /// The crew rotation waits 20 days in the NRHO. Re-planned during that
-/// wait, the same wait goes on in the orbit built for it, and one twice as
-/// long is refused: the orbit was built for a shorter visit.
+/// wait with one twice as long, the ship stays on its orbit, extended as
+/// the longer wait needs (M1b.md, step 3 plan, part 2), keeping station,
+/// and leaves after it.
 #[test]
-fn a_station_visit_built_shorter_refuses() {
+fn a_longer_station_visit_is_designed() {
     let world = World::standard();
     let ship = ship("gateway-rotation.toml", "Crew vehicle");
     let (items, checkpoints) = fly(&world, &ship);
@@ -145,18 +146,21 @@ fn a_station_visit_built_shorter_refuses() {
     let now = stay.start.plus_days(5.0);
     let at_nrho = &checkpoints[1];
     assert_eq!(at_nrho.next(), 1);
-
-    let same = Planner::resume(&world, &ship, at_nrho.staying(now, Some(stay)));
-    assert_eq!(same.outstays(), None);
     let mut longer = ship.clone();
     longer.steps[1] = Step::Wait(40.0);
-    let planner = Planner::resume(&world, &longer, at_nrho.staying(now, Some(stay)));
-    let why = planner.outstays().expect("refused");
-    println!("{why}");
-    assert!(
-        why.starts_with("nrho's orbit was built for a visit until "),
-        "{why}"
-    );
-    let items = rest(planner);
-    assert!(matches!(&items[0].kind, ItemKind::Failed(w) if *w == why));
+    let again = rest(Planner::resume(
+        &world,
+        &longer,
+        at_nrho.staying(now, Some(stay)),
+    ));
+    show(&again);
+    let stayed = again
+        .iter()
+        .find(|i| i.kind == ItemKind::Stay && i.label.contains("nrho"))
+        .unwrap();
+    let days = stayed.end.0 - stayed.start.0;
+    assert!(days >= 40.0 - 1e-9, "stayed {days} days");
+    assert!(stayed.dv > 0.0, "the stay keeps station");
+    assert!(again.iter().any(|i| i.kind == ItemKind::Leg));
+    assert!(!again.iter().any(|i| matches!(i.kind, ItemKind::Failed(_))));
 }

@@ -449,7 +449,7 @@ fn an_edit_goes_on_from_the_middle() {
 
     let mut edited = ship.clone();
     edited.steps[2] = Step::Wait(3.0);
-    let from = resume_point(ship, &checkpoints, 2).unwrap().unwrap();
+    let from = resume_point(ship, &checkpoints, 2).unwrap();
     assert_eq!(from.next(), 2, "after the landing: on the surface");
     let mut planner = Planner::resume(&world, &edited, from.clone());
     let mut resumed: Vec<Item> = items.iter().filter(|i| i.step < 2).cloned().collect();
@@ -464,12 +464,16 @@ fn an_edit_goes_on_from_the_middle() {
         .unwrap();
     assert!((stay.end.0 - stay.start.0 - 3.0).abs() < 1e-9);
 
-    // An edit to the leg leaving a station goes on from before the leg
-    // that reached it (its visit was built for the leg leaving); here, the
-    // start.
-    assert!(resume_point(ship, &checkpoints, 0).unwrap().is_none());
-    let from = resume_point(ship, &checkpoints, 1).unwrap();
-    assert_eq!(from.map(Checkpoint::next), Some(1));
+    // An edit to the leg leaving a station goes on from the station: its
+    // orbit is extended as the leg needs (M1b.md, step 3 plan, part 2).
+    assert_eq!(
+        resume_point(ship, &checkpoints, 0).map(Checkpoint::next),
+        Some(0)
+    );
+    assert_eq!(
+        resume_point(ship, &checkpoints, 1).map(Checkpoint::next),
+        Some(1)
+    );
 }
 
 /// A leg pinned (`pin`) flies at its date and duration, as the published
@@ -642,9 +646,9 @@ to = "moon-south-pole"
 /// option is what pinning it flies, and the cheapest flies. (Designed in
 /// one call, from the NRHO to low lunar orbit, 2 and 4 days cost hundreds
 /// of m/s more than alone, and pinned they flew cheaper than offered.) The
-/// station's visit is as long pinned as offered: sized by the longest
-/// duration designed, 8 days followed the NRHO longer than a pin of 0.5,
-/// which flew 111 m/s from its option (found in review).
+/// station orbit's window is as long pinned as offered: sized by the
+/// longest duration designed, 8 days followed the NRHO longer than a pin
+/// of 0.5, which flew 111 m/s from its option (found in review).
 #[test]
 fn offered_durations_fly_as_pinned() {
     let world = World::standard();
@@ -738,7 +742,7 @@ window = ["2039-12-15", "2040-03-01"]
         checkpoints.push(planner.checkpoint());
     }
     assert_eq!(checkpoints.len(), 2, "the start, and after the failed leg");
-    assert_eq!(reads(&plan.ships[0], Some(0)), 2, "the wait and the leg");
+    assert_eq!(reads(&plan.ships[0], 0), 2, "the wait and the leg");
     assert!(resume_point(&plan.ships[0], &checkpoints, 2).is_none());
 }
 

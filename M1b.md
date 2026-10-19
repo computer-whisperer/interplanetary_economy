@@ -1411,6 +1411,102 @@ follows from it:
        design time before and after. Station orbits start as before,
        so legs should move little; stays gain upkeep;
      - memory.
+   - Settled before building it (2026-10-18):
+     - `orbit::station::Orbit`: a reference behind a read-write lock,
+       built from the catalog member at the arriving leg's window
+       opening less a margin, over what the arriving step needs (its
+       window, longest duration and margin) plus the settle.
+       `cover(until)` extends it by whole years until its path reaches
+       `until` plus the margin. The years are the quantum so that the
+       sequence of solves, and so the path, is the same whichever step
+       or walk asks first (a solve in steps of two revolutions grouped
+       57 then 57 differs from one grouped 114 where a year's
+       revolutions are odd). A leg leaving or reaching the orbit is
+       designed against a window of it (`Orbit::window`, a reference of
+       its own over the window with the margin each way), and a stay
+       follows a window, so no lock is held while anything is designed.
+       The orbit's period is its first build's mean: the mean over the
+       whole path moves as the path grows, and a departure window sized
+       by it designed differently resumed than fresh (found by the
+       determinism tests, 0.1 ms of departure).
+     - The station-keeping policy is the catalog member's, judged once
+       per process on a year of the member's orbit from 2045-03-01,
+       solved with its settle (`upkeep`, four runs): the cheapest that
+       holds it. A stay pays its rate over its span, as before. Judged
+       per visit, over a visit's few maneuvers, a policy can hold them
+       and lose the ship within a year (measured: an NRHO visit's
+       "every revolution aiming half" did); judged on a year solved
+       with a settle of one, against the free end's departing
+       revolutions, the NRHO's came out "aiming one" where a settled
+       year gives the same (below).
+     - `reads` is the step's own leg: a station start reads nothing, so
+       `resume_point` always finds a checkpoint and gives one, not an
+       option of one. `Reference` carries what it was built to extend
+       from (`Extension`: the member, the settle, the anchor revolution
+       and the remembered step) in place of `ahead` and `step`.
+   - **Built and taken out again** (2026-10-18): the loop flown over a
+     stay, as the user ruled (the station flies the closed loop, its
+     burns the stay's Δv with their times). It was built whole: the
+     loop made resumable (`stationkeeping::Loop`, flown on in pieces,
+     keeping the ship's states every six hours and after each burn; it
+     stays, `simulate` is built on it), the vessel's flight kept in its
+     orbit from its arrival as far as the reference reached (so flown
+     in the same pieces whoever asked), a stay's track a coast of the
+     flight's states cut at the departure, the leg after designed
+     against the flight, and burns markers of their own kind. Two
+     findings took it out, both measured on the NRHO:
+     - Inserted on the reference to the bit (the leg put it there), the
+       ship never leaves it: truth and reference are one integration,
+       navigation noise alone predicts a miss under the deadband, and
+       without a burn there is no execution error. A 43-day stay made
+       no burn. Insertion with the loop's navigation error (as the
+       Monte Carlo inserts) was restored.
+     - The loop's success depends on where in the orbit its maneuvers
+       fall. A flight's phase is its arrival's, and with a maneuver
+       interval equal to the period it stays there; the kill-test's
+       loop ran at an interval 0.1–0.2% off its reference's period (the
+       34-year mean), so its phase drifted, and it held. On the chain's
+       first year, "every revolution aiming two" at the exact period
+       loses the ship in every seed (worst 510–760 km, 14–25 m/s a year
+       before it is lost) and at 1.001–1.005 periods holds at 0.6–1.7
+       m/s a year; from a start 2.3 days later the same policy holds
+       at the exact period (0.9–1.0) and is lost at 1.002 and more;
+       from 4.1 days later it holds from 0.998 to 1.01. "Aiming one"
+       holds at the exact period at every phase tried (2–10 m/s a
+       year) and was lost from a flight's arrival phase after 290 days
+       with an 8 m/s burn. The controller (a 3-D position match over
+       the horizon through Φ_rv⁻¹, every so many seconds from an
+       arbitrary start) is not robust to its phase, so a flown stay
+       would be a coin flip per visit. Stays follow the orbit and pay
+       the member's rate until it is: maneuvers at a geometric phase
+       (the apolune, as Gateway's x-axis-crossing control) targeting
+       crossings, or a damped solve, to discuss; the rate judged as
+       above is the controller's at the reference's own phase (the
+       NRHO's "every revolution aiming one", ~6 m/s a year against
+       the chain's 1.6–2.0 and Gateway's ~1). The flown version is in
+       the session's scratchpad (`station_flown_loop.rs`).
+   - Measured (2026-10-18, release; the machine shared with another
+     build, load ~20–27, so design times are inflated and the step 2
+     part 8 figures are the reference):
+     - The crew rotation: 9,359 m/s over 51.4 days (M1c: 9,343 over
+       51.5); its legs 3,484, 682, 696 and 512 m/s; its NRHO stays pay
+       0.4 and 0.1 m/s at 6.57 m/s a year ("every revolution aiming
+       one", the member policy at the reference's own phase: above).
+       The published plan's legs are M1c's within a few m/s (LEO to the
+       DRO 3,388 m/s, 20.6 s under that load against 16.7–16.9).
+     - Memory: the two ships parked a year (one in the NRHO), designed
+       in the sandbox: 57 MB resident, 49 before (the NRHO's orbit is
+       built a year long and its stay follows a window copied from it;
+       a game of hundreds of NRHO visits at ~4 MB each wants the orbit
+       kept as patches and re-integrated by window: open).
+     - The full workspace suite passed before the last fix (the first
+       build a year long), with the two sandbox plan tests it fixed
+       the only failures; after it, the sandbox plan tests and the
+       orbit station, career and missions suites pass. The full suite
+       is owed a rerun.
+     - Open: the solver's extension from a short fresh base (above);
+       the station-keeping controller's phase robustness (above);
+       memory as patches.
 3. **Meeting a vessel.**
    - A leg's destination names a vessel, by id (names change and
      repeat), and the leg of its plan that brings it there:

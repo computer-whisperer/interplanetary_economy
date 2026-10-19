@@ -3,7 +3,7 @@
 //! interpolation recovers the path. A stay keeps less (M1b.md, step 2
 //! plan, part 6): in a low orbit, states a few hours apart from its one
 //! integration, from which its samples are integrated when asked; at a
-//! station, its visit's reference.
+//! station, a window of the vessel's orbit.
 
 use crate::ephem::BodyId;
 use crate::gravity::Field;

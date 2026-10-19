@@ -1687,8 +1687,7 @@ mod tests {
                 center: Some(earth),
                 revolutions: 1,
                 patches: Vec::new(),
-                ahead: Vec::new(),
-                step: None,
+                extension: None,
                 path: crate::integrate::Trajectory::new(steps),
             }
         };
@@ -1765,8 +1764,7 @@ mod tests {
             center: Some(earth),
             revolutions: 1,
             patches: Vec::new(),
-            ahead: Vec::new(),
-            step: None,
+            extension: None,
             path: crate::integrate::Trajectory::new(steps),
         };
         let leg = Leg {
@@ -1948,8 +1946,7 @@ mod tests {
             center: field.center(),
             revolutions: 1,
             patches: Vec::new(),
-            ahead: Vec::new(),
-            step: None,
+            extension: None,
             path: crate::integrate::Trajectory::new(steps),
         }
     }

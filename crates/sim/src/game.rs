@@ -735,8 +735,7 @@ impl Game {
     /// now (to the minute). It takes effect where the ship is: now, if it
     /// is staying where the step that holds `from` leaves from; at the
     /// end of a leg in flight; or later. Refused if its steps break the
-    /// ship's class, if it changes a step whose leg has begun, or if it
-    /// needs a longer station visit than was built (until step 3).
+    /// ship's class, or if it changes a step whose leg has begun.
     pub fn replan(&mut self, id: u64, from: usize, steps: Vec<Step>) -> Result<(), String> {
         if self.mode != Mode::Career {
             return Err("re-plans are career's; the sandbox edits".into());
@@ -806,12 +805,12 @@ impl Game {
     }
 
     /// Where an edit at step `step` of ship `s` would design it again
-    /// from: the first step whose design reads it (`mission::reads`), or
-    /// the start (`Some(None)`); `None` if the ship is not designed that
-    /// far. What a sweep of a leg's durations designs from.
-    pub fn resume_point(&self, s: usize, step: usize) -> Option<Option<Checkpoint>> {
+    /// from: the first step whose design reads it (`mission::reads`);
+    /// `None` if the ship is not designed that far. What a sweep of a
+    /// leg's durations designs from.
+    pub fn resume_point(&self, s: usize, step: usize) -> Option<Checkpoint> {
         let checkpoints: Vec<Checkpoint> = self.ships[s].checkpoints().cloned().collect();
-        resume_point(&self.plan.ships[s], &checkpoints, step).map(|c| c.cloned())
+        resume_point(&self.plan.ships[s], &checkpoints, step).cloned()
     }
 
     /// Whether `check` holds, saying what the game has either way.

@@ -30,17 +30,13 @@ pub enum Designed {
     End,
 }
 
-/// The key of a ship's start: where and when, and the steps a station
-/// start's visit is built for.
+/// The key of a ship's start: where and when.
 pub fn start_key(ship: &Ship) -> Key {
     let mut h = Fixed::default();
     h.str("start")
         .debug(&ship.start.kind)
         .str(&ship.start.label)
         .f64(ship.epoch.0);
-    for s in &ship.steps[..reads(ship, None)] {
-        h.debug(s);
-    }
     h.finish()
 }
 
@@ -49,7 +45,7 @@ pub fn start_key(ship: &Ship) -> Key {
 pub fn step_key(at: Key, ship: &Ship, next: usize) -> Key {
     let mut h = Fixed::default();
     h.str("step").u64(at).u64(next as u64);
-    for s in &ship.steps[next.min(ship.steps.len())..reads(ship, Some(next))] {
+    for s in &ship.steps[next.min(ship.steps.len())..reads(ship, next)] {
         h.debug(s);
     }
     h.finish()
@@ -133,8 +129,7 @@ pub type Fetch<'a> = dyn FnMut(Key, &dyn Fn() -> Designed) -> Option<Arc<Designe
 /// A re-plan takes effect at the checkpoint before the step that holds
 /// its first step replaced: there, if the ship arrived after it was made;
 /// at the time it was made, if the ship was staying there then. One that
-/// cannot (the step's leg had begun, or a station's visit was built
-/// shorter than the new steps need) goes to `refused` with its place in
+/// cannot (the step's leg had begun) goes to `refused` with its place in
 /// `replans` and why, and the ship flies on as before it.
 pub fn walk(
     world: &World,
@@ -220,10 +215,6 @@ pub fn walk(
             }
             let mut edited = ship.clone();
             apply(&mut edited.steps, r);
-            if let Some(why) = Planner::resume(world, &edited, at.clone()).outstays() {
-                refused(i, why);
-                continue;
-            }
             (ship, c, key) = (edited, at, at_key);
         }
         let k = step_key(key, &ship, c.next());

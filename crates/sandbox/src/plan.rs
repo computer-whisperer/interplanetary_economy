@@ -308,8 +308,8 @@ impl Loaded {
     }
 
     /// Designs ship `s`'s leg at `step` at each of `durations` in the
-    /// background, each as pinning it would design it (a station visited
-    /// before it is followed for that duration), from where an edit at
+    /// background, each as pinning it would design it (the window of a
+    /// station orbit left before it reaches that duration), from where an edit at
     /// the step would design it from, to show them beside the leg's own
     /// options; the plan is left as it is.
     pub fn sweep(&mut self, s: usize, step: usize, durations: Vec<f64>) {
@@ -343,10 +343,7 @@ impl Loaded {
                         days: Some(days),
                     });
                 }
-                let mut planner = match from.clone() {
-                    Some(c) => Planner::resume(world, &ship, c),
-                    None => Planner::new(world, &ship)?,
-                };
+                let mut planner = Planner::resume(world, &ship, from.clone());
                 loop {
                     let items = planner.step().ok_or("the leg was not reached")?;
                     // The leg itself, not the stay before it.

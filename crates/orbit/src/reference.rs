@@ -135,18 +135,31 @@ pub struct Reference {
     pub revolutions: usize,
     /// Patch points: (seconds after `epoch`, state).
     pub patches: Vec<(f64, [f64; 6])>,
-    /// The anchor revolution: the patch points of the first revolution
-    /// solved past the end, from the last patch on, where [`Self::extend`]
-    /// anchors. Empty for a reference built to be left as it is (a
-    /// `settle` of one).
-    pub ahead: Vec<(f64, [f64; 6])>,
-    /// Revolutions the last converged solve of [`Self::extend`] spanned,
-    /// the settle excluded, where the next starts: a size that failed is
-    /// not tried again (an NRHO's steps of 14, 7 and 4 revolutions fail
-    /// nearly every time past its first years, where 2 converge, and each
-    /// failure costs seconds). `None` before the first extension.
-    pub step: Option<usize>,
+    /// What [`Self::extend`] extends from; `None` for a reference built to
+    /// be left as it is (a `settle` of one, or no catalog orbit).
+    pub extension: Option<Extension>,
     pub path: Trajectory<6>,
+}
+
+/// What a reference was built to be extended from ([`continue_orbit`] with
+/// a `settle` of two or more).
+#[derive(Clone, Debug)]
+pub struct Extension {
+    /// The catalog orbit and settle it was built with, so that extending
+    /// it cannot be handed another member.
+    pub orbit: PeriodicOrbit,
+    pub settle: usize,
+    /// The anchor revolution: the patch points of the first revolution
+    /// solved past the end, from the last patch on, where
+    /// [`Reference::extend`] anchors.
+    pub anchor: Vec<(f64, [f64; 6])>,
+    /// Revolutions the last converged solve of [`Reference::extend`]
+    /// spanned, the settle excluded, where the next starts: a size that
+    /// failed is not tried again (an NRHO's steps of 14, 7 and 4
+    /// revolutions fail nearly every time past its first years, where 2
+    /// converge, and each failure costs seconds). `None` before the first
+    /// extension.
+    pub step: Option<usize>,
 }
 
 impl Reference {
@@ -172,34 +185,33 @@ impl Reference {
     /// orbit phased on, and `settle` more beyond, the first of them the next
     /// anchor. The path so far does not change; the anchor moves within the
     /// shooting's tolerance. On an error the reference keeps the steps that
-    /// converged (`revolutions` tells how far).
+    /// converged (`revolutions` tells how far). Only a reference built to
+    /// be extended (`extension`) extends.
     pub fn extend(
         &mut self,
         eph: &Ephemeris,
         field: &Field,
         cat: &Catalog,
-        orbit: PeriodicOrbit,
         revs: usize,
-        settle: usize,
     ) -> Result<(), NotContinuous> {
-        assert!(
-            settle >= 1,
-            "a solve's end is free: at least one revolution settles"
-        );
+        let ext = self
+            .extension
+            .as_ref()
+            .expect("only a reference built to be extended (a settle of two or more) extends");
         // A step that did not converge is halved, and the size that did
         // is kept for the steps after, this call's and the next calls'
         // (`step`). Before it was kept across calls, each of an NRHO's
         // years tried 14, 7 and 4 revolutions first and failed each
         // (2026-10-18).
-        let most = MOST_SOLVE.saturating_sub(settle).max(1);
-        let mut size = self.step.map_or(most, |s| s.clamp(1, most));
+        let most = MOST_SOLVE.saturating_sub(ext.settle).max(1);
+        let mut size = ext.step.map_or(most, |s| s.clamp(1, most));
         let mut left = revs;
         while left > 0 {
             let step = size.min(left);
-            match self.extend_once(eph, field, cat, orbit, step, settle) {
+            match self.extend_once(eph, field, cat, step) {
                 Ok(()) => {
                     left -= step;
-                    self.step = Some(size);
+                    self.extension.as_mut().unwrap().step = Some(size);
                 }
                 Err(_) if step > 1 => size = step.div_ceil(2),
                 Err(e) => return Err(e),
@@ -215,15 +227,10 @@ impl Reference {
         eph: &Ephemeris,
         field: &Field,
         cat: &Catalog,
-        orbit: PeriodicOrbit,
         revs: usize,
-        settle: usize,
     ) -> Result<(), NotContinuous> {
-        assert_eq!(
-            self.ahead.len(),
-            PATCHES_PER_REVOLUTION + 1,
-            "only a reference that kept its anchor revolution (a settle of two or more) extends"
-        );
+        let ext = self.extension.as_ref().unwrap();
+        let (orbit, settle) = (ext.orbit, ext.settle);
         let kept = revs * PATCHES_PER_REVOLUTION;
         let (times, states) = shoot(eph, field, cat, orbit, Start::Anchor(self), revs, settle)?;
         self.path.append(integrate(
@@ -238,7 +245,7 @@ impl Reference {
         self.patches
             .extend(patches(&times[..=kept], &states[..=kept]));
         self.revolutions += revs;
-        self.ahead = anchor(&times, &states, kept, settle);
+        self.extension.as_mut().unwrap().anchor = anchor(&times, &states, kept);
         Ok(())
     }
 }
@@ -350,8 +357,12 @@ pub fn continue_orbit(
         center: field.center(),
         revolutions: revs,
         patches: patches(&times[..=kept], &states[..=kept]),
-        ahead: anchor(&times, &states, kept, settle),
-        step: None,
+        extension: (settle >= 2).then(|| Extension {
+            orbit,
+            settle,
+            anchor: anchor(&times, &states, kept),
+            step: None,
+        }),
         path: Trajectory::new(integrate(field, start, &times[..=kept], &states[..=kept])?),
     })
 }
@@ -368,16 +379,13 @@ fn patches(times: &[f64], states: &[[f64; 6]]) -> Vec<(f64, [f64; 6])> {
     times.iter().copied().zip(states.iter().copied()).collect()
 }
 
-/// The anchor revolution of a solve whose usable patches end at `kept`:
-/// none if only the free revolution follows.
-fn anchor(times: &[f64], states: &[[f64; 6]], kept: usize, settle: usize) -> Vec<(f64, [f64; 6])> {
-    match settle >= 2 {
-        true => patches(
-            &times[kept..=kept + PATCHES_PER_REVOLUTION],
-            &states[kept..=kept + PATCHES_PER_REVOLUTION],
-        ),
-        false => Vec::new(),
-    }
+/// The anchor revolution of a solve whose usable patches end at `kept`
+/// (the settle is two or more).
+fn anchor(times: &[f64], states: &[[f64; 6]], kept: usize) -> Vec<(f64, [f64; 6])> {
+    patches(
+        &times[kept..=kept + PATCHES_PER_REVOLUTION],
+        &states[kept..=kept + PATCHES_PER_REVOLUTION],
+    )
 }
 
 /// The continuous trajectory through solved patches, arc by arc.
@@ -453,7 +461,13 @@ fn shoot(
     // distance, mismatch later revolutions', and an NRHO's arcs then broke
     // by 30,000 km where the catalog's break by a few thousand).
     if let Start::Anchor(before) = start {
-        for &(t, s) in &before.ahead {
+        let anchor = &before.extension.as_ref().unwrap().anchor;
+        assert_eq!(
+            anchor.len(),
+            per_rev + 1,
+            "an anchor is one revolution of patches"
+        );
+        for &(t, s) in anchor {
             times.push(t);
             states.push(s);
         }

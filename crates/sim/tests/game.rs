@@ -225,10 +225,10 @@ fn career_replans_from_now() {
 }
 
 /// The crew rotation in career, 5 days into its 20-day wait in the NRHO:
-/// the wait made twice as long needs a longer visit than its orbit was
-/// built for, and is refused (until step 3); the same wait is not.
+/// the wait made twice as long is designed, its orbit extended as the wait
+/// needs (M1b.md, step 3 plan, part 2), and the ship stays the 40 days.
 #[test]
-fn a_longer_station_visit_is_refused() {
+fn a_longer_station_visit_is_designed() {
     let src = mission("gateway-rotation.toml");
     let mut sandbox = Game::new(parse(&src), pool(24)).unwrap();
     sandbox.wait();
@@ -247,14 +247,17 @@ fn a_longer_station_visit_is_refused() {
 
     let mut longer = steps[1..].to_vec();
     longer[0] = Step::Wait(40.0);
-    let why = game.replan(id, 1, longer).unwrap_err();
-    assert!(
-        why.starts_with("nrho's orbit was built for a visit until"),
-        "{why}"
-    );
-    game.replan(id, 1, steps[1..].to_vec()).unwrap();
+    game.replan(id, 1, longer).unwrap();
     game.wait();
     assert!(game.ships()[0].failure.is_none());
+    let stayed = game.ships()[0]
+        .items()
+        .find(|i| i.kind == ItemKind::Stay && i.label.contains("nrho"))
+        .unwrap()
+        .clone();
+    let days = stayed.end.0 - stayed.start.0;
+    assert!(days >= 40.0 - 1e-9, "stayed {days} days");
+    assert!(stayed.dv > 0.0, "the stay keeps station");
 }
 
 /// Every scenario in `data/scenarios/` runs headless, and its checks hold

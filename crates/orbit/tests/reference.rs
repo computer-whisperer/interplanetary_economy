@@ -136,7 +136,7 @@ fn orbits_continue_into_the_full_model() {
     ] {
         let m = cat.nearest(family, days).unwrap();
         let reference = continue_orbit(eph, &field, cat, m.orbit, start, 6, 1).unwrap();
-        assert!(reference.ahead.is_empty());
+        assert!(reference.extension.is_none());
         let cr = cr3bp_range(cat, &m.orbit);
         let (lo, hi) = moon_range(eph, &reference, reference.path.span(), 2000);
         println!(
@@ -176,7 +176,10 @@ fn apart(cat: &Catalog, a: &[f64; 6], b: &[f64; 6]) -> f64 {
 /// discontinuity where the new path starts, both scaled as [`apart`].
 fn seam(cat: &Catalog, before: &Reference, after: &Reference) -> (f64, f64) {
     let moved = before
-        .ahead
+        .extension
+        .as_ref()
+        .unwrap()
+        .anchor
         .iter()
         .zip(&after.patches[before.patches.len() - 1..])
         .map(|((ta, sa), (tb, sb))| apart(cat, sa, sb).max((ta - tb).abs() / cat.time_s))
@@ -215,12 +218,15 @@ fn extended_orbits_run_on() {
                 .ok()
             })
             .unwrap();
-        assert_eq!(r.ahead.len(), PATCHES_PER_REVOLUTION + 1);
+        assert_eq!(
+            r.extension.as_ref().unwrap().anchor.len(),
+            PATCHES_PER_REVOLUTION + 1
+        );
         let cr = cr3bp_range(cat, &m.orbit);
         for k in 0..2 {
             let before = r.clone();
             let end = before.path.span().1;
-            r.extend(eph, &field, cat, m.orbit, 8, settle).unwrap();
+            r.extend(eph, &field, cat, 8).unwrap();
             let (moved, gap) = seam(cat, &before, &r);
             println!("{place} extension {k}: anchor moved {moved:.1e}, seam {gap:.1e}");
             assert!(moved < 1e-8, "{place} {k}: the anchor moved {moved:e}");
@@ -265,8 +271,7 @@ fn window(reference: &Reference, (t0, t1): (f64, f64)) -> Reference {
         center: reference.center,
         revolutions: ((t1 - t0) / reference.period_s()).round() as usize,
         patches: Vec::new(),
-        ahead: Vec::new(),
-        step: None,
+        extension: None,
         path: Trajectory::new(steps),
     }
 }
@@ -313,7 +318,7 @@ fn station_orbits_extended_for_years() {
                 for _ in 1..years {
                     let before = r.clone();
                     let clock = Instant::now();
-                    if let Err(e) = r.extend(eph, field, cat, m.orbit, per_year, settle) {
+                    if let Err(e) = r.extend(eph, field, cat, per_year) {
                         failed = Some(e.residual);
                         break;
                     }
@@ -358,8 +363,9 @@ fn station_orbits_extended_for_years() {
                 let period = r.period_s();
                 let whole = |t: f64| (t / period).round() * period;
                 let clock = Instant::now();
-                let one = upkeep(field, &window(&r, (0.0, whole(YEAR_S))), Errors::TYPICAL, 4);
-                let two = upkeep(field, &window(&r, (0.0, whole(2.0 * YEAR_S))), Errors::TYPICAL, 4);
+                let over = |w: &Reference| upkeep(field, w, w.path.span(), Errors::TYPICAL, 4);
+                let one = over(&window(&r, (0.0, whole(YEAR_S))));
+                let two = over(&window(&r, (0.0, whole(2.0 * YEAR_S))));
                 let describe = |u: &Option<orbit::stationkeeping::Upkeep>| match u {
                     Some(u) => format!(
                         "{:.2} m/s a year (every {:.1} rev aiming {:.1})",
@@ -393,7 +399,11 @@ fn station_orbits_extended_for_years() {
                                 deadband_km: 10.0,
                             };
                             let runs: Vec<_> = (0..3u64)
-                                .filter_map(|seed| simulate(field, &w, policy, Errors::TYPICAL, seed))
+                                .filter_map(|seed| {
+                                    let (a, b) = w.path.span();
+                                    let span = (a, b - policy.horizon_s);
+                                    simulate(field, &w, span, policy, Errors::TYPICAL, seed)
+                                })
                                 .filter(|run| run.worst_deviation_km <= 500.0)
                                 .collect();
                             if runs.len() < 3 {

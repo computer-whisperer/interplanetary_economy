@@ -181,19 +181,13 @@ fn going_on_from_a_checkpoint_is_a_fresh_design() {
     for (step, to) in edits {
         let mut edited = ship.clone();
         edited.steps[step] = to;
-        let from = resume_point(&ship, &checkpoints, step).unwrap().cloned();
-        let mut resumed: Vec<Item> = match &from {
-            Some(c) => items
-                .iter()
-                .filter(|i| i.step < c.next())
-                .cloned()
-                .collect(),
-            None => Vec::new(),
-        };
-        let mut planner = match from {
-            Some(c) => Planner::resume(&world, &edited, c),
-            None => Planner::new(&world, &edited).unwrap(),
-        };
+        let from = resume_point(&ship, &checkpoints, step).unwrap().clone();
+        let mut resumed: Vec<Item> = items
+            .iter()
+            .filter(|i| i.step < from.next())
+            .cloned()
+            .collect();
+        let mut planner = Planner::resume(&world, &edited, from);
         while let Some(batch) = planner.step() {
             resumed.extend(batch);
         }
@@ -212,7 +206,7 @@ fn a_step_reads_what_reads_says() {
     let (items, checkpoints) = fly(&world, &ship);
     let mut checked = 0;
     for c in &checkpoints[..checkpoints.len() - 1] {
-        let end = reads(&ship, Some(c.next()));
+        let end = reads(&ship, c.next());
         let Some(past) = ship.steps.get(end) else {
             continue;
         };

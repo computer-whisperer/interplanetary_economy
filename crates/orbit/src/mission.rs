@@ -13,9 +13,9 @@ use crate::integrate::{Dop853, Tolerance, Trajectory};
 use crate::interplanetary;
 use crate::legs;
 use crate::places::{PlaceKind, Places};
-use crate::reference::{Reference, continue_orbit};
+use crate::reference::Reference;
 use crate::shooting::{Design, End, Leg, LowOrbit};
-use crate::stationkeeping::{Errors, upkeep};
+use crate::station;
 use crate::surface;
 use crate::time::{Epoch, SECONDS_PER_DAY};
 use crate::track::Track;
@@ -75,15 +75,6 @@ const ALIGN_STEPS: [f64; 5] = [-1.0 / 120.0, -1.0 / 240.0, 0.0, 1.0 / 240.0, 1.0
 /// A pin this close before the ship is ready leaves when it is, days:
 /// pins are kept to the minute.
 const PIN_SLACK_DAYS: f64 = 0.5 / 1_440.0;
-
-/// A station's reference starts this long before it is needed, and runs
-/// this long after, days.
-const VISIT_MARGIN_DAYS: f64 = 2.0;
-
-/// Station-keeping is simulated over this many runs (`upkeep`), on a
-/// reference at least this many revolutions long.
-const UPKEEP_RUNS: u64 = 4;
-const UPKEEP_REVOLUTIONS: f64 = 4.0;
 
 /// A plan: ships and their legs, as written in `data/missions/`.
 #[derive(Clone, Debug)]
@@ -188,8 +179,8 @@ impl Go {
 
     /// The longest duration it may be designed at, days: of those offered
     /// and the pinned one, so that pinning an option leaves what is built
-    /// around the leg (a station's visit, which its durations bound) as
-    /// it was.
+    /// around the leg (the window of a station orbit it is designed
+    /// against, which its durations bound) as it was.
     pub fn longest(&self) -> f64 {
         self.days
             .iter()
@@ -909,50 +900,30 @@ impl Checkpoint {
 }
 
 /// The steps the planner reads designing the step from `next` (a
-/// checkpoint's): from it through the leg the step designs, and through
-/// the leg after that when the step reaches a station (its visit is built
-/// long enough for them, [`Planner`]'s `visit_until`). From the start
-/// (`None`), the steps a station start's visit is built for. Its end:
-/// what designs are keyed by (M1b.md, step 1 plan, part 4).
-pub fn reads(ship: &Ship, next: Option<usize>) -> usize {
-    let after = |from: usize| -> usize {
-        ship.steps[from.min(ship.steps.len())..]
-            .iter()
-            .position(|s| matches!(s, Step::Go(_)))
-            .map_or(ship.steps.len(), |k| from + k + 1)
-    };
-    let at_station = |kind: &PlaceKind| matches!(kind, PlaceKind::Station { .. });
-    match next {
-        None if at_station(&ship.start.kind) => after(0),
-        None => 0,
-        Some(next) => {
-            let end = after(next);
-            match ship.steps.get(end.wrapping_sub(1)) {
-                Some(Step::Go(go)) if end > next && at_station(&go.to.kind) => after(end),
-                _ => end,
-            }
-        }
-    }
+/// checkpoint's): from it through the leg the step designs. Its end: what
+/// designs are keyed by (M1b.md, step 1 plan, part 4). A station orbit is
+/// extended as later steps need it (step 3 plan, part 2), so no step
+/// reads past its own leg, and a start reads none.
+pub fn reads(ship: &Ship, next: usize) -> usize {
+    ship.steps[next.min(ship.steps.len())..]
+        .iter()
+        .position(|s| matches!(s, Step::Go(_)))
+        .map_or(ship.steps.len(), |k| next + k + 1)
 }
 
 /// Of `checkpoints` (the start's, then each step's after it), the one an
 /// edit to `ship`'s steps from `edited` on goes on from: the first whose
-/// step reads `edited` ([`reads`]), so that a station's visit, built for
-/// the leg leaving it, is built again. `Some(None)`: from the start, whose
-/// design reads it. `None`: the ship does not get there (a step before
-/// failed, or the checkpoints stop short of it).
+/// step reads `edited` ([`reads`]). `None`: the ship does not get there (a
+/// step before failed, or the checkpoints stop short of it).
 pub fn resume_point<'c>(
     ship: &Ship,
     checkpoints: &'c [Checkpoint],
     edited: usize,
-) -> Option<Option<&'c Checkpoint>> {
-    if edited < reads(ship, None) {
-        return Some(None);
-    }
+) -> Option<&'c Checkpoint> {
     let c = checkpoints
         .iter()
-        .find(|c| edited < reads(ship, Some(c.next)).max(c.next + 1))?;
-    (!c.stopped).then_some(Some(c))
+        .find(|c| edited < reads(ship, c.next).max(c.next + 1))?;
+    (!c.stopped).then_some(c)
 }
 
 /// A design a leg flies, and the reference of the ship's own low orbit it
@@ -961,13 +932,6 @@ struct Flight {
     design: Design,
     own: Option<Reference>,
     note: Option<String>,
-}
-
-/// A station orbit for one visit: the reference the ship follows from the
-/// leg that arrives until the leg that leaves.
-struct Visit {
-    reference: Arc<Reference>,
-    label: String,
 }
 
 /// Where the ship is between items.
@@ -980,17 +944,19 @@ enum Here {
         orbit: LowOrbit,
         coast: Option<(Epoch, [f64; 6])>,
     },
-    Station(Arc<Visit>),
+    /// On a station orbit of its own (M1b.md, step 3 plan, part 2).
+    Station(Arc<station::Orbit>),
     Body(BodyId),
     Surface(BodyId),
 }
 
-/// The end a ship leaves from.
+/// The end a ship leaves from, other than a station orbit (a leg from one
+/// is designed against a window of it, [`station::Orbit::window`]).
 fn end_from(here: &Here) -> End<'_> {
     match here {
         Here::Low { orbit, .. } => End::Low(*orbit),
         Here::Body(b) => End::Body(*b),
-        Here::Station(v) => End::Orbit(&v.reference),
+        Here::Station(_) => unreachable!("a station orbit is left by a window of it"),
         Here::Surface(_) => unreachable!("surfaces are left by events"),
     }
 }
@@ -1035,8 +1001,20 @@ impl<'w> Planner<'w> {
                 coast: None,
             },
             PlaceKind::Station { family, period } => {
-                let until = p.visit_until(0, ship.epoch, p.member_days(family, *period)?);
-                Here::Station(p.visit(&ship.start, ship.epoch, until)?)
+                let m = world
+                    .cat
+                    .nearest(family, *period)
+                    .ok_or_else(|| format!("no family {family:?}"))?;
+                let (field, _) = world.system(world.eph.lookup("earth").unwrap())?;
+                Here::Station(station::Orbit::new(
+                    world.eph,
+                    world.cat,
+                    field.clone(),
+                    &ship.start.label,
+                    m,
+                    ship.epoch,
+                    ship.epoch,
+                )?)
             }
             PlaceKind::Body(b) => Here::Body(*b),
             PlaceKind::Surface(b) => Here::Surface(*b),
@@ -1077,35 +1055,9 @@ impl<'w> Planner<'w> {
         }
     }
 
-    /// Why the ship cannot go on from here as its steps now are, if it
-    /// cannot: in a station's orbit, the steps need a longer visit than
-    /// the orbit was built for. A planner going on from a checkpoint
-    /// `resume_from` would have stepped back from meets this; M1b's step
-    /// 3 makes each station one orbit.
-    pub fn outstays(&self) -> Option<String> {
-        let (Here::Station(visit), PlaceKind::Station { family, period }) =
-            (&self.here, &self.place)
-        else {
-            return None;
-        };
-        let revolution = self.member_days(family, *period).ok()?;
-        let until = self.visit_until(self.next, self.ready, revolution);
-        let built = visit.reference.end().plus_days(-VISIT_MARGIN_DAYS);
-        (until.0 > built.0).then(|| {
-            format!(
-                "{}'s orbit was built for a visit until {}, and the steps from here need one until {}",
-                visit.label,
-                when(built),
-                when(until)
-            )
-        })
-    }
-
     /// The next items: a stay and the leg or event after it, or a failure
     /// (after which there are none). `None` when the plan is done.
     pub fn step(&mut self) -> Option<Vec<Item>> {
-        // Checked where the planner stands, before the waits.
-        let mut refused = self.outstays();
         while !self.stopped {
             let i = self.next;
             self.next += 1;
@@ -1115,10 +1067,7 @@ impl<'w> Planner<'w> {
                 Step::Go(go) => {
                     let clock = Instant::now();
                     self.ready = Epoch(self.ready.0.max(self.not_before.0));
-                    let gone = match refused.take() {
-                        Some(why) => Err(why),
-                        None => self.go(&go),
-                    };
+                    let gone = self.go(&go);
                     return Some(match gone {
                         Ok(mut items) => {
                             if let Some(i) = items.iter_mut().rfind(|i| i.kind != ItemKind::Capture)
@@ -1299,7 +1248,7 @@ impl<'w> Planner<'w> {
         // The window: a revolution of the station left or reached, else
         // the defaults.
         let default_days = match (&self.here, &go.to.kind) {
-            (Here::Station(v), _) => v.reference.period_s() / DAY,
+            (Here::Station(o), _) => o.period_s() / DAY,
             (_, PlaceKind::Station { family, period }) => self.member_days(family, *period)?,
             _ if Some(system) == eph.lookup("earth") => EARTH_WINDOW_DAYS,
             _ => OTHER_WINDOW_DAYS,
@@ -1340,22 +1289,44 @@ impl<'w> Planner<'w> {
                 Some(_) => close,
                 None => Epoch(open.plus_days(limit / DAY).0.max(close.0)),
             });
-        // A station reached is followed from before the earliest arrival
-        // to after the leg that leaves it.
+        // A station reached gets the ship an orbit of its own, built over
+        // the arrival and extended as the steps after need it. A station
+        // orbit left or reached is designed against a window of it.
+        let last = windows.last().unwrap().1;
+        let latest = Epoch(wait.map_or(last.0, |w| w.0.max(last.0))).plus_days(longest);
         let arriving = match &go.to.kind {
             PlaceKind::Station { family, period } => {
-                let last = windows.last().unwrap().1;
-                let latest = Epoch(wait.map_or(last.0, |w| w.0.max(last.0))).plus_days(longest);
-                let until =
-                    self.visit_until(self.at + 1, latest, self.member_days(family, *period)?);
-                Some(self.visit(&go.to, open, until)?)
+                let m = world
+                    .cat
+                    .nearest(family, *period)
+                    .ok_or_else(|| format!("no family {family:?}"))?;
+                Some(station::Orbit::new(
+                    eph,
+                    world.cat,
+                    field.clone(),
+                    &go.to.label,
+                    m,
+                    open,
+                    latest,
+                )?)
             }
             _ => None,
         };
+        let arrival = arriving
+            .as_ref()
+            .map(|o| o.window((open, latest)))
+            .transpose()?;
+        let leaving = match &self.here {
+            Here::Station(o) => Some(o.window((open, last.plus_days(longest)))?),
+            _ => None,
+        };
         let here = self.here.clone();
-        let from = end_from(&here);
-        let to = match &arriving {
-            Some(v) => End::Orbit(&v.reference),
+        let from = match &leaving {
+            Some(r) => End::Orbit(r),
+            None => end_from(&here),
+        };
+        let to = match &arrival {
+            Some(r) => End::Orbit(r),
             None => self.world.end_to(&go.to.kind, go.aero, false)?,
         };
         let durations: Vec<f64> = offered.iter().map(|d| d * DAY).collect();
@@ -1556,59 +1527,6 @@ impl<'w> Planner<'w> {
         Ok(self.world.cat.days(m.orbit))
     }
 
-    /// When a visit to a station of `revolution` days, reached before step
-    /// `next` (by `latest`), must last until: through the waits after it,
-    /// and the next leg's windows (a revolution, and the later ones it may
-    /// try) and longest duration.
-    fn visit_until(&self, next: usize, latest: Epoch, revolution: f64) -> Epoch {
-        let mut t = latest;
-        for step in &self.ship.steps[next.min(self.ship.steps.len())..] {
-            match step {
-                Step::Wait(days) => t = t.plus_days(*days),
-                Step::Go(go) => {
-                    let t = Epoch(t.0.max(self.not_before.0));
-                    let longest = go.longest();
-                    let tries = 1.0 + (WITHIN_TRIES - 1) as f64 / 4.0;
-                    let close = match go.window {
-                        Some((_, close)) => Epoch(close.0.max(t.0)),
-                        None => t.plus_days(tries * revolution),
-                    };
-                    return close.plus_days(longest);
-                }
-            }
-        }
-        t
-    }
-
-    /// The reference for a visit to station `spot` from `from` until
-    /// `until`, with margins.
-    fn visit(&self, spot: &Spot, from: Epoch, until: Epoch) -> Result<Arc<Visit>, String> {
-        let PlaceKind::Station { family, period } = &spot.kind else {
-            unreachable!("a visit is to a station")
-        };
-        let (eph, cat) = (self.world.eph, self.world.cat);
-        let m = cat
-            .nearest(family, *period)
-            .ok_or_else(|| format!("no family {family:?}"))?;
-        let days = cat.days(m.orbit);
-        let (field, _) = self.world.system(eph.lookup("earth").unwrap())?;
-        let span = until.0 - from.0 + 2.0 * VISIT_MARGIN_DAYS;
-        // A start that does not converge is retried a day or two earlier.
-        (0..3)
-            .find_map(|early| {
-                let start = from.plus_days(-VISIT_MARGIN_DAYS - early as f64);
-                let revs = ((span + early as f64) / days).ceil() as usize + 1;
-                continue_orbit(eph, field, cat, m.orbit, start, revs, 1).ok()
-            })
-            .map(|reference| {
-                Arc::new(Visit {
-                    reference: Arc::new(reference),
-                    label: spot.label.clone(),
-                })
-            })
-            .ok_or_else(|| format!("{}'s orbit could not be continued from {from}", spot.label))
-    }
-
     /// The items for a designed leg: the stay before it, the leg, and an
     /// aerocapture's coast after it; the ship is then where it arrived.
     fn flown(
@@ -1617,7 +1535,7 @@ impl<'w> Planner<'w> {
         leg: &Leg,
         design: Design,
         options: Vec<Choice>,
-        arriving: Option<Arc<Visit>>,
+        arriving: Option<Arc<station::Orbit>>,
         note: Option<String>,
     ) -> Result<Vec<Item>, String> {
         let eph = self.world.eph;
@@ -1726,7 +1644,7 @@ impl<'w> Planner<'w> {
             },
             (PlaceKind::Body(b), None) => Here::Body(*b),
             (PlaceKind::Surface(b), None) => Here::Surface(*b),
-            (PlaceKind::Station { .. }, None) => unreachable!("stations are visits"),
+            (PlaceKind::Station { .. }, None) => unreachable!("stations are orbits"),
         };
         self.arrive(&go.to.label, end);
         Ok(items)
@@ -2082,25 +2000,33 @@ impl<'w> Planner<'w> {
                     track.revolution = Some(revolution);
                 }
             }
-            Here::Station(visit) => {
-                let r = &visit.reference;
+            Here::Station(orbit) => {
                 let (field, _) = self.world.system(eph.lookup("earth").unwrap())?;
-                item.track = Some(Track::following(field.clone(), r.clone(), self.since, span));
-                let revolutions = (r.path.span().1 - r.path.span().0) / r.period_s();
+                // The stay follows the orbit (a window of it, so that no
+                // lock is held) and pays its member's station-keeping rate
+                // (M1b.md, step 3 plan, part 2: the loop is not flown over a
+                // stay until it holds at every phase).
+                let window = Arc::new(orbit.window((self.since, until))?);
+                item.track = Some(Track::following(field.clone(), window, self.since, span));
                 if span > 0.0 {
-                    if revolutions >= UPKEEP_REVOLUTIONS
-                        && let Some(u) = upkeep(field, r, Errors::TYPICAL, UPKEEP_RUNS)
-                    {
-                        item.dv = u.dv_per_year_kms * span / (365.25 * DAY);
-                        item.note = Some(format!(
-                            "station-keeping {:.2} m/s per year",
-                            u.dv_per_year_kms * 1e3
-                        ));
-                    } else {
-                        item.note = Some("station-keeping not simulated (visit too short)".into());
+                    match orbit.policy() {
+                        Some(u) => {
+                            item.dv = u.dv_per_year_kms * span / (365.25 * DAY);
+                            item.note = Some(format!(
+                                "station-keeping {:.2} m/s per year (every {:.1} rev aiming {:.1})",
+                                u.dv_per_year_kms * 1e3,
+                                u.policy.interval_s / orbit.period_s(),
+                                u.policy.horizon_s / orbit.period_s()
+                            ));
+                        }
+                        None => {
+                            item.note = Some(
+                                "station-keeping not simulated (no policy holds the orbit)".into(),
+                            );
+                        }
                     }
                 }
-                item.label = format!("at {}", visit.label);
+                item.label = format!("at {}", orbit.label);
             }
             Here::Body(b) | Here::Surface(b) => {
                 item.track = Some(Track::still(*b, self.since, span))
@@ -2255,8 +2181,7 @@ fn own_reference(
         center: field.center(),
         revolutions: ((span / period).round() as usize).max(1),
         patches: Vec::new(),
-        ahead: Vec::new(),
-        step: None,
+        extension: None,
         path: Trajectory::new(steps),
     })
 }

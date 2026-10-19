@@ -20,6 +20,7 @@ pub mod reference;
 pub mod rotation;
 pub mod routes;
 pub mod shooting;
+pub mod station;
 pub mod stationkeeping;
 pub mod surface;
 pub mod time;
