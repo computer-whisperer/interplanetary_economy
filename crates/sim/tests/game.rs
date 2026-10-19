@@ -636,3 +636,338 @@ start = {{ at = "leo", epoch = "2045-03-01"{load} }}
         assert_eq!(warned, [breach]);
     }
 }
+
+/// A depot flown to the NRHO and home, and a tug that meets it there
+/// (M1b.md, step 3 plan, part 3).
+const MEETING: &str = r#"
+name = "meeting"
+
+[[ship]]
+id = 0
+name = "Depot"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 30
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 1
+name = "Tug"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+"#;
+
+/// Where `item`'s track puts the ship at `t`, km.
+fn position(item: &Item, t: Epoch) -> [f64; 3] {
+    let track = item.track.as_ref().unwrap();
+    let s = track
+        .at((t.0 - track.epoch.0) * orbit::time::SECONDS_PER_DAY)
+        .unwrap_or_else(|| panic!("{} has no state at {}", item.label, t.stamp()));
+    [s[0], s[1], s[2]]
+}
+
+/// Ship `s`'s stay at the NRHO.
+fn nrho_stay(game: &Game, s: usize) -> Item {
+    game.ships()[s]
+        .items()
+        .find(|i| i.kind == ItemKind::Stay && i.label == "at nrho")
+        .unwrap()
+        .clone()
+}
+
+/// The tug's stay is on the depot's orbit, to the bit, at every time
+/// both are there.
+fn assert_on_the_depots_orbit(game: &Game) {
+    let (depot, tug) = (nrho_stay(game, 0), nrho_stay(game, 1));
+    assert!(tug.start.0 >= depot.start.0 && tug.end.0 <= depot.end.0);
+    for k in 0..=6 {
+        let t = Epoch(tug.start.0 + (tug.end.0 - tug.start.0) * k as f64 / 6.0);
+        let (a, b) = (position(&tug, t), position(&depot, t));
+        assert_eq!(a, b, "apart at {}", t.stamp());
+    }
+}
+
+/// The tug's walk waits for the depot's, and arrives on its orbit; on one
+/// thread as on 24; and the log reads back as the game it was.
+#[test]
+fn a_meeting_is_designed_on_the_vessels_orbit_on_any_threads() {
+    let mut one = Game::new(parse(MEETING), pool(1)).unwrap();
+    let mut many = Game::new(parse(MEETING), pool(24)).unwrap();
+    one.wait();
+    many.wait();
+    for game in [&one, &many] {
+        for s in game.ships() {
+            assert!(s.done && s.failure.is_none(), "{}: {:?}", s.name, s.failure);
+        }
+        assert_on_the_depots_orbit(game);
+    }
+    let tug = |g: &Game| shown(&g.ships()[1].items().cloned().collect::<Vec<_>>());
+    assert_eq!(tug(&one), tug(&many));
+    assert_eq!(hashes(&one), hashes(&many));
+    let leg = many.ships()[1]
+        .items()
+        .find(|i| i.kind == ItemKind::Leg)
+        .unwrap()
+        .clone();
+    assert_eq!(leg.label, "leo → ship 0, leg 0");
+
+    let text = many.log().to_toml();
+    assert!(
+        text.contains("[ship.leg.to]\nleg = 0\nship = 0\n"),
+        "{text}"
+    );
+    let mut again = Game::new(parse(&text), pool(24)).unwrap();
+    again.wait();
+    assert_eq!(hashes(&again), hashes(&many));
+}
+
+/// An edit of the depot after the leg the tug meets designs nothing of
+/// the tug; one at that leg designs the tug again from its meeting, and
+/// nothing before it; undone, nothing is designed and the game is what it
+/// was.
+#[test]
+fn an_edit_of_the_vessel_designs_its_visitors_from_their_meetings() {
+    let mut game = Game::new(parse(MEETING), pool(24)).unwrap();
+    game.wait();
+    let before = hashes(&game);
+    let tug = |g: &Game| shown(&g.ships()[1].items().cloned().collect::<Vec<_>>());
+    let tug_before = tug(&game);
+    let leg_days = |ship: &mut orbit::mission::Ship, step: usize, days: f64| {
+        let Step::Go(go) = &mut ship.steps[step] else {
+            panic!("step {step} is a leg")
+        };
+        go.days = vec![days];
+    };
+
+    // The depot's leg home: its step and the end after it.
+    let made = game.designs_made();
+    let mut depot = game.plan().ships[0].clone();
+    leg_days(&mut depot, 2, 4.5);
+    game.edit(0, depot).unwrap();
+    game.wait();
+    assert_eq!(
+        game.designs_made() - made,
+        2,
+        "the depot's leg home and its end"
+    );
+    assert_eq!(tug(&game), tug_before);
+
+    // The depot a day later: its four steps (its orbit begins a day
+    // later), and the tug's from the meeting (the meeting, the leg home,
+    // the end), not its start.
+    let made = game.designs_made();
+    let mut depot = game.plan().ships[0].clone();
+    depot.epoch = depot.epoch.plus_days(1.0);
+    game.edit(0, depot).unwrap();
+    game.wait();
+    assert_eq!(game.designs_made() - made, 7);
+    for s in game.ships() {
+        assert!(s.done && s.failure.is_none(), "{}: {:?}", s.name, s.failure);
+    }
+    assert_ne!(tug(&game), tug_before);
+    assert_on_the_depots_orbit(&game);
+
+    let made = game.designs_made();
+    assert!(game.undo() && game.undo());
+    game.wait();
+    assert_eq!(game.designs_made(), made);
+    assert_eq!(tug(&game), tug_before);
+    assert_eq!(hashes(&game), before);
+}
+
+/// A depot that never gets there fails the tug's step with why.
+#[test]
+fn a_vessel_that_never_gets_there_fails_its_visitor() {
+    let src = r#"
+name = "stuck"
+
+[[ship]]
+id = 0
+name = "Stuck"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship]]
+id = 1
+name = "Tug"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+"#;
+    let mut game = Game::new(parse(src), pool(24)).unwrap();
+    game.wait();
+    let why = game.ships()[1].failure.clone().unwrap();
+    assert!(
+        why.starts_with("ship 0, leg 0: ship 0 does not reach leg 0: a surface is reached"),
+        "{why}"
+    );
+}
+
+/// A vessel without a leg named is met where it starts: a depot that
+/// starts at the NRHO, on the orbit it starts on.
+#[test]
+fn a_vessel_is_met_where_it_starts() {
+    let src = r#"
+name = "depot"
+
+[[ship]]
+id = 0
+name = "Depot"
+start = { at = "nrho", epoch = "2045-03-01" }
+
+[[ship.leg]]
+wait = 30
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 1
+name = "Tug"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = { ship = 0 }
+days = [5.0]
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+"#;
+    let mut game = Game::new(parse(src), pool(24)).unwrap();
+    game.wait();
+    for s in game.ships() {
+        assert!(s.done && s.failure.is_none(), "{}: {:?}", s.name, s.failure);
+    }
+    assert_on_the_depots_orbit(&game);
+}
+
+/// What the log refuses of meetings (M1b.md, step 3 plan, part 3): a ship
+/// not in the plan, the ship itself, a wait, a step the ship has not, a
+/// vessel in a low orbit, meetings that wait on each other, a start at a
+/// vessel, and a re-plan replacing a leg another ship's re-plan meets it
+/// after.
+#[test]
+fn what_the_log_refuses_of_meetings() {
+    let with = |to: &str| MEETING.replace("to = { ship = 0, leg = 0 }", &format!("to = {to}"));
+    let refused = |src: &str| Log::parse(src, world().eph, Places::standard()).unwrap_err();
+    let cases = [
+        ("{ ship = 5 }", "ship \"Tug\", step 0: no ship has id 5"),
+        (
+            "{ ship = 1, leg = 0 }",
+            "ship \"Tug\", step 0: a ship does not meet itself",
+        ),
+        (
+            "{ ship = 0, leg = 1 }",
+            "step 1 of ship 0 is a wait, not a leg",
+        ),
+        ("{ ship = 0, leg = 7 }", "ship 0 has 3 steps, no leg 7"),
+        (
+            "{ ship = 0 }",
+            "meeting ship 0 in a low orbit is not designed",
+        ),
+        (
+            "{ ship = 0, leg = 0, foo = 1 }",
+            "unknown key \"foo\" for a meeting",
+        ),
+        ("{ ship = -1 }", "ship must be a whole number"),
+    ];
+    for (to, why) in cases {
+        let got = refused(&with(to));
+        assert!(got.contains(why), "{to}: {got}");
+    }
+    let cycle = with("{ ship = 0, leg = 2 }").replace(
+        "to = \"leo\"\ndays = [5.0]\naero = true\n\n[[ship]]",
+        "to = { ship = 1, leg = 0 }\ndays = [5.0]\n\n[[ship]]",
+    );
+    let got = refused(&cycle);
+    assert!(got.contains("meetings wait on each other"), "{got}");
+    let start = MEETING.replace(
+        "start = { at = \"leo\", epoch = \"2045-03-06\" }",
+        "start = { at = { ship = 0, leg = 0 }, epoch = \"2045-03-06\" }",
+    );
+    let got = refused(&start);
+    assert!(
+        got.contains("a ship starts at a place, not at a vessel"),
+        "{got}"
+    );
+
+    let replanned = format!(
+        "{}\n{}",
+        with("\"nrho\"").replace(
+            "name = \"meeting\"",
+            "name = \"meeting\"\n[game]\nmode = \"career\"\nnow = \"2045-03-01T00:10\""
+        ),
+        r#"
+[[replan]]
+ship = 1
+at = "2045-03-01T00:05"
+from = 0
+
+[[replan.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+
+[[replan]]
+ship = 0
+at = "2045-03-01T00:10"
+from = 0
+
+[[replan.leg]]
+to = "nrho"
+days = [4.0]
+"#
+    );
+    let got = refused(&replanned);
+    assert_eq!(
+        got,
+        "replan 2: replaces leg 0 of ship 0, which ship 1 meets it after (step 0 of its plan)"
+    );
+}
+
+/// Career keeps a leg another ship's plan meets its ship after: a re-plan
+/// of the depot from that leg is refused, one from after it is not.
+#[test]
+fn career_keeps_a_leg_another_ship_meets() {
+    let mut log = parse(MEETING);
+    log.setup.mode = Mode::Career;
+    log.setup.now = Some("2045-03-01".parse().unwrap());
+    let mut game = Game::new(log, pool(24)).unwrap();
+    let steps = game.plan().ships[0].steps.clone();
+    let why = game.replan(0, 0, steps.clone()).unwrap_err();
+    assert_eq!(
+        why,
+        "ship \"Tug\" meets it after leg 0 (step 0 of its plan), which the re-plan replaces"
+    );
+    game.replan(0, 1, steps[1..].to_vec()).unwrap();
+}

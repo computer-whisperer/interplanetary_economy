@@ -1,7 +1,8 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-18: steps 1 and 2 done; step 3's part 1 done (the
-extended station orbits pass their kill-test), part 2 next (the plans
+Status, 2026-10-19: steps 1 and 2 done; step 3's parts 1–3 done (the
+extended station orbits pass their kill-test, the planner designs on
+them, and a leg meets a vessel on its orbit), part 4 next (the plans
 below). Decided: one engine for both modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they
@@ -1537,6 +1538,90 @@ follows from it:
      that another ship's plan meets it after.
    - Whether the vessel is there when the ship arrives, and while it
      transfers, is the loop's (part 5), not the design's.
+   - Settled before building it (2026-10-19):
+     - A meeting is a `Spot` with `meeting: Some(Meeting { ship, leg })`
+       (`leg` a step index, from 0, waits counted; `None`: the vessel's
+       start) and `kind` the vessel's place after that leg as the plan
+       stands: resolved by `mission::Meetings` when a plan is read and
+       whenever a log changes (`Log::check`, against each ship's steps
+       with its re-plans), and taken from the vessel's checkpoint when
+       the leg is designed. Rejected: a destination enum, which every
+       static reader of a leg's place (the class checks, the planner's
+       rules, the window lanes) would have had to resolve through the
+       plan. A design-refused re-plan is applied by the static
+       resolution and not by the design; where they disagree, the
+       static checks may warn wrongly, the design is right.
+     - `Meetings::new` refuses: a ship not in the plan, the ship itself,
+       a wait or a step the ship has not, a vessel in a low orbit, and
+       meetings that wait on each other (a depth-first search over
+       (ship, through-step) nodes, where a step's leg waits on the
+       vessel's design through the leg met). A start is a place.
+     - The planner: `Planner::meets` names the next leg's vessel;
+       `Planner::meet(Result<&Checkpoint, String>)` designs that step
+       (`step` asserts there is none). The vessel's `Here::Station`
+       orbit is the arrival (the same `Arc`, so both ships extend one
+       orbit) and the ship's own after it; its `Here::Body`/`Surface`
+       the leg's place; `Here::Low` fails the step. The window's
+       opening moves so the leg arrives no earlier than the vessel's
+       orbit begins (the orbit is built from the vessel's own window
+       opening less the margin; its leg's duration does not move it);
+       the ship then carries the vessel's place as its label.
+     - The engine: `designs::Meet` resolves a meeting to the vessel's
+       design key after the leg met and its checkpoint, or why it is
+       not reached (a failed step, a plan that ends before it), or
+       `None` while not designed that far. The step's key hashes the
+       vessel's key (or the failure text). The game keeps a `Fleet`
+       (each ship's standing steps, design steps and whether its walk
+       ended) behind a mutex, published on every change; a background
+       walk that meets a vessel not there yet ends with what it saw of
+       the vessel, and the game walks the ship again when the vessel's
+       design changes (at once, if it changed in between). A ship
+       whose inputs did not change is still walked again when a ship
+       it meets is (its meeting's key is the vessel's); the walk finds
+       the rest in the cache.
+     - Career refuses a re-plan from a step at or before a leg another
+       ship's standing plan meets its ship after. The log refuses the
+       same where the meeting was made by an earlier re-plan; one in a
+       ship's first steps the log does not date (ships are not ordered
+       among re-plans), so a log reads every meeting against the plan
+       as it stands at its end, which career's refusal keeps equal to
+       the plan as it stood when the meeting was made.
+   - Built (2026-10-19): `Meeting`, `Meetings`, `Planner::meets`/`meet`
+     (`orbit::mission`); `Met`/`Meet`, the keys and the walk's waits
+     (`sim::designs`); the fleet, the waits' wake-ups, `reshaped`'s
+     transitive re-walks and the re-plan refusal (`sim::game`); the
+     log's resolution and ordering rule (`sim::log`); the sandbox's
+     duration sweep given the vessel met (`sandbox::plan`). Tests:
+     `crates/orbit/tests/meeting.rs` (a tug meets a depot at the NRHO:
+     its stay is on the depot's orbit to the bit, it leaves from it;
+     a vessel not there, or in a low orbit, fails the step) and six in
+     `crates/sim/tests/game.rs` (the walk waits and arrives on the
+     orbit, on 1 and 24 threads alike, and the log reads back; an edit
+     of the depot after the met leg designs nothing of the tug, one
+     before it designs the tug from its meeting, an undo nothing; a
+     depot that never gets there fails the tug's step with why; a
+     depot met where it starts; the log's refusals, each; career's
+     refusal).
+   - Measured (2026-10-19): the tug's leg to the depot costs 3,512.5
+     m/s against 3,508.3 to the NRHO on an orbit of its own, and its
+     leg home 618.7 against 509.7, leaving at the end of its
+     revolution-long window where the tug alone left 1.6 days in: the
+     meeting fixes the phase, and the phase picks the departures the
+     window offers. The tug's stay is on the depot's orbit to the bit,
+     and the same on 1 thread as on 24. A meeting's key: an edit of the
+     depot's leg home designs two steps of the depot and none of the
+     tug; the depot a day later designs its four and the tug's three
+     from the meeting. The planner's meeting test designs in 22 s; the
+     game's three slow ones (the two-ship plan designed four times,
+     and the start-meeting plan once) in 89 s. The full workspace
+     suite: 313 passed and two failed, both class-warning tests, a
+     freshly designed ship having lost its breaches to `reshaped`'s
+     new order (fixed: it stands again after its design); the game's
+     21 tests then pass in 118 s.
+   - Open: the sandbox's editor lists no vessels yet (part 7); whether
+     the vessel is there is the loop's (part 5); a meeting's static
+     place and its design can disagree where a design-refused re-plan
+     changed the vessel's leg (above).
 4. **Manifests in the log** (`orbit::mission::Go`, read by
    `sim::ships`).
    - Written on the leg that arrives at a stop, as the start writes its

@@ -322,15 +322,34 @@ impl Loaded {
         };
         let id = self.next_sweep;
         self.next_sweep += 1;
-        self.sweeps.insert(
-            (s, step),
-            Sweep {
-                id,
-                inputs: self.game.ships()[s].inputs(),
-                durations: durations.clone(),
-                options: None,
+        let sweep = Sweep {
+            id,
+            inputs: self.game.ships()[s].inputs(),
+            durations: durations.clone(),
+            options: None,
+        };
+        // A leg that meets a vessel is designed where the vessel is
+        // (M1b.md, step 3 plan, part 3), as the designs stand.
+        let met = match &ship.steps[step] {
+            Step::Go(go) => match go.to.meeting.as_ref().map(|m| self.game.met(m)) {
+                None => None,
+                Some(Some(met)) => Some(met.map(|(_, c)| c)),
+                Some(None) => {
+                    self.sweeps.insert(
+                        (s, step),
+                        Sweep {
+                            options: Some(
+                                Err("the vessel met is not designed that far yet".into()),
+                            ),
+                            ..sweep
+                        },
+                    );
+                    return;
+                }
             },
-        );
+            Step::Wait(_) => unreachable!("checked above"),
+        };
+        self.sweeps.insert((s, step), sweep);
         let sender = self.sender.clone();
         self.pool.spawn(move || {
             let world = world();
@@ -344,8 +363,14 @@ impl Loaded {
                     });
                 }
                 let mut planner = Planner::resume(world, &ship, from.clone());
+                let mut met = met.clone();
                 loop {
-                    let items = planner.step().ok_or("the leg was not reached")?;
+                    let items = match (planner.meets(), met.take()) {
+                        (Some(_), Some(met)) => planner.meet(met.as_ref().map_err(Clone::clone)),
+                        (Some(_), None) => return Err("the leg meets a vessel not designed".into()),
+                        (None, _) => planner.step(),
+                    }
+                    .ok_or("the leg was not reached")?;
                     // The leg itself, not the stay before it.
                     let leg = |i: &&Item| {
                         i.step == step && matches!(i.kind, ItemKind::Leg | ItemKind::Failed(_))

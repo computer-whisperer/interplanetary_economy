@@ -4,7 +4,9 @@
 //! the last arrived, and yields what the ship does as [`Item`]s: legs
 //! flown, stays between them, and events priced by rules (landing, ascent,
 //! aerocapture), with their paths for drawing (`track`: sampled, or a
-//! stay's made when asked).
+//! stay's made when asked). A leg may go to where another ship of the plan
+//! is after one of its legs ([`Meeting`], M1b.md, step 3 plan, part 3): the
+//! planner is then given where that vessel is ([`Planner::meet`]).
 
 use crate::ephem::{BodyId, Ephemeris};
 use crate::families::Catalog;
@@ -22,7 +24,7 @@ use crate::track::Track;
 use glam::DVec3;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -113,11 +115,18 @@ pub struct Ship {
 /// A place as a plan names it.
 #[derive(Clone, Debug)]
 pub struct Spot {
-    /// Its id, or a description of a place written out.
+    /// Its id, or a description of a place written out; for a meeting,
+    /// the vessel and its leg ("ship 3, leg 2").
     pub label: String,
+    /// The place; for a meeting, where the vessel is after the leg named,
+    /// as the plan stands ([`Meetings`]: resolved when a plan is read and
+    /// whenever a log changes, and taken from the vessel's design when
+    /// the leg is designed).
     pub kind: PlaceKind,
     /// As the plan wrote it: an id, or a table.
     pub source: toml::Value,
+    /// The vessel met there, if the leg meets one.
+    pub meeting: Option<Meeting>,
 }
 
 impl Spot {
@@ -128,10 +137,39 @@ impl Spot {
             label: id.to_string(),
             kind: p.kind.clone(),
             source: toml::Value::String(id.to_string()),
+            meeting: None,
         })
     }
 }
 
+/// A vessel of the plan, met where it is after one of its legs: `to = {
+/// ship = 3, leg = 2 }` (M1b.md, step 3 plan, part 3). The leg is counted
+/// as the ship's steps are, from 0, waits among them; without one, the
+/// vessel is met where it starts. The leg arrives on the vessel's orbit
+/// at its phase, and the ship then stays on that orbit and leaves from
+/// it; a vessel at a body or on a surface is met by going there. The leg
+/// is named so that the stop met is fixed by the log, not by when the
+/// ship gets there: a re-plan of the vessel after that leg changes
+/// nothing of its visitors' designs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Meeting {
+    pub ship: u64,
+    pub leg: Option<usize>,
+}
+
+impl Meeting {
+    /// "ship 3, leg 2"; "ship 3" at its start.
+    pub fn label(&self) -> String {
+        match self.leg {
+            Some(leg) => format!("ship {}, leg {leg}", self.ship),
+            None => format!("ship {}", self.ship),
+        }
+    }
+}
+
+/// A plan has dozens of steps, so a wait's few bytes beside a leg's few
+/// hundred are not worth a box every reader would look through.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Step {
     Go(Go),
@@ -278,6 +316,9 @@ impl Plan {
                 let name = ship.name;
                 let fail = |e: String| format!("ship {name:?}: {e}");
                 let start = spot(&ship.start.at, eph, places).map_err(fail)?;
+                if start.meeting.is_some() {
+                    return Err(fail("a ship starts at a place, not at a vessel".into()));
+                }
                 let epoch = ship.start.epoch.parse::<Epoch>().map_err(fail)?;
                 let steps = steps(ship.leg, eph, places)
                     .map_err(|(i, e)| format!("ship {name:?}, leg {}: {e}", i + 1))?;
@@ -308,14 +349,27 @@ impl Plan {
             .skip_while(|l| l.trim().is_empty())
             .map(|l| format!("{}\n", l.trim_end_matches('\r')))
             .collect();
-        Ok(Plan {
+        let mut plan = Plan {
             name: file.name,
             ships,
             header,
             game: file.game,
             replans: file.replan,
             checks: file.check,
-        })
+        };
+        plan.resolve()?;
+        Ok(plan)
+    }
+
+    /// Resolves the plan's meetings against its ships as they are
+    /// ([`Meetings`]), or says why they cannot be designed.
+    pub fn resolve(&mut self) -> Result<(), String> {
+        let standing = self.ships.clone();
+        let meetings = Meetings::new(&standing)?;
+        for ship in &mut self.ships {
+            meetings.resolve(&mut ship.steps);
+        }
+        Ok(())
     }
 
     /// An id no ship of the plan has.
@@ -474,7 +528,8 @@ pub fn when(t: Epoch) -> String {
     )
 }
 
-/// A place by id, or written out as a table.
+/// A place by id, or written out as a table; or a vessel met, as a table
+/// with `ship` (and `leg`).
 fn spot(v: &toml::Value, eph: &Ephemeris, places: &Places) -> Result<Spot, String> {
     match v {
         toml::Value::String(id) => places
@@ -483,17 +538,189 @@ fn spot(v: &toml::Value, eph: &Ephemeris, places: &Places) -> Result<Spot, Strin
                 label: id.clone(),
                 kind: p.kind.clone(),
                 source: v.clone(),
+                meeting: None,
             })
             .ok_or_else(|| format!("no place {id:?}")),
+        toml::Value::Table(t) if t.contains_key("ship") => {
+            let meeting = meeting(t)?;
+            Ok(Spot {
+                label: meeting.label(),
+                // Where the vessel is: resolved against the plan once
+                // every ship is read (`Plan::resolve`).
+                kind: PlaceKind::Body(eph.sun()),
+                source: v.clone(),
+                meeting: Some(meeting),
+            })
+        }
         toml::Value::Table(t) => {
             let kind = PlaceKind::from_table(t, eph, &[])?;
             Ok(Spot {
                 label: describe(eph, &kind),
                 kind,
                 source: v.clone(),
+                meeting: None,
             })
         }
         _ => Err("a place is an id or a table".into()),
+    }
+}
+
+/// A meeting written as a table: `ship`, and `leg` or none.
+fn meeting(t: &toml::Table) -> Result<Meeting, String> {
+    if let Some(k) = t.keys().find(|k| !["ship", "leg"].contains(&k.as_str())) {
+        return Err(format!("unknown key {k:?} for a meeting"));
+    }
+    let whole = |key: &str| -> Result<Option<u64>, String> {
+        t.get(key)
+            .map(|v| {
+                v.as_integer()
+                    .filter(|&i| i >= 0)
+                    .map(|i| i as u64)
+                    .ok_or_else(|| format!("{key} must be a whole number"))
+            })
+            .transpose()
+    };
+    Ok(Meeting {
+        ship: whole("ship")?.expect("the table has `ship`"),
+        leg: whole("leg")?.map(|l| l as usize),
+    })
+}
+
+/// The meetings among `standing` ships' steps (the plan as it stands:
+/// each ship's steps with its re-plans): where each vessel met is after
+/// the leg named, and that the meetings can be designed (M1b.md, step 3
+/// plan, part 3).
+pub struct Meetings<'a> {
+    standing: &'a [Ship],
+}
+
+impl<'a> Meetings<'a> {
+    /// Why the plan's meetings cannot be designed, if they cannot: one
+    /// names no ship of the plan, or the ship itself, or a step the ship
+    /// has not, or a wait; a vessel is met in a low orbit (the vessel
+    /// would fix the plane and the phase: M1b.md, Scope); or meetings
+    /// wait on each other.
+    pub fn new(standing: &'a [Ship]) -> Result<Meetings<'a>, String> {
+        let meetings = Meetings { standing };
+        let mut acyclic = HashSet::new();
+        for ship in standing {
+            for (i, step) in ship.steps.iter().enumerate() {
+                let Step::Go(go) = step else { continue };
+                let Some(m) = &go.to.meeting else { continue };
+                let fail = |e: String| format!("ship {:?}, step {i}: {e}", ship.name);
+                if m.ship == ship.id {
+                    return Err(fail("a ship does not meet itself".into()));
+                }
+                let kind = meetings.place(m).map_err(fail)?;
+                if matches!(kind, PlaceKind::Low(_)) {
+                    return Err(fail(format!(
+                        "meeting {} in a low orbit is not designed: the vessel would fix the \
+                         plane and the phase (M1b.md, Scope)",
+                        m.label()
+                    )));
+                }
+                meetings
+                    .waits(ship.id, i, &mut Vec::new(), &mut acyclic)
+                    .map_err(fail)?;
+            }
+        }
+        Ok(meetings)
+    }
+
+    fn ship(&self, id: u64) -> Result<&'a Ship, String> {
+        self.standing
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| format!("no ship has id {id}"))
+    }
+
+    /// Where the vessel `m` names is after the leg named, as the plan
+    /// stands (through meetings of its own).
+    pub fn place(&self, m: &Meeting) -> Result<PlaceKind, String> {
+        let mut seen = Vec::new();
+        let mut m = *m;
+        loop {
+            if seen.contains(&m) {
+                return Err("meetings wait on each other".into());
+            }
+            seen.push(m);
+            let ship = self.ship(m.ship)?;
+            let Some(leg) = m.leg else {
+                return Ok(ship.start.kind.clone());
+            };
+            match ship.steps.get(leg) {
+                None => {
+                    return Err(format!(
+                        "ship {} has {} steps, no leg {leg}",
+                        m.ship,
+                        ship.steps.len()
+                    ));
+                }
+                Some(Step::Wait(_)) => {
+                    return Err(format!(
+                        "step {leg} of ship {} is a wait, not a leg",
+                        m.ship
+                    ));
+                }
+                Some(Step::Go(go)) => match &go.to.meeting {
+                    Some(next) => m = *next,
+                    None => return Ok(go.to.kind.clone()),
+                },
+            }
+        }
+    }
+
+    /// Whether the design of ship `ship` through step `through` waits,
+    /// through meetings, on itself: a meeting's step waits on the vessel's
+    /// design through the leg met (`stack`: the designs being waited on;
+    /// `acyclic`: those found to wait on nothing of themselves).
+    fn waits(
+        &self,
+        ship: u64,
+        through: usize,
+        stack: &mut Vec<(u64, usize)>,
+        acyclic: &mut HashSet<(u64, usize)>,
+    ) -> Result<(), String> {
+        if acyclic.contains(&(ship, through)) {
+            return Ok(());
+        }
+        if let Some(k) = stack.iter().position(|&(s, t)| s == ship && t <= through) {
+            let chain: Vec<String> = stack[k..]
+                .iter()
+                .chain(std::iter::once(&(ship, through)))
+                .map(|&(s, t)| format!("ship {s} through step {t}"))
+                .collect();
+            return Err(format!(
+                "meetings wait on each other: {}",
+                chain.join(", which waits on ")
+            ));
+        }
+        stack.push((ship, through));
+        for step in self.ship(ship)?.steps.iter().take(through + 1) {
+            if let Step::Go(go) = step
+                && let Some(m) = &go.to.meeting
+                && let Some(leg) = m.leg
+            {
+                self.waits(m.ship, leg, stack, acyclic)?;
+            }
+        }
+        stack.pop();
+        acyclic.insert((ship, through));
+        Ok(())
+    }
+
+    /// Sets each meeting among `steps` to the place it resolves to, where
+    /// it does (a step no longer standing may name a leg its vessel no
+    /// longer has: it is left as it was).
+    pub fn resolve(&self, steps: &mut [Step]) {
+        for step in steps {
+            if let Step::Go(go) = step
+                && let Some(m) = &go.to.meeting
+                && let Ok(kind) = self.place(m)
+            {
+                go.to.kind = kind;
+            }
+        }
     }
 }
 
@@ -978,6 +1205,9 @@ pub struct Planner<'w> {
     /// No step leaves before this (career's now when it was re-planned).
     not_before: Epoch,
     stopped: bool,
+    /// The vessel the leg being designed meets: where it is after the leg
+    /// named, its checkpoint (M1b.md, step 3 plan, part 3).
+    met: Option<Checkpoint>,
 }
 
 impl<'w> Planner<'w> {
@@ -994,6 +1224,7 @@ impl<'w> Planner<'w> {
             ready: ship.epoch,
             not_before: Epoch(f64::NEG_INFINITY),
             stopped: false,
+            met: None,
         };
         p.here = match &ship.start.kind {
             PlaceKind::Low(orbit) => Here::Low {
@@ -1052,12 +1283,46 @@ impl<'w> Planner<'w> {
             ready: checkpoint.ready,
             not_before: checkpoint.not_before,
             stopped: checkpoint.stopped,
+            met: None,
         }
     }
 
+    /// The vessel the next step's leg meets, if it meets one: that step is
+    /// designed by [`Planner::meet`].
+    pub fn meets(&self) -> Option<&Meeting> {
+        self.ship.steps[self.next.min(self.ship.steps.len())..]
+            .iter()
+            .find_map(|s| match s {
+                Step::Go(go) => Some(go.to.meeting.as_ref()),
+                Step::Wait(_) => None,
+            })
+            .flatten()
+    }
+
     /// The next items: a stay and the leg or event after it, or a failure
-    /// (after which there are none). `None` when the plan is done.
+    /// (after which there are none). `None` when the plan is done. A step
+    /// whose leg meets a vessel ([`Planner::meets`]) is designed by
+    /// [`Planner::meet`].
     pub fn step(&mut self) -> Option<Vec<Item>> {
+        assert!(
+            self.meets().is_none(),
+            "a leg that meets a vessel is designed with `meet`"
+        );
+        self.advance(None)
+    }
+
+    /// The next items, where the next step's leg meets a vessel
+    /// ([`Planner::meets`]): `met` is where the vessel is after the leg
+    /// named, its checkpoint, or why it is not there (the step then
+    /// fails). The leg arrives on the vessel's orbit, and the ship then
+    /// stays on it and leaves from it; a vessel at a body or on a surface
+    /// is met by going there. Meeting a vessel in a low orbit is not
+    /// designed (M1b.md, Scope).
+    pub fn meet(&mut self, met: Result<&Checkpoint, String>) -> Option<Vec<Item>> {
+        self.advance(Some(met))
+    }
+
+    fn advance(&mut self, met: Option<Result<&Checkpoint, String>>) -> Option<Vec<Item>> {
         while !self.stopped {
             let i = self.next;
             self.next += 1;
@@ -1067,7 +1332,9 @@ impl<'w> Planner<'w> {
                 Step::Go(go) => {
                     let clock = Instant::now();
                     self.ready = Epoch(self.ready.0.max(self.not_before.0));
-                    let gone = self.go(&go);
+                    let gone = self
+                        .resolve(&go, met)
+                        .and_then(|resolved| self.go(&resolved));
                     return Some(match gone {
                         Ok(mut items) => {
                             if let Some(i) = items.iter_mut().rfind(|i| i.kind != ItemKind::Capture)
@@ -1132,6 +1399,30 @@ impl<'w> Planner<'w> {
             }
             None => Ok((self.ready, self.ready.plus_days(default_days))),
         }
+    }
+
+    /// `go` with its destination resolved: as it is, or, where it meets a
+    /// vessel, with the vessel's place after the leg named (`met`), whose
+    /// checkpoint is kept for the leg's design.
+    fn resolve(&mut self, go: &Go, met: Option<Result<&Checkpoint, String>>) -> Result<Go, String> {
+        self.met = None;
+        let Some(meeting) = &go.to.meeting else {
+            return Ok(go.clone());
+        };
+        let met = met.expect("a leg that meets a vessel is designed with `meet`");
+        let c = met.map_err(|why| format!("{}: {why}", meeting.label()))?;
+        if let Here::Low { .. } = c.here {
+            return Err(format!(
+                "meeting {} in a low orbit ({}) is not designed: the vessel would fix the plane \
+                 and the phase (M1b.md, Scope)",
+                meeting.label(),
+                c.label
+            ));
+        }
+        self.met = Some(c.clone());
+        let mut go = go.clone();
+        go.to.kind = c.place.clone();
+        Ok(go)
     }
 
     fn go(&mut self, go: &Go) -> Result<Vec<Item>, String> {
@@ -1228,12 +1519,17 @@ impl<'w> Planner<'w> {
             },
             _ => Here::Surface(body),
         };
-        self.arrive(&go.to.label, end);
+        self.arrive(go, end);
         Ok(items)
     }
 
-    fn arrive(&mut self, label: &str, at: Epoch) {
-        self.label = label.to_string();
+    /// The ship is where `go` went, from `at`: at its place, or where the
+    /// vessel it met is.
+    fn arrive(&mut self, go: &Go, at: Epoch) {
+        self.label = match self.met.take() {
+            Some(c) => c.label,
+            None => go.to.label.clone(),
+        };
         self.since = at;
         self.ready = at;
     }
@@ -1253,7 +1549,36 @@ impl<'w> Planner<'w> {
             _ if Some(system) == eph.lookup("earth") => EARTH_WINDOW_DAYS,
             _ => OTHER_WINDOW_DAYS,
         };
-        let (open, close) = self.window(go, default_days)?;
+        let (mut open, mut close) = self.window(go, default_days)?;
+        // Meeting a vessel on its orbit, the leg arrives no earlier than
+        // the orbit begins (built from the vessel's own arrival window);
+        // whether the vessel is there then is the loop's to tell.
+        let mut waited = None;
+        if let Some(Here::Station(o)) = self.met.as_ref().map(|c| &c.here) {
+            let there = o.epoch().plus_days(station::MARGIN_DAYS);
+            let shortest = offered.iter().copied().fold(f64::INFINITY, f64::min);
+            let earliest = there.plus_days(-shortest);
+            if open.0 < earliest.0 {
+                if go.window.is_some() && close.0 < earliest.0 {
+                    return Err(format!(
+                        "{} is on its orbit from {}, after the window closes ({})",
+                        go.to.label,
+                        when(there),
+                        when(close)
+                    ));
+                }
+                let length = close.0 - open.0;
+                open = earliest;
+                if go.window.is_none() {
+                    close = open.plus_days(length);
+                }
+                waited = Some(format!(
+                    "waits for {}, on its orbit from {}",
+                    go.to.label,
+                    when(there)
+                ));
+            }
+        }
         if close.0 <= open.0 {
             return Err("a leg within a system needs a window longer than an instant".into());
         }
@@ -1290,12 +1615,15 @@ impl<'w> Planner<'w> {
                 None => Epoch(open.plus_days(limit / DAY).0.max(close.0)),
             });
         // A station reached gets the ship an orbit of its own, built over
-        // the arrival and extended as the steps after need it. A station
-        // orbit left or reached is designed against a window of it.
+        // the arrival and extended as the steps after need it; a vessel
+        // met on its orbit puts the ship on that orbit. A station orbit
+        // left or reached is designed against a window of it.
         let last = windows.last().unwrap().1;
         let latest = Epoch(wait.map_or(last.0, |w| w.0.max(last.0))).plus_days(longest);
-        let arriving = match &go.to.kind {
-            PlaceKind::Station { family, period } => {
+        let arriving = match (&go.to.kind, self.met.as_ref().map(|c| &c.here)) {
+            (_, Some(Here::Station(o))) => Some(o.clone()),
+            (_, Some(_)) => None,
+            (PlaceKind::Station { family, period }, None) => {
                 let m = world
                     .cat
                     .nearest(family, *period)
@@ -1390,7 +1718,7 @@ impl<'w> Planner<'w> {
                     when(o)
                 )
             });
-            let note = [retried, own_note, go.note.clone()]
+            let note = [retried, waited.clone(), own_note, go.note.clone()]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
@@ -1646,7 +1974,7 @@ impl<'w> Planner<'w> {
             (PlaceKind::Surface(b), None) => Here::Surface(*b),
             (PlaceKind::Station { .. }, None) => unreachable!("stations are orbits"),
         };
-        self.arrive(&go.to.label, end);
+        self.arrive(go, end);
         Ok(items)
     }
 

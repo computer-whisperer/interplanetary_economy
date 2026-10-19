@@ -4,8 +4,9 @@
 //! entries; a plan without them is a sandbox log, so the plans in
 //! `data/missions/` read as they are.
 
+use crate::designs::apply;
 use orbit::ephem::Ephemeris;
-use orbit::mission::{Plan, Step, legs_value, parse_legs};
+use orbit::mission::{Meeting, Meetings, Plan, Step, legs_value, parse_legs};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use serde::{Deserialize, Serialize};
@@ -255,7 +256,7 @@ impl Log {
                 }
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let log = Log {
+        let mut log = Log {
             plan,
             setup,
             replans,
@@ -267,8 +268,15 @@ impl Log {
 
     /// Why the log is not a game, if it is not: career has a now, and its
     /// re-plans were made by then; re-plans are in time order, each of a
-    /// ship the log has, from one of the steps it had then.
-    pub fn check(&self) -> Result<(), String> {
+    /// ship the log has, from one of the steps it had then; and its
+    /// meetings can be designed (M1b.md, step 3 plan, part 3:
+    /// [`Meetings`]), as the plan stands with its re-plans, which is how
+    /// they are resolved here, into each meeting's place. A re-plan does
+    /// not replace a leg another ship's plan meets its ship after, where
+    /// that meeting was made by an earlier re-plan; one in a ship's first
+    /// steps the log does not date (the game refuses both when they are
+    /// made).
+    pub fn check(&mut self) -> Result<(), String> {
         match (self.setup.mode, self.setup.now) {
             (Mode::Career, None) => return Err("[game]: a career game has a now".into()),
             (Mode::Sandbox, Some(_)) => return Err("[game]: now is career's".into()),
@@ -309,6 +317,44 @@ impl Log {
             if !steps.iter().any(|(id, _)| *id == ship) {
                 return Err(format!("check {}: no ship has id {ship}", i + 1));
             }
+        }
+        // The plan as it stands, and the meetings re-plans made that still
+        // stand: (ship, its step, the meeting).
+        let mut standing = self.plan.ships.clone();
+        let mut made: Vec<(u64, usize, Meeting)> = Vec::new();
+        for (i, r) in self.replans.iter().enumerate() {
+            if let Some((ship, step, m)) = made
+                .iter()
+                .find(|(_, _, m)| m.ship == r.ship && m.leg.is_some_and(|l| l >= r.from))
+            {
+                return Err(format!(
+                    "replan {}: replaces leg {} of ship {}, which ship {ship} meets it after \
+                     (step {step} of its plan)",
+                    i + 1,
+                    m.leg.unwrap(),
+                    r.ship
+                ));
+            }
+            made.retain(|(ship, step, _)| *ship != r.ship || *step < r.from);
+            for (k, step) in r.steps.iter().enumerate() {
+                if let Step::Go(go) = step
+                    && let Some(m) = go.to.meeting
+                {
+                    made.push((r.ship, r.from + k, m));
+                }
+            }
+            let s = standing
+                .iter_mut()
+                .find(|s| s.id == r.ship)
+                .expect("a re-plan's ship is in the plan (checked above)");
+            apply(&mut s.steps, r);
+        }
+        let meetings = Meetings::new(&standing)?;
+        for ship in &mut self.plan.ships {
+            meetings.resolve(&mut ship.steps);
+        }
+        for r in &mut self.replans {
+            meetings.resolve(&mut r.steps);
         }
         Ok(())
     }

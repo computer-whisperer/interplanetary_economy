@@ -1,14 +1,18 @@
 //! Designs by their inputs (M1b.md, step 1 plan, part 4). Each step of a
 //! ship's design is keyed by a hash of the key before it and what the
 //! step reads (`mission::reads`), so a design is made once for its inputs
-//! and found again by an edit after it, an undo, or a re-run. A ship is
-//! designed by walking its steps ([`walk`]): each step is taken from the
-//! cache, or designed; career's re-plans take effect where the ship is
-//! when they were made.
+//! and found again by an edit after it, an undo, or a re-run. A step whose
+//! leg meets a vessel adds the key of the vessel's design after the leg
+//! met (step 3 plan, part 3), so an edit of the vessel at or before that
+//! leg designs its visitors again from their meetings, and one after it
+//! nothing of theirs. A ship is designed by walking its steps ([`walk`]):
+//! each step is taken from the cache, or designed, and a walk waits for
+//! the vessel a step meets to be designed that far; career's re-plans
+//! take effect where the ship is when they were made.
 
 use crate::hash::Fixed;
 use crate::log::Replan;
-use orbit::mission::{Checkpoint, Item, ItemKind, Planner, Ship, Step, World, reads};
+use orbit::mission::{Checkpoint, Item, ItemKind, Meeting, Planner, Ship, Step, World, reads};
 use orbit::time::Epoch;
 use std::collections::HashMap;
 use std::hash::Hasher;
@@ -40,15 +44,43 @@ pub fn start_key(ship: &Ship) -> Key {
     h.finish()
 }
 
+/// Where a vessel is after the leg a meeting names, for the step that
+/// meets it: the key of the vessel's design there and its checkpoint; or
+/// why it is not there (the step fails).
+pub type Met = Result<(Key, Checkpoint), String>;
+
+/// Finds where a vessel is after the leg a meeting names ([`Met`]);
+/// `None` while the vessel's design has not got there.
+pub type Meet<'a> = dyn Fn(&Meeting) -> Option<Met> + 'a;
+
 /// The key of the step from the checkpoint keyed `at`, which goes on
-/// from step `next` of `ship`.
-pub fn step_key(at: Key, ship: &Ship, next: usize) -> Key {
+/// from step `next` of `ship`; `met`, where its leg meets a vessel.
+pub fn step_key(at: Key, ship: &Ship, next: usize, met: Option<&Met>) -> Key {
     let mut h = Fixed::default();
     h.str("step").u64(at).u64(next as u64);
     for s in &ship.steps[next.min(ship.steps.len())..reads(ship, next)] {
         h.debug(s);
     }
+    match met {
+        None => {}
+        Some(Ok((key, _))) => {
+            h.str("meets").u64(*key);
+        }
+        Some(Err(why)) => {
+            h.str("misses").str(why);
+        }
+    }
     h.finish()
+}
+
+/// The vessel the step from `next` of `ship` meets, if its leg meets one.
+fn meeting(ship: &Ship, next: usize) -> Option<&Meeting> {
+    ship.steps[next.min(ship.steps.len())..reads(ship, next)]
+        .iter()
+        .find_map(|s| match s {
+            Step::Go(go) => go.to.meeting.as_ref(),
+            Step::Wait(_) => None,
+        })
 }
 
 /// The key of the checkpoint keyed `at` with the ship staying there until
@@ -123,8 +155,10 @@ pub type Fetch<'a> = dyn FnMut(Key, &dyn Fn() -> Designed) -> Option<Arc<Designe
 
 /// Walks `ship`'s steps from its start, with its re-plans (in the order
 /// they were made), taking each step's design from `fetch(key, step)`,
-/// which finds it or designs it (`None`: not to be had now). Each step of
-/// the ship's design as it stands goes to `out`, in order, with its key.
+/// which finds it or designs it (`None`: not to be had now), and where a
+/// step's leg meets a vessel, where the vessel is from `meet` (`None`:
+/// not designed that far yet; the walk waits). Each step of the ship's
+/// design as it stands goes to `out`, in order, with its key.
 ///
 /// A re-plan takes effect at the checkpoint before the step that holds
 /// its first step replaced: there, if the ship arrived after it was made;
@@ -136,6 +170,7 @@ pub fn walk(
     ship: &Ship,
     replans: &[&Replan],
     fetch: &mut Fetch,
+    meet: &Meet,
     out: &mut dyn FnMut(Key, &Arc<Designed>),
     refused: &mut dyn FnMut(usize, String),
 ) -> Ended {
@@ -182,8 +217,9 @@ pub fn walk(
             if c.since().0 < r.at.0 {
                 // The ship was here before the re-plan: it is staying if
                 // the step from here had not left by then.
-                let old = step_key(key, &ship, c.next());
-                let Some(designed) = fetch(old, &step(world, &ship, &c)) else {
+                let Some((old, designed)) = keyed(world, &ship, &c, key, meet)
+                    .and_then(|(k, design)| Some((k, fetch(k, &design)?)))
+                else {
                     return Ended::Waiting;
                 };
                 let stay = match &*designed {
@@ -217,8 +253,9 @@ pub fn walk(
             apply(&mut edited.steps, r);
             (ship, c, key) = (edited, at, at_key);
         }
-        let k = step_key(key, &ship, c.next());
-        let Some(designed) = fetch(k, &step(world, &ship, &c)) else {
+        let Some((k, designed)) = keyed(world, &ship, &c, key, meet)
+            .and_then(|(k, design)| Some((k, fetch(k, &design)?)))
+        else {
             return Ended::Waiting;
         };
         out(k, &designed);
@@ -236,16 +273,34 @@ pub fn walk(
     }
 }
 
-/// The step from `c` of `ship`, designed.
-fn step<'a>(world: &'a World, ship: &'a Ship, c: &'a Checkpoint) -> impl Fn() -> Designed + 'a {
-    move || {
+/// The key of the step from `c` of `ship` (`c` keyed `at`), and its
+/// design; `None` while the vessel its leg meets is not designed that far
+/// (`meet`).
+fn keyed<'a>(
+    world: &'a World,
+    ship: &'a Ship,
+    c: &'a Checkpoint,
+    at: Key,
+    meet: &Meet,
+) -> Option<(Key, impl Fn() -> Designed + 'a)> {
+    let met = match meeting(ship, c.next()) {
+        None => None,
+        Some(m) => Some(meet(m)?),
+    };
+    let key = step_key(at, ship, c.next(), met.as_ref());
+    let design = move || {
         let mut planner = Planner::resume(world, ship, c.clone());
-        match planner.step() {
+        let items = match &met {
+            None => planner.step(),
+            Some(met) => planner.meet(met.as_ref().map(|(_, c)| c).map_err(Clone::clone)),
+        };
+        match items {
             Some(items) => Designed::Step {
                 items,
                 after: planner.checkpoint(),
             },
             None => Designed::End,
         }
-    }
+    };
+    Some((key, design))
 }

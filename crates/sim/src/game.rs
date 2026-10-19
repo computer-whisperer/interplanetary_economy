@@ -3,9 +3,12 @@
 //! them (`state`), and its mode's policies. Ships are designed in the
 //! background, on the host's pool, by walks (`designs::walk`) that take
 //! what the cache has and design the rest; an edit or an undo walks
-//! again, and finds what it did not change in the cache.
+//! again, and finds what it did not change in the cache. A ship whose leg
+//! meets a vessel (step 3 plan, part 3) reads where the vessel is from
+//! the fleet, the designs as they stand, and its walk waits for the
+//! vessel's to get there.
 
-use crate::designs::{Cache, Designed, Ended, Key, apply, walk};
+use crate::designs::{Cache, Designed, Ended, Key, Met, apply, walk};
 use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, minute};
 use crate::params::{Draw, Economy, EconomyFile};
@@ -13,12 +16,13 @@ use crate::report;
 use crate::ships::{self, Breach};
 use crate::state::{self, Course, Dry, ShipState, State};
 use orbit::mission::{
-    Checkpoint, Item, ItemKind, MarkerKind, Plan, Ship, Step, World, resume_point, when,
+    Checkpoint, Item, ItemKind, MarkerKind, Meeting, Plan, Ship, Step, World, resume_point, when,
 };
 use orbit::places::Places;
 use orbit::routes::RouteGraph;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
-use std::collections::{HashSet, VecDeque};
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -56,6 +60,9 @@ pub struct ShipDesign {
     pub revision: u64,
     /// Its design's steps as they stand, by key.
     steps: Vec<(Key, Arc<Designed>)>,
+    /// The vessel its walk stopped at a meeting of, not designed that far
+    /// yet: the walk goes on when that vessel's design does.
+    waiting: Option<u64>,
     /// A hash of what it is designed from: the log's ship (its name, class
     /// and load aside) and its re-plans.
     inputs: Key,
@@ -105,8 +112,92 @@ enum Event {
     /// A re-plan that could not take effect: its place among the ship's
     /// re-plans, and why.
     Refused(usize, String),
+    /// The walk stopped at a meeting of `vessel`, whose design it saw as
+    /// `seen`, not there yet.
+    Waiting {
+        vessel: u64,
+        seen: Seen,
+    },
     Ended(Ended),
     Panicked(String),
+}
+
+/// What a walk saw of a vessel: how many steps of its design, and whether
+/// its walk had ended.
+type Seen = (usize, bool);
+
+/// The game's ships as their designs stand, for the legs that meet them
+/// (M1b.md, step 3 plan, part 3): shared with the walks in the background,
+/// which read where a vessel is after a leg from it.
+#[derive(Default)]
+struct Fleet {
+    by_id: HashMap<u64, Vessel>,
+}
+
+/// A ship as its design stands: its steps as they stand, its design's
+/// steps, and whether its walk has ended.
+struct Vessel {
+    steps: Vec<Step>,
+    designed: Vec<(Key, Arc<Designed>)>,
+    done: bool,
+}
+
+impl Fleet {
+    fn seen(&self, id: u64) -> Seen {
+        self.by_id
+            .get(&id)
+            .map_or((0, false), |v| (v.designed.len(), v.done))
+    }
+
+    /// Where the vessel `m` names is after the leg named ([`Met`]): the
+    /// design step that holds the leg, and its checkpoint; `None` while
+    /// the vessel's design has not got there.
+    fn met(&self, m: &Meeting) -> Option<Met> {
+        let label = format!("ship {}", m.ship);
+        let Some(v) = self.by_id.get(&m.ship) else {
+            return Some(Err(format!("no ship has id {}", m.ship)));
+        };
+        let Some(leg) = m.leg else {
+            return v.designed.first().map(|(key, d)| match &**d {
+                Designed::Start(Ok(c)) => Ok((*key, c.clone())),
+                Designed::Start(Err(why)) => Err(format!("{label} cannot start: {why}")),
+                _ => unreachable!("a design's first step is its start"),
+            });
+        };
+        match v.steps.get(leg) {
+            None => {
+                return Some(Err(format!(
+                    "{label} has {} steps, no leg {leg}",
+                    v.steps.len()
+                )));
+            }
+            Some(Step::Wait(_)) => {
+                return Some(Err(format!("step {leg} of {label} is a wait, not a leg")));
+            }
+            Some(Step::Go(_)) => {}
+        }
+        for (key, d) in &v.designed {
+            match &**d {
+                Designed::Start(Err(why)) => {
+                    return Some(Err(format!("{label} cannot start: {why}")));
+                }
+                Designed::Start(Ok(_)) => {}
+                Designed::Step { items, after } => {
+                    if let Some(ItemKind::Failed(why)) = items.last().map(|i| &i.kind) {
+                        return Some(Err(format!("{label} does not reach leg {leg}: {why}")));
+                    }
+                    if after.next() > leg {
+                        return Some(Ok((*key, after.clone())));
+                    }
+                }
+                Designed::End => {
+                    return Some(Err(format!("{label}'s plan ends before leg {leg}")));
+                }
+            }
+        }
+        v.done
+            .then(|| Err(format!("{label} is not designed to leg {leg}")))
+    }
 }
 
 pub struct Game {
@@ -124,6 +215,8 @@ pub struct Game {
     undo: Vec<Log>,
     ships: Vec<ShipDesign>,
     cache: Cache,
+    /// The ships as their designs stand, for meetings.
+    fleet: Arc<Mutex<Fleet>>,
     /// Keys of designs replaced, for undo.
     kept: VecDeque<Vec<Key>>,
     pool: Arc<rayon::ThreadPool>,
@@ -242,6 +335,7 @@ impl Game {
             undo: Vec::new(),
             ships: Vec::new(),
             cache: Cache::default(),
+            fleet: Arc::default(),
             kept: VecDeque::new(),
             pool,
             sender,
@@ -362,24 +456,64 @@ impl Game {
 
     /// After the log's ships changed: the plan as it stands, and each ship
     /// whose inputs changed designed again (from the cache where its steps
-    /// did not change); the others go on as they were.
+    /// did not change), and with it each ship that meets one designed
+    /// again (its meeting's key is the vessel's); the others go on as they
+    /// were.
     fn reshaped(&mut self) {
         let mut old: Vec<ShipDesign> = std::mem::take(&mut self.ships);
-        for k in 0..self.log.plan.ships.len() {
-            let inputs = self.inputs(k);
-            let ship = match old.iter().position(|s| s.inputs == inputs) {
-                Some(j) => {
-                    let mut kept = old.swap_remove(j);
-                    kept.name.clone_from(&self.log.plan.ships[k].name);
-                    kept
+        let n = self.log.plan.ships.len();
+        let mut kept: Vec<Option<ShipDesign>> = (0..n)
+            .map(|k| {
+                let inputs = self.inputs(k);
+                let j = old.iter().position(|s| s.inputs == inputs)?;
+                let mut kept = old.swap_remove(j);
+                kept.name.clone_from(&self.log.plan.ships[k].name);
+                Some(kept)
+            })
+            .collect();
+        // Those designed afresh: whose inputs changed, and those that meet
+        // one of them, through meetings.
+        let mut fresh: HashSet<u64> = (0..n)
+            .filter(|&k| kept[k].is_none())
+            .map(|k| self.log.plan.ships[k].id)
+            .collect();
+        loop {
+            let more: Vec<u64> = self
+                .log
+                .plan
+                .ships
+                .iter()
+                .filter(|s| !fresh.contains(&s.id) && self.meets_any(s, &fresh))
+                .map(|s| s.id)
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            fresh.extend(more);
+        }
+        for (k, kept) in kept.iter_mut().enumerate() {
+            let ship = match kept.take() {
+                Some(ship) if !fresh.contains(&ship.id) => ship,
+                Some(ship) => {
+                    old.push(ship);
+                    self.placeholder(k)
                 }
-                None => self.design(k),
+                None => self.placeholder(k),
             };
             self.ships.push(ship);
         }
         self.plan = self.log.plan.clone();
-        for k in 0..self.ships.len() {
+        for k in 0..n {
             self.stand(k);
+        }
+        self.publish_all();
+        for k in 0..n {
+            if fresh.contains(&self.ships[k].id) {
+                self.ships[k] = self.design(k);
+                // Its re-plans refused so far, and its breaches.
+                self.stand(k);
+                self.publish(k);
+            }
         }
         for s in old {
             s.live.store(false, Ordering::Relaxed);
@@ -395,6 +529,71 @@ impl Game {
             .collect();
         self.cache.retain(|k| keep.contains(&k));
         self.rerun();
+    }
+
+    /// Whether `ship`'s plan (the log's, with its re-plans) meets any of
+    /// the ships with ids `among`.
+    fn meets_any(&self, ship: &Ship, among: &HashSet<u64>) -> bool {
+        let mine: Vec<&Replan> = self
+            .log
+            .replans
+            .iter()
+            .filter(|r| r.ship == ship.id)
+            .collect();
+        let meets = |steps: &[Step]| {
+            steps.iter().any(|s| match s {
+                Step::Go(go) => go.to.meeting.is_some_and(|m| among.contains(&m.ship)),
+                Step::Wait(_) => false,
+            })
+        };
+        meets(&ship.steps) || mine.iter().any(|r| meets(&r.steps))
+    }
+
+    /// Ship `k` of the log before it is designed: nothing of it yet.
+    fn placeholder(&self, k: usize) -> ShipDesign {
+        let first = &self.log.plan.ships[k];
+        ShipDesign {
+            id: first.id,
+            name: first.name.clone(),
+            done: false,
+            failure: None,
+            refused: Vec::new(),
+            breaches: Vec::new(),
+            revision: revision(),
+            steps: Vec::new(),
+            waiting: None,
+            inputs: self.inputs(k),
+            used: Arc::default(),
+            live: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Ship `k` as its design stands, to the fleet the walks read
+    /// meetings from.
+    fn publish(&self, k: usize) {
+        let (d, ship) = (&self.ships[k], &self.plan.ships[k]);
+        self.fleet.lock().unwrap().by_id.insert(
+            d.id,
+            Vessel {
+                steps: ship.steps.clone(),
+                designed: d.steps.clone(),
+                done: d.done,
+            },
+        );
+    }
+
+    /// Every ship to the fleet, and no other.
+    fn publish_all(&self) {
+        self.fleet.lock().unwrap().by_id.clear();
+        for k in 0..self.ships.len() {
+            self.publish(k);
+        }
+    }
+
+    /// Where the vessel `m` names is after the leg named, as the designs
+    /// stand ([`Met`]); `None` while its design has not got there.
+    pub fn met(&self, m: &Meeting) -> Option<Met> {
+        self.fleet.lock().unwrap().met(m)
     }
 
     /// Ship `k` of the plan as it stands: the log's, with its re-plans
@@ -449,6 +648,7 @@ impl Game {
             breaches: Vec::new(),
             revision: revision(),
             steps: Vec::new(),
+            waiting: None,
             inputs: self.inputs(k),
             used: Arc::default(),
             live: Arc::new(AtomicBool::new(true)),
@@ -463,6 +663,7 @@ impl Game {
                 used.lock().unwrap().insert(key);
                 cache.get(key)
             },
+            &|m| self.met(m),
             &mut |key, designed| {
                 ship.steps.push((key, designed.clone()));
             },
@@ -483,14 +684,17 @@ impl Game {
 
     /// A walk of `first` with `replans` in the background, designing what
     /// the cache lacks while `ship` is live; it reports each key it takes,
-    /// and each step of the design as it stands.
+    /// and each step of the design as it stands; stopped at a meeting of a
+    /// vessel not designed that far, it says which.
     fn spawn(&self, ship: &ShipDesign, first: Ship, replans: Vec<Replan>) {
         let (live, used) = (ship.live.clone(), ship.used.clone());
         let (cache, sender) = (self.cache.clone(), self.sender.clone());
+        let fleet = self.fleet.clone();
         self.pool.spawn(move || {
             let send = |e| {
                 let _ = sender.send((live.clone(), e));
             };
+            let waited: Cell<Option<(u64, Seen)>> = Cell::new(None);
             let walked = catch_unwind(AssertUnwindSafe(|| {
                 let replans: Vec<&Replan> = replans.iter().collect();
                 let mut n = 0;
@@ -508,6 +712,14 @@ impl Game {
                         used.lock().unwrap().insert(key);
                         Some(cache.get(key).unwrap_or_else(|| cache.put(key, design())))
                     },
+                    &|m| {
+                        let fleet = fleet.lock().unwrap();
+                        let met = fleet.met(m);
+                        if met.is_none() {
+                            waited.set(Some((m.ship, fleet.seen(m.ship))));
+                        }
+                        met
+                    },
                     &mut |key, designed| {
                         send(Event::Shown(n, key, designed.clone()));
                         n += 1;
@@ -516,6 +728,10 @@ impl Game {
                 )
             }));
             send(match walked {
+                Ok(Ended::Waiting) => match waited.get() {
+                    Some((vessel, seen)) => Event::Waiting { vessel, seen },
+                    None => Event::Ended(Ended::Waiting),
+                },
                 Ok(ended) => Event::Ended(ended),
                 Err(panic) => {
                     let why = panic
@@ -556,13 +772,14 @@ impl Game {
     }
 
     /// An event from the walk whose flag is `live`, if it is a ship's
-    /// current one; `true` if the ship's design changed.
+    /// current one; `true` if the ship's design changed. A change to a
+    /// ship's design wakes the walks waiting at a meeting of it.
     fn take(&mut self, live: &Arc<AtomicBool>, event: Event) -> bool {
         let Some(k) = self.ships.iter().position(|s| Arc::ptr_eq(&s.live, live)) else {
             return false;
         };
         let ship = &mut self.ships[k];
-        match event {
+        let changed = match event {
             // Steps the ship has (from the cache, when it was edited) come
             // again first.
             Event::Shown(n, key, designed) => {
@@ -583,17 +800,51 @@ impl Game {
                 if !ship.refused.iter().any(|(j, _)| *j == i) {
                     ship.refused.push((i, why));
                     self.stand(k);
+                    self.publish(k);
                 }
-                true
+                return true;
             }
-            Event::Ended(Ended::Waiting) => false,
+            Event::Waiting { vessel, seen } => {
+                // The vessel's design may have moved on since the walk
+                // looked at it.
+                match self.fleet.lock().unwrap().seen(vessel) == seen {
+                    true => ship.waiting = Some(vessel),
+                    false => self.respawn(k),
+                }
+                return false;
+            }
+            Event::Ended(Ended::Waiting) => return false,
             Event::Panicked(why) => {
                 ship.done = true;
                 ship.failure = Some(why);
                 ship.revision = revision();
                 true
             }
+        };
+        self.publish(k);
+        let id = self.ships[k].id;
+        let woken: Vec<usize> = (0..self.ships.len())
+            .filter(|&j| self.ships[j].waiting == Some(id))
+            .collect();
+        for j in woken {
+            self.ships[j].waiting = None;
+            self.respawn(j);
         }
+        changed
+    }
+
+    /// Ship `k`'s walk again, from the cache: after the vessel it waited
+    /// on was designed further.
+    fn respawn(&self, k: usize) {
+        let first = &self.log.plan.ships[k];
+        let replans: Vec<Replan> = self
+            .log
+            .replans
+            .iter()
+            .filter(|r| r.ship == first.id)
+            .cloned()
+            .collect();
+        self.spawn(&self.ships[k], first.clone(), replans);
     }
 
     pub fn done(&self) -> bool {
@@ -748,6 +999,24 @@ impl Game {
                 standing.steps.len()
             ));
         }
+        // A leg another ship's plan meets it after is kept (M1b.md, step 3
+        // plan, part 3).
+        for s in &self.plan.ships {
+            for (i, step) in s.steps.iter().enumerate() {
+                if let Step::Go(go) = step
+                    && let Some(m) = go.to.meeting
+                    && m.ship == id
+                    && let Some(leg) = m.leg
+                    && leg >= from
+                {
+                    return Err(format!(
+                        "ship {:?} meets it after leg {leg} (step {i} of its plan), which the \
+                         re-plan replaces",
+                        s.name
+                    ));
+                }
+            }
+        }
         let at = minute(self.now);
         let replan = Replan {
             ship: id,
@@ -774,6 +1043,7 @@ impl Game {
             &self.log.plan.ships[k],
             &mine,
             &mut |key, _| cache.get(key),
+            &|m| self.met(m),
             &mut |_, _| {},
             &mut |i, why| {
                 if i == mine.len() - 1 {
