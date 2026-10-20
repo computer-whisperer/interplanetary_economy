@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 /// `log` designed to its end: one game, or a game for each ship alone (its
 /// re-plans and checks with it), each designed before the next starts;
-/// why not, if the log is not a game (`Game::new`).
+/// why not, if the log is not a game (`Game::new`), or career's projection
+/// refuses one of its actions read back (M1b.md, step 3 plan, part 6).
 pub fn run(log: &Log, alone: bool, pool: &Arc<rayon::ThreadPool>) -> Result<Vec<Game>, String> {
     let logs: Vec<Log> = match alone {
         false => vec![log.clone()],
@@ -29,6 +30,9 @@ pub fn run(log: &Log, alone: bool, pool: &Arc<rayon::ThreadPool>) -> Result<Vec<
         .map(|log| {
             let mut game = Game::new(log, pool.clone())?;
             game.wait();
+            if let Some(why) = game.refused() {
+                return Err(format!("refused: {why}"));
+            }
             Ok(game)
         })
         .collect()

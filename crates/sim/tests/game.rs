@@ -345,9 +345,11 @@ fn a_later_replan_takes_effect_where_it_holds() {
     assert_eq!(hashes(&again), hashes(&game));
 }
 
-/// A re-plan in the log that cannot take effect (its leg had begun) is
-/// passed over: the ship flies on as before it, and a later re-plan still
-/// takes effect.
+/// A re-plan in the log that cannot take effect (its leg had begun):
+/// career, reading the log back, refuses it as the game would have when
+/// it was made (M1b.md, step 3 plan, part 6), and the ship flies on as
+/// before it, a later re-plan still taking effect; the sandbox passes it
+/// over.
 #[test]
 fn a_replan_passed_over_does_not_stop_the_ship() {
     let mut log = round_trip_in_career("2045-03-04T00:00");
@@ -359,9 +361,9 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
         steps: vec![go("llo", 4.0), go("leo", 3.5)],
         here: None,
     });
-    let mut game = Game::new(log, pool(24)).unwrap();
-    game.wait();
-    let ship = &game.ships()[0];
+    let mut opened = Game::in_mode(log.clone(), Mode::Sandbox, pool(24)).unwrap();
+    opened.wait();
+    let ship = &opened.ships()[0];
     assert_eq!(ship.refused.len(), 1, "{:?}", ship.refused);
     assert!(
         ship.refused[0]
@@ -369,12 +371,25 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
             .ends_with("changes a step whose leg had begun")
     );
     assert!(ship.failure.is_none() && ship.done);
-    let Step::Go(out) = &game.plan().ships[0].steps[0] else {
+    let Step::Go(out) = &opened.plan().ships[0].steps[0] else {
         panic!("a leg")
     };
     assert_eq!(out.days, vec![3.5], "the plan as it stands leaves it out");
+
+    let mut game = Game::new(log, pool(24)).unwrap();
+    game.wait();
+    let why = game.refused().unwrap();
+    assert!(
+        why.starts_with("replan 1: ") && why.ends_with("changes a step whose leg had begun"),
+        "{why}"
+    );
+    assert!(game.log().replans.is_empty());
+    assert_eq!(game.now(), "2045-03-04T00:00".parse().unwrap());
+    let ship = &game.ships()[0];
+    assert!(ship.refused.is_empty() && ship.failure.is_none() && ship.done);
     game.replan(id, 1, vec![go("leo", 4.0)], None).unwrap();
     game.wait();
+    assert_eq!(game.refused(), None);
     let home = game.ships()[0]
         .items()
         .filter(|i| i.kind == ItemKind::Leg)
@@ -384,25 +399,29 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
     assert!((home.end.0 - home.start.0 - 4.0).abs() < 1e-6);
 }
 
-/// A re-plan whose first step is past the steps the log has, its
-/// re-plans passed over among them, is refused: the log the game writes
-/// reads back as the game it was (found in review: it was taken, and the
-/// log did not read back).
+/// A re-plan whose first step is past the steps the log has is refused,
+/// and one of a step whose leg had begun: the log the game writes reads
+/// back as the game it was (found in review: one from past the steps was
+/// taken, and the log did not read back), its re-plans made again in
+/// career.
 #[test]
 fn a_log_the_game_wrote_reads_back() {
     let mut game = Game::new(round_trip_in_career("2045-03-04T00:00"), pool(24)).unwrap();
-    let id = game.ships()[0].id;
-    // Its step not yet designed, it is taken; designed, it is passed over.
-    game.replan(id, 0, vec![go("llo", 4.0)], None).unwrap();
     game.wait();
-    assert_eq!(game.ships()[0].refused.len(), 1);
+    let id = game.ships()[0].id;
+    // In flight on the 4th: its leg out is not re-planned.
+    let why = game.replan(id, 0, vec![go("llo", 4.0)], None).unwrap_err();
+    assert!(why.ends_with("changes a step whose leg had begun"), "{why}");
     assert_eq!(game.plan().ships[0].steps.len(), 2);
-    let why = game.replan(id, 2, vec![go("llo", 3.5)], None).unwrap_err();
-    assert_eq!(why, "replan 2: from step 2, but the ship has 1");
+    let why = game.replan(id, 3, vec![go("llo", 3.5)], None).unwrap_err();
+    assert_eq!(why, "from step 3, but the ship has 2");
     game.replan(id, 1, vec![go("leo", 4.0)], None).unwrap();
     game.wait();
+    assert_eq!(game.refused(), None);
     let mut again = Game::new(parse(&game.log().to_toml()), pool(24)).unwrap();
     again.wait();
+    assert_eq!(again.refused(), None);
+    assert_eq!(again.now(), game.now());
     assert_eq!(hashes(&again), hashes(&game));
 }
 
@@ -812,9 +831,11 @@ days = [5.0]
 aero = true
 "#;
     let mut game = Game::new(parse(src), pool(24)).unwrap();
+    // Made before the tug arrives, it is what the tug gives down to on
+    // arrival (M1b.md, step 3 plan, part 5): what it has to give.
     let here = Manifest {
-        propellant_t: Some(60.0),
-        cargo: [("equipment".to_string(), 5.0)].into(),
+        propellant_t: Some(30.0),
+        cargo: Default::default(),
     };
     let why = game.replan(1, 0, vec![], Some(here.clone())).unwrap_err();
     assert_eq!(
@@ -831,19 +852,187 @@ aero = true
         .unwrap_err();
     assert_eq!(why, "replan 1: here: a tug-h's tanks hold 150 t, not 151");
     assert!(game.log().replans.is_empty());
+    // An action waits for the ships' designs, the plan's own being judged
+    // (M1b.md, step 3 plan, part 6).
+    let why = game
+        .replan(1, 1, vec![go("leo", 5.0)], Some(here.clone()))
+        .unwrap_err();
+    assert_eq!(why, "an action is pending: the plan's ships");
+    game.wait();
     game.replan(1, 1, vec![go("leo", 5.0)], Some(here.clone()))
         .unwrap();
+    assert_eq!(game.pending(), Some("ship \"Tug\" re-planned from step 1"));
+    game.wait();
+    assert_eq!((game.pending(), game.refused()), (None, None));
     assert_eq!(game.log().replans[0].here, Some(here.clone()));
     let Step::Go(out) = &game.plan().ships[1].steps[0] else {
         panic!("a leg")
     };
     assert_eq!(out.manifest, here);
-    let again = Game::new(parse(&game.log().to_toml()), pool(1)).unwrap();
+    // Read back, the re-plan is made again (M1b.md, step 3 plan, part 6).
+    let mut again = Game::new(parse(&game.log().to_toml()), pool(24)).unwrap();
+    assert!(again.log().replans.is_empty());
+    again.wait();
+    assert_eq!(again.refused(), None);
     assert_eq!(again.log().replans[0].here, Some(here.clone()));
     let Step::Go(out) = &again.plan().ships[1].steps[0] else {
         panic!("a leg")
     };
     assert_eq!(out.manifest, here);
+}
+
+/// Career against the projection (M1b.md, step 3 plan, part 6): an action
+/// is pending until the ships are designed, the clock held; one that has
+/// a transfer fall short, or a vessel run dry, where none did before is
+/// refused and nothing of it stays; one that does not is accepted, and the
+/// log read back makes it again and is the same game. A log whose action
+/// is refused is refused, headless too; a ship added that runs dry is
+/// refused, and a log whose ships do.
+#[test]
+fn career_refuses_what_runs_dry_or_short() {
+    let src = r#"
+name = "depot"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01", propellant_t = 500.0 }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 20
+
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 50.0
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+"#;
+    let mut game = Game::new(parse(src), pool(24)).unwrap();
+    assert_eq!(game.pending(), Some("the plan's ships"));
+    game.wait();
+    assert_eq!((game.pending(), game.refused()), (None, None));
+    assert_eq!(game.now(), "2045-03-01".parse().unwrap());
+    let items = |g: &Game| shown(&g.ships()[1].items().cloned().collect::<Vec<_>>());
+    let (before, made) = (items(&game), game.designs_made());
+    let hydrogen_short = Manifest {
+        propellant_t: Some(150.0),
+        cargo: Default::default(),
+    };
+    // Taking a full tank at the depot: its hold has only the hydrogen the
+    // tug gave. Refused once designed; the clock does not move meanwhile.
+    let home = || {
+        let Step::Go(mut go) = go("leo", 5.0) else {
+            panic!("a leg")
+        };
+        go.aero = true;
+        Step::Go(go)
+    };
+    game.replan(1, 1, vec![home()], Some(hydrogen_short))
+        .unwrap();
+    assert_eq!(game.pending(), Some("ship \"Tug\" re-planned from step 1"));
+    assert_eq!(game.log().replans.len(), 1);
+    let far = "2045-04-01".parse().unwrap();
+    assert_eq!(game.advance(far), "2045-03-01".parse().unwrap());
+    let why = game.replan(1, 1, vec![home()], None).unwrap_err();
+    assert_eq!(
+        why,
+        "an action is pending: ship \"Tug\" re-planned from step 1"
+    );
+    game.wait();
+    let why = game.refused().unwrap().to_string();
+    assert!(
+        why.starts_with("ship \"Tug\"'s take of ") && why.contains(" of LH2 at ship 0, leg 0 on "),
+        "{why}"
+    );
+    assert!(why.ends_with("(the vessel has less)"), "{why}");
+    assert!(game.log().replans.is_empty());
+    assert_eq!(items(&game), before);
+    assert!(
+        game.designs_made() > made,
+        "the refused re-plan was designed"
+    );
+    // Headless, a log with it is refused.
+    let mut log = game.log();
+    log.replans.push(sim::log::Replan {
+        ship: 1,
+        at: "2045-03-01".parse().unwrap(),
+        from: 1,
+        steps: vec![home()],
+        here: Some(Manifest {
+            propellant_t: Some(150.0),
+            cargo: Default::default(),
+        }),
+    });
+    let why = sim::run::run(&log, false, &pool(24)).err().unwrap();
+    assert!(
+        why.starts_with("refused: replan 1: ship \"Tug\"'s take of "),
+        "{why}"
+    );
+    // Within the depot's stock: accepted, and the log read back makes it
+    // again, to the same game, its clock at the log's now.
+    let little = Manifest {
+        propellant_t: Some(55.0),
+        cargo: Default::default(),
+    };
+    game.replan(1, 1, vec![home()], Some(little)).unwrap();
+    game.wait();
+    assert_eq!(game.refused(), None);
+    assert_eq!(game.log().replans.len(), 1);
+    assert!(game.advance(far).0 > "2045-03-01".parse::<Epoch>().unwrap().0);
+    let text = game.log().to_toml();
+    let mut again = Game::new(parse(&text), pool(24)).unwrap();
+    again.wait();
+    assert_eq!(again.refused(), None);
+    assert_eq!(again.log().replans.len(), 1);
+    assert_eq!(again.now(), game.now());
+    assert_eq!(hashes(&again), hashes(&game));
+    // A ship added that runs dry is refused once designed, and is gone.
+    let short = parse(&format!(
+        "{}\n[[ship]]\nname = \"Lander\"\nclass = \"lander\"\nstart = {{ at = \"leo\", epoch = \
+         \"2045-04-05\", propellant_t = 200.0 }}\n{}",
+        "name = \"lander\"",
+        "[[ship.leg]]\nto = \"llo\"\ndays = [3.5]\n[[ship.leg]]\nto = \"moon-south-pole\"\n\
+         [[ship.leg]]\nwait = 3\n[[ship.leg]]\nto = \"llo\"\n"
+    ));
+    let lander = short.plan.ships[0].clone();
+    game.add_ship(lander.clone()).unwrap();
+    assert_eq!(game.pending(), Some("ship \"Lander\" added"));
+    assert_eq!(game.plan().ships.len(), 3);
+    game.wait();
+    let why = game.refused().unwrap();
+    assert!(why.starts_with("ship \"Lander\" ran dry 2045-04-"), "{why}");
+    assert_eq!(game.plan().ships.len(), 2);
+    // A log whose ships run dry is refused as a career game.
+    let mut log = short;
+    log.setup.mode = Mode::Career;
+    log.setup.now = Some("2045-03-01".parse().unwrap());
+    let mut game = Game::new(log, pool(24)).unwrap();
+    game.wait();
+    let why = game.refused().unwrap();
+    assert!(why.starts_with("ship \"Lander\" ran dry 2045-04-"), "{why}");
+    assert!(!game.ships()[0].done || game.ships()[0].items().count() > 0);
 }
 
 /// A depot flown to the NRHO and home, and a tug that meets it there
@@ -1178,5 +1367,6 @@ fn career_keeps_a_leg_another_ship_meets() {
         why,
         "ship \"Tug\" meets it after leg 0 (step 0 of its plan), which the re-plan replaces"
     );
+    game.wait();
     game.replan(0, 1, steps[1..].to_vec(), None).unwrap();
 }

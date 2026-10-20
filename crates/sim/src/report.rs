@@ -140,7 +140,7 @@ pub fn carried(load: &Load, fuel: Commodity) -> String {
 }
 
 /// Tonnes to the kilogram; under half a kilogram, grams (a stay's upkeep).
-fn tonnes(t: f64) -> String {
+pub fn tonnes(t: f64) -> String {
     match t {
         t if t >= 5e-4 => format!("{t:.3} t"),
         t => format!("{:.0} g", t * 1e6),

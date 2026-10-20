@@ -5,9 +5,10 @@
 
 name = "Methalox lander loaded short, stranded at the south pole"
 
+# In the sandbox: career refuses a ship that runs dry (M1b.md, step 3
+# plan, part 6).
 [game]
-mode = "career"
-now = "2045-03-01"
+mode = "sandbox"
 
 [[ship]]
 id = 0

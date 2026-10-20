@@ -14,7 +14,7 @@ use crate::log::{Check, Log, Mode, Replan, here_without_a_stop, minute};
 use crate::params::{Draw, Economy, EconomyFile};
 use crate::report;
 use crate::ships::{self, Breach, Commodity};
-use crate::state::{self, Course, Dry, ShipState, State, Stop, With};
+use crate::state::{self, Course, Dry, Kind, ShipState, State, Stop, With};
 use orbit::mission::{
     Checkpoint, Item, ItemKind, Manifest, MarkerKind, Meeting, Plan, Ship, Step, World,
     resume_point, when,
@@ -23,7 +23,7 @@ use orbit::places::Places;
 use orbit::routes::RouteGraph;
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::Hasher;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -201,6 +201,28 @@ impl Fleet {
     }
 }
 
+/// A career action made and not yet judged (M1b.md, step 3 plan, part 6):
+/// pending until the ships are designed to their ends, then refused if a
+/// vessel runs dry or a transfer falls short where none did before it.
+struct Pending {
+    /// The log before it, to go back to; none for a log's own ships.
+    before: Option<Log>,
+    /// What ran dry or short before it.
+    found: Found,
+    /// What it is, for a message.
+    what: String,
+    /// Its place in a log being read back ("replan 2"), if it is one.
+    label: Option<String>,
+}
+
+/// What the loop found wrong: the ships that ran dry, and the transfers
+/// that fell short (ship, step, a take, the commodity).
+#[derive(Clone, Default, PartialEq)]
+struct Found {
+    dry: BTreeSet<u64>,
+    short: BTreeSet<(u64, usize, bool, usize)>,
+}
+
 pub struct Game {
     log: Log,
     /// The plan as it stands: the log's ships with their re-plans.
@@ -212,6 +234,14 @@ pub struct Game {
     state: State,
     /// Career: the time the game has reached.
     now: Epoch,
+    /// Career: the action made and not yet judged.
+    pending: Option<Pending>,
+    /// Career: a log's re-plans being read back, each made again in turn
+    /// (by its place in the log), and the log's now, for when they are.
+    replay: VecDeque<(usize, Replan)>,
+    finally: Option<Epoch>,
+    /// Career: the last action refused by the projection, and why.
+    refused: Option<String>,
     path: Option<PathBuf>,
     undo: Vec<Log>,
     ships: Vec<ShipDesign>,
@@ -415,21 +445,43 @@ impl Game {
             .iter()
             .map(|s| s.epoch)
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        let now = log
+        let start = log
             .setup
-            .now
-            .or(log.setup.start)
+            .start
             .or(first)
             .unwrap_or(Epoch::from_ymd(2040, 1, 1));
+        let now = log.setup.now.unwrap_or(start);
         log.setup.mode = mode;
         log.setup.now = (mode == Mode::Career).then_some(now);
+        // Career reads its log back as the game it was (M1b.md, step 3
+        // plan, part 6): its ships first, judged together, then each
+        // re-plan made again when it was made, judged in turn; the clock
+        // comes to the log's now after the last.
+        let career = mode == Mode::Career;
+        let replay: VecDeque<(usize, Replan)> = match career {
+            true => std::mem::take(&mut log.replans)
+                .into_iter()
+                .enumerate()
+                .collect(),
+            false => VecDeque::new(),
+        };
+        let pending = (career && !log.plan.ships.is_empty()).then(|| Pending {
+            before: None,
+            found: Found::default(),
+            what: "the plan's ships".into(),
+            label: None,
+        });
         let mut game = Game {
             plan: log.plan.clone(),
             log,
             mode,
             economy,
             state: State::default(),
-            now,
+            now: if career { start } else { now },
+            pending,
+            replay,
+            finally: career.then_some(now),
+            refused: None,
             path: None,
             undo: Vec::new(),
             ships: Vec::new(),
@@ -605,6 +657,156 @@ impl Game {
     /// Career: the time the game has reached.
     pub fn now(&self) -> Epoch {
         self.now
+    }
+
+    /// Career: the action made and not yet judged, if any (M1b.md, step 3
+    /// plan, part 6).
+    pub fn pending(&self) -> Option<&str> {
+        self.pending.as_ref().map(|p| p.what.as_str())
+    }
+
+    /// Career: the last action the projection refused, and why; a log read
+    /// back that was refused, as "replan N: why". Cleared by the next
+    /// action.
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
+    }
+
+    /// What the loop found wrong as the state stands.
+    fn found(&self) -> Found {
+        let mut found = Found::default();
+        for s in &self.state.ships {
+            if s.dry.is_some() {
+                found.dry.insert(s.id);
+            }
+            for x in s.transfers.iter().filter(|x| x.short.is_some()) {
+                found
+                    .short
+                    .insert((s.id, x.step, x.kind == Kind::Take, x.commodity as usize));
+            }
+        }
+        found
+    }
+
+    /// Why the state as it stands refuses the action that led to it, if
+    /// it does: the earliest vessel to run dry, or transfer to fall short,
+    /// where none did `before` it (a transfer before a burn at one time,
+    /// as the loop takes them: a short take is often why a ship runs dry
+    /// at its departure).
+    fn judged(&self, before: &Found) -> Option<String> {
+        let mut found: Vec<(f64, u8, usize, String)> = Vec::new();
+        for (k, s) in self.state.ships.iter().enumerate() {
+            let name = &self.plan.ships[k].name;
+            if let Some(dry) = &s.dry
+                && !before.dry.contains(&s.id)
+            {
+                let items: Vec<&Item> = self.ships[k].items().collect();
+                let why = format!("ship {name:?} {}", ran_dry(&items, dry));
+                found.push((dry.t.0, 1, k, why));
+            }
+            for x in &s.transfers {
+                let Some(short) = x.short else { continue };
+                if before.short.contains(&(
+                    s.id,
+                    x.step,
+                    x.kind == Kind::Take,
+                    x.commodity as usize,
+                )) {
+                    continue;
+                }
+                let at = match &self.plan.ships[k].steps[x.step] {
+                    Step::Go(go) => go.to.label.clone(),
+                    Step::Wait(_) => unreachable!("a manifest is a leg's"),
+                };
+                let kind = match x.kind {
+                    Kind::Give => "give",
+                    Kind::Take => "take",
+                };
+                let why = format!(
+                    "ship {name:?}'s {kind} of {} of {} at {at} on {} fell short: {} ({short})",
+                    report::tonnes(x.asked),
+                    x.commodity.name(),
+                    when(x.t),
+                    report::tonnes(x.got),
+                );
+                found.push((x.t.0, 0, k, why));
+            }
+        }
+        found
+            .into_iter()
+            .min_by(|a, b| a.0.total_cmp(&b.0).then((a.1, a.2).cmp(&(b.1, b.2))))
+            .map(|(_, _, _, why)| why)
+    }
+
+    /// Career acts one action at a time, each judged against the ships as
+    /// designed: none while one is pending, or while the ships are being
+    /// designed.
+    fn may_act(&self) -> Result<(), String> {
+        if let Some(p) = &self.pending {
+            return Err(format!("an action is pending: {}", p.what));
+        }
+        if !self.designed() {
+            return Err("the ships are being designed; an action waits for that".into());
+        }
+        Ok(())
+    }
+
+    /// Makes `change` to the log as a pending action, `what` it is: the
+    /// log before it kept to go back to, and what ran dry or short before
+    /// it noted.
+    fn act(&mut self, what: String, log: Log) {
+        let before = std::mem::replace(&mut self.log, log);
+        self.pending = Some(Pending {
+            before: Some(before),
+            found: self.found(),
+            what,
+            label: None,
+        });
+        self.refused = None;
+    }
+
+    /// Once the ships are designed: judges the action pending, going back
+    /// to the log before one refused; then makes the next re-plan of a log
+    /// being read back, and brings the clock to the log's now after the
+    /// last. `true` if an action was made, to be designed and judged.
+    fn settle(&mut self) -> bool {
+        if !self.designed() {
+            return false;
+        }
+        if let Some(p) = self.pending.take()
+            && let Some(why) = self.judged(&p.found)
+        {
+            self.refused = Some(match &p.label {
+                Some(label) => format!("{label}: {why}"),
+                None => why,
+            });
+            // A log read back that is refused stops there.
+            self.replay.clear();
+            if let Some(before) = p.before {
+                self.log = before;
+                self.reshaped();
+            }
+        }
+        if let Some((i, r)) = self.replay.pop_front() {
+            self.now = r.at;
+            let label = format!("replan {}", i + 1);
+            match self.replan(r.ship, r.from, r.steps, r.here) {
+                Ok(()) => {
+                    if let Some(p) = &mut self.pending {
+                        p.label = Some(label);
+                    }
+                    return true;
+                }
+                Err(why) => {
+                    self.refused = Some(format!("{label}: {why}"));
+                    self.replay.clear();
+                }
+            }
+        }
+        if let Some(t) = self.finally.take() {
+            self.now = t;
+        }
+        false
     }
 
     /// After the log's ships changed: the plan as it stands, and each ship
@@ -898,7 +1100,8 @@ impl Game {
         });
     }
 
-    /// Takes what the walks have sent; `true` if any ship's design changed.
+    /// Takes what the walks have sent, and judges a pending action once
+    /// the ships are designed; `true` if any ship's design changed.
     pub fn poll(&mut self) -> bool {
         let mut any = false;
         while let Ok((live, event)) = self.receiver.try_recv() {
@@ -907,20 +1110,26 @@ impl Game {
         if any {
             self.rerun();
         }
+        while self.settle() {}
         any
     }
 
-    /// Waits until every ship is designed.
+    /// Waits until every ship is designed and every action judged.
     pub fn wait(&mut self) {
-        let mut any = false;
-        while !self.done() {
-            match self.receiver.recv() {
-                Ok((live, event)) => any |= self.take(&live, event),
-                Err(_) => break,
+        loop {
+            let mut any = false;
+            while !self.designed() {
+                match self.receiver.recv() {
+                    Ok((live, event)) => any |= self.take(&live, event),
+                    Err(_) => return,
+                }
             }
-        }
-        if any {
-            self.rerun();
+            if any {
+                self.rerun();
+            }
+            if !self.settle() && self.designed() {
+                return;
+            }
         }
     }
 
@@ -1001,6 +1210,11 @@ impl Game {
     }
 
     pub fn done(&self) -> bool {
+        self.designed() && self.pending.is_none() && self.replay.is_empty()
+    }
+
+    /// Every ship designed to its end.
+    fn designed(&self) -> bool {
         self.ships.iter().all(|s| s.done)
     }
 
@@ -1111,10 +1325,17 @@ impl Game {
         }
         ship.id = self.log.plan.next_id();
         let id = ship.id;
+        let name = ship.name.clone();
         let log = self.changed(|log| log.plan.ships.push(ship))?;
-        let before = std::mem::replace(&mut self.log, log);
-        if self.mode == Mode::Sandbox {
-            self.undo.push(before);
+        match self.mode {
+            Mode::Sandbox => {
+                let before = std::mem::replace(&mut self.log, log);
+                self.undo.push(before);
+            }
+            Mode::Career => {
+                self.may_act()?;
+                self.act(format!("ship {name:?} added"), log);
+            }
         }
         self.reshaped();
         Ok(id)
@@ -1203,6 +1424,7 @@ impl Game {
             here,
         };
         let log = self.changed(|log| log.replans.push(replan.clone()))?;
+        self.may_act()?;
         // Walked with what the cache has, the re-plan is decided where the
         // ship is (in career, its designs to now are done). One whose step
         // is not designed yet takes effect after now; if it then cannot,
@@ -1233,14 +1455,19 @@ impl Game {
             return Err(why);
         }
         self.now = at;
-        self.log = log;
+        let name = &self.plan.ships[k].name;
+        self.act(format!("ship {name:?} re-planned from step {from}"), log);
         self.reshaped();
         Ok(())
     }
 
     /// Career: moves now on to `t`, as far as designs allow: not past a
-    /// departure whose design is not done. The time reached.
+    /// departure whose design is not done, and not at all while an action
+    /// is pending (nothing of one refused happens). The time reached.
     pub fn advance(&mut self, t: Epoch) -> Epoch {
+        if self.pending.is_some() || !self.replay.is_empty() {
+            return self.now;
+        }
         let reachable = self
             .ships
             .iter()

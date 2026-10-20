@@ -113,6 +113,20 @@ pub enum Short {
     NotSold,
 }
 
+impl std::fmt::Display for Short {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            Short::Stock => "the vessel has less",
+            Short::Capacity => "no room for it",
+            Short::NotYet => "the vessel is not there yet",
+            Short::Gone => "the vessel has left",
+            Short::Dry => "the vessel ran dry",
+            Short::NoOne => "no one to transfer with",
+            Short::NotSold => "Earth does not sell it",
+        })
+    }
+}
+
 /// What a ship starting at LEO cost there: the ship, and each part of its
 /// load (launch at the time, and the goods).
 #[derive(Clone, Debug, PartialEq)]

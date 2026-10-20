@@ -1,14 +1,15 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–5 done (the
+Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–6 done (the
 extended station orbits pass their kill-test, the planner designs on
 them, a leg meets a vessel on its orbit, legs carry manifests the log
-keeps and checks, and the loop makes their transfers and purchases),
-part 6 next (the plans below). Decided: one engine for both modes,
-with economy components landing in the sandbox first (Modes, below);
-the four decisions below, each as recommended; and stations as
-vessels, flown to where they stay, with docking a step of its own
-(Design, Vessels, stations and stocks).
+keeps and checks, the loop makes their transfers and purchases, and
+career refuses an action that runs a vessel dry or short), part 7 next
+(the plans below). Decided: one engine for both modes, with economy
+components landing in the sandbox first (Modes, below); the four
+decisions below, each as recommended; and stations as vessels, flown
+to where they stay, with docking a step of its own (Design, Vessels,
+stations and stocks).
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
   going on from a checkpoint gives a fresh design's bits
@@ -1819,6 +1820,63 @@ follows from it:
    - The alternative: career reports a plan that runs dry or short and
      does not refuse it, until M3's UI designs a plan before it is
      made.
+   - Settled before building it (2026-10-20):
+     - Career acts one action at a time. A re-plan or a ship added
+       passes its static checks (class, meetings, `here`) as before,
+       then is refused while an action is pending ("an action is
+       pending: ship \"Tug\" re-planned from step 1"); the log changes
+       and the action is pending (`Game::pending`), with the log before
+       it and what ran dry or short before it kept. Once every ship is
+       designed (`poll`, `wait`), the action is judged: a ship that runs
+       dry, or a transfer that falls short, that did not before (dry by
+       ship; short by ship, step, give or take, commodity) refuses it:
+       `Game::refused` says why, the earliest finding first (a short
+       take before the dry departure it causes), and the log goes back
+       to before it, its designs from the cache. The clock does not
+       move while an action is pending. Rejected: queuing actions made
+       while one is pending (each would need the log as the ones before
+       it would leave it, before they are judged).
+     - A career log read back is the game it was: its ships first,
+       judged together as one action (ships are not dated among the
+       re-plans), then each re-plan made again at its time through
+       `replan` and judged in turn; one refused, statically or by the
+       projection, refuses the log ("replan 1: ..."), and `sim run`
+       fails on it. The clock comes to the log's now after the last.
+       The sandbox opens a career log as before, its re-plans applied at
+       once, one that cannot hold passed over; in career such a re-plan
+       is refused when made again, so the passed-over case is the
+       sandbox's.
+     - `data/scenarios/lander-loaded-short.toml`, a ship that runs dry
+       by design, is a sandbox scenario now: career refuses it.
+   - Built (2026-10-20): `Pending`, `Found`, `Game::{pending, refused,
+     may_act, act, settle, judged, found, designed}`, the replay in
+     `in_mode`, `done`/`wait`/`poll`/`advance` (`sim::game`);
+     `run::run` fails on a refusal; `Display` for `Short`
+     (`sim::state`). Tests: `career_refuses_what_runs_dry_or_short` in
+     `crates/sim/tests/game.rs` (a re-plan that takes hydrogen a depot
+     does not have is refused once designed, the clock held meanwhile
+     and the log restored; headless, a log with it is refused; one
+     within the stock is accepted and reads back as the same game, its
+     clock at the log's now; a lander added loaded short is refused and
+     gone; a log whose ship runs dry is refused), and the career tests
+     adapted (an action waits for the plan's ships; a re-plan that
+     cannot hold refuses the log read back, and is passed over in the
+     sandbox).
+   - Measured (2026-10-20): the projection test designs the depot and
+     the tug, two re-plans of the tug, the log read back, a headless
+     game of the refused log and the lander, in 95 s on 24 threads; the
+     `here` test with its log read back in 52 s. Found building it: a
+     re-plan's `here` made before the ship arrives governs what it
+     gives on arrival (part 5's dating), so a test's `here` asking for
+     more than the ship had was rightly refused; and a propulsive leg
+     home with hydrogen-short tanks ran the tug dry before its short
+     take came up, which is why the judge reports the earliest finding.
+     The full workspace suite: 335 passed, 13 ignored (as before), none
+     failed, in 12.4 min.
+   - Open: the sandbox has no career mode yet, so pending and refused
+     actions reach it only through `sim run` and the tests (M3); a
+     ship added in career is judged alone when made, but judged with
+     the plan's ships when its log is read back (ships are not dated).
 7. **The sandbox.**
    - The editor: a leg's destination lists the plan's vessels, by name
      and leg; a manifest per leg, as the start's load.
