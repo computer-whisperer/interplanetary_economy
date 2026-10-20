@@ -8,15 +8,16 @@
 //! the fleet, the designs as they stand, and its walk waits for the
 //! vessel's to get there.
 
-use crate::designs::{Cache, Designed, Ended, Key, Met, apply, walk};
+use crate::designs::{Cache, Designed, Ended, Key, Met, apply, flight, walk};
 use crate::hash::Fixed;
-use crate::log::{Check, Log, Mode, Replan, minute};
+use crate::log::{Check, Log, Mode, Replan, here_without_a_stop, minute};
 use crate::params::{Draw, Economy, EconomyFile};
 use crate::report;
 use crate::ships::{self, Breach};
 use crate::state::{self, Course, Dry, ShipState, State};
 use orbit::mission::{
-    Checkpoint, Item, ItemKind, MarkerKind, Meeting, Plan, Ship, Step, World, resume_point, when,
+    Checkpoint, Item, ItemKind, Manifest, MarkerKind, Meeting, Plan, Ship, Step, World,
+    resume_point, when,
 };
 use orbit::places::Places;
 use orbit::routes::RouteGraph;
@@ -245,6 +246,58 @@ fn standing(ship: &Ship, replans: &[&Replan], refused: &[(usize, String)]) -> Sh
     ship
 }
 
+/// Writes the manifests of ship `k`'s legs, its steps as they stand
+/// (`standing`, as [`standing`] has them), to the log's steps they stand
+/// on: the ship's first steps, the legs of the re-plan that made each, or
+/// the `here` of the re-plan that set it last (its re-plans applied in
+/// turn, but those `refused`).
+fn remanifest(log: &mut Log, k: usize, refused: &[(usize, String)], standing: &[Step]) {
+    /// Where a standing step's manifest is written: the plan's step, a
+    /// re-plan's leg (by its place in the log and among the legs), or a
+    /// re-plan's `here`.
+    enum Owner {
+        Plan(usize),
+        Leg(usize, usize),
+        Here(usize),
+    }
+    let id = log.plan.ships[k].id;
+    let mut steps = log.plan.ships[k].steps.clone();
+    let mut owners: Vec<Owner> = (0..steps.len()).map(Owner::Plan).collect();
+    let mine = log.replans.iter().enumerate().filter(|(_, r)| r.ship == id);
+    for (i, (j, r)) in mine.enumerate() {
+        if refused.iter().any(|(n, _)| *n == i) {
+            continue;
+        }
+        steps.truncate(r.from);
+        owners.truncate(r.from);
+        if r.here.is_some()
+            && let Some(g) = steps.iter().rposition(|s| matches!(s, Step::Go(_)))
+        {
+            owners[g] = Owner::Here(j);
+        }
+        steps.extend(r.steps.iter().cloned());
+        owners.extend((0..r.steps.len()).map(|n| Owner::Leg(j, n)));
+    }
+    debug_assert_eq!(steps.len(), standing.len());
+    for (owner, step) in owners.iter().zip(standing) {
+        let Step::Go(go) = step else { continue };
+        let manifest = go.manifest.clone();
+        match *owner {
+            Owner::Plan(i) => {
+                if let Step::Go(mine) = &mut log.plan.ships[k].steps[i] {
+                    mine.manifest = manifest;
+                }
+            }
+            Owner::Leg(j, n) => {
+                if let Step::Go(mine) = &mut log.replans[j].steps[n] {
+                    mine.manifest = manifest;
+                }
+            }
+            Owner::Here(j) => log.replans[j].here = Some(manifest),
+        }
+    }
+}
+
 /// Why `log` cannot be played in `mode` with `economy`, if it cannot:
 /// each ship's class and load are read (`ships::read`); and career, which
 /// refuses an action that breaks a ship's class when it is made, has each
@@ -267,7 +320,7 @@ fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
             continue;
         };
         let first = |s: &Ship| {
-            ships::breaches(s, &fitted, economy, world().eph)
+            ships::breaches(s, &fitted, economy, world().eph, &log.plan.ships)
                 .into_iter()
                 .next()
         };
@@ -281,10 +334,14 @@ fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
             }
             apply(&mut replanned.steps, r);
             // The steps before it were checked: what it breaks is among
-            // its own, numbered as its legs are (`[[replan.leg]]`).
+            // its own, numbered as its legs are (`[[replan.leg]]`), or
+            // the manifest it sets (`here`).
             if let Some(b) = first(&replanned) {
-                let leg = b.step.map_or(0, |s| s.saturating_sub(r.from));
-                return Err(format!("replan {}: leg {}: {}", i + 1, leg + 1, b.why));
+                let at = match b.step {
+                    Some(s) if s < r.from => "here".to_string(),
+                    step => format!("leg {}", step.map_or(0, |s| s - r.from) + 1),
+                };
+                return Err(format!("replan {}: {at}: {}", i + 1, b.why));
             }
         }
     }
@@ -609,22 +666,22 @@ impl Game {
         let ship = standing(ship, &mine, &self.ships[k].refused);
         let fitted = ships::read(&ship, &self.economy).expect("a game's ships read (`allowed`)");
         self.ships[k].breaches = fitted.map_or(Vec::new(), |f| {
-            ships::breaches(&ship, &f, &self.economy, world().eph)
+            ships::breaches(&ship, &f, &self.economy, world().eph, &self.log.plan.ships)
         });
         self.plan.ships[k] = ship;
     }
 
     /// What ship `k` of the log is designed from, hashed: the ship (its
-    /// name, class and load aside) and its re-plans.
+    /// name, class, load and manifests aside) and its re-plans (their
+    /// `here` aside).
     fn inputs(&self, k: usize) -> Key {
         let ship = &self.log.plan.ships[k];
         let mut h = Fixed::default();
-        h.u64(ship.id)
-            .debug(&ship.start)
-            .f64(ship.epoch.0)
-            .debug(&ship.steps);
+        h.u64(ship.id).debug(&ship.start).f64(ship.epoch.0);
+        flight(&mut h, &ship.steps);
         for r in self.log.replans.iter().filter(|r| r.ship == ship.id) {
-            h.debug(r);
+            h.str("replan").u64(r.ship).f64(r.at.0).u64(r.from as u64);
+            flight(&mut h, &r.steps);
         }
         h.finish()
     }
@@ -894,8 +951,8 @@ impl Game {
 
     /// Replaces ship `id` with `ship` (its steps as they stand). In the
     /// sandbox, its re-plans are folded into it: its steps are those
-    /// edited, from its start. A new name, class or load alone keeps
-    /// them, and designs nothing.
+    /// edited, from its start. A new name, class, load or manifest alone
+    /// keeps them, and designs nothing.
     pub fn edit(&mut self, id: u64, mut ship: Ship) -> Result<(), String> {
         self.sandbox("Editing a ship")?;
         let k = self.index(id).ok_or(format!("no ship has id {id}"))?;
@@ -905,9 +962,18 @@ impl Game {
         refit.class.clone_from(&ship.class);
         refit.propellant_t = ship.propellant_t;
         refit.cargo.clone_from(&ship.cargo);
+        if refit.steps.len() == ship.steps.len() {
+            for (kept, edited) in refit.steps.iter_mut().zip(&ship.steps) {
+                if let (Step::Go(kept), Step::Go(edited)) = (kept, edited) {
+                    kept.manifest.clone_from(&edited.manifest);
+                }
+            }
+        }
         let refit = format!("{refit:?}") == format!("{ship:?}");
+        let refused = self.ships[k].refused.clone();
         let log = self.changed(|log| match refit {
             true => {
+                remanifest(log, k, &refused, &ship.steps);
                 let kept = &mut log.plan.ships[k];
                 kept.name = ship.name;
                 kept.class = ship.class;
@@ -983,11 +1049,19 @@ impl Game {
     }
 
     /// Career: ship `id`'s steps from `from` on replaced by `steps`, from
-    /// now (to the minute). It takes effect where the ship is: now, if it
-    /// is staying where the step that holds `from` leaves from; at the
-    /// end of a leg in flight; or later. Refused if its steps break the
-    /// ship's class, or if it changes a step whose leg has begun.
-    pub fn replan(&mut self, id: u64, from: usize, steps: Vec<Step>) -> Result<(), String> {
+    /// now (to the minute), and the manifest of the stop it is at set to
+    /// `here`, if given (`Replan::here`). It takes effect where the ship
+    /// is: now, if it is staying where the step that holds `from` leaves
+    /// from; at the end of a leg in flight; or later. Refused if its steps
+    /// break the ship's class, or if it changes a step whose leg has
+    /// begun.
+    pub fn replan(
+        &mut self,
+        id: u64,
+        from: usize,
+        steps: Vec<Step>,
+        here: Option<Manifest>,
+    ) -> Result<(), String> {
         if self.mode != Mode::Career {
             return Err("re-plans are career's; the sandbox edits".into());
         }
@@ -998,6 +1072,13 @@ impl Game {
                 "from step {from}, but the ship has {}",
                 standing.steps.len()
             ));
+        }
+        if here.is_some()
+            && !standing.steps[..from]
+                .iter()
+                .any(|s| matches!(s, Step::Go(_)))
+        {
+            return Err(here_without_a_stop(from));
         }
         // A leg another ship's plan meets it after is kept (M1b.md, step 3
         // plan, part 3).
@@ -1023,6 +1104,7 @@ impl Game {
             at,
             from,
             steps,
+            here,
         };
         let log = self.changed(|log| log.replans.push(replan.clone()))?;
         // Walked with what the cache has, the re-plan is decided where the

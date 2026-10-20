@@ -1,12 +1,14 @@
-//! Ships' classes and loads (M1b.md, step 2 plan, part 2). A plan's ship
-//! names its class (`data/economy.toml`) and what it carries at its start
-//! (`orbit::mission::Ship` keeps them as written); one without a class is
-//! massless, as in M1c. What its class does not allow of it is a
-//! [`Breach`]: a warning in the sandbox, refused in career (`game`).
+//! Ships' classes, loads and manifests (M1b.md, step 2 plan, part 2; step
+//! 3 plan, part 4). A plan's ship names its class (`data/economy.toml`)
+//! and what it carries at its start, and each of its legs may name what
+//! it is to carry after the stop it arrives at (`orbit::mission::Ship`
+//! and `Manifest` keep them as written); one without a class is massless,
+//! as in M1c. What its class does not allow of it is a [`Breach`]: a
+//! warning in the sandbox, refused in career (`game`).
 
 use crate::params::{Economy, Propellant, ShipClass};
 use orbit::ephem::{BodyId, Ephemeris};
-use orbit::mission::{Ship, Spot, Step};
+use orbit::mission::{self, Ship, Spot, Step};
 use orbit::places::{PlaceKind, Places};
 use orbit::routes::RouteGraph;
 use std::fmt;
@@ -97,16 +99,86 @@ pub struct Fitted {
     pub load: Load,
 }
 
+/// The amounts a leg's manifest names ([`mission::Manifest`]), t: its
+/// propellant, and its cargo by [`Commodity`]; `None`, left as it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Manifest {
+    pub propellant: Option<f64>,
+    pub cargo: [Option<f64>; COMMODITIES.len()],
+}
+
+impl Manifest {
+    /// The cargo it names, t, in all.
+    pub fn cargo(&self) -> f64 {
+        self.cargo.iter().flatten().sum()
+    }
+}
+
+/// `m`'s amounts by commodity, or what is wrong with it.
+pub fn manifest(m: &mission::Manifest) -> Result<Manifest, String> {
+    let mut out = Manifest {
+        propellant: m
+            .propellant_t
+            .map(|t| tonnes("propellant_t", t))
+            .transpose()?,
+        ..Manifest::default()
+    };
+    for (k, &t) in &m.cargo {
+        out.cargo[commodity(k)? as usize] = Some(tonnes(&format!("cargo's {k}"), t)?);
+    }
+    Ok(out)
+}
+
+/// The legs of `ship` that carry a manifest: each step and its manifest's
+/// amounts, or what is wrong with it, as a plan counts its steps.
+fn manifests(ship: &Ship) -> impl Iterator<Item = (usize, Result<Manifest, String>)> + '_ {
+    ship.steps.iter().enumerate().filter_map(|(i, s)| match s {
+        Step::Go(go) if !go.manifest.is_empty() => Some((i, manifest(&go.manifest))),
+        _ => None,
+    })
+}
+
+/// `t` as a number of tonnes, or why `what` is not one.
+fn tonnes(what: &str, t: f64) -> Result<f64, String> {
+    match t.is_finite() && t >= 0.0 {
+        true => Ok(t),
+        false => Err(format!("{what} is a number of tonnes, not negative")),
+    }
+}
+
+/// The commodity a plan writes as `id`.
+fn commodity(id: &str) -> Result<Commodity, String> {
+    COMMODITIES
+        .iter()
+        .copied()
+        .find(|c| c.id() == id)
+        .ok_or_else(|| {
+            let ids: Vec<&str> = COMMODITIES.iter().map(|c| c.id()).collect();
+            format!(
+                "no commodity {id:?}; the commodities are {}",
+                ids.join(", ")
+            )
+        })
+}
+
 /// `ship`'s class and its load at its start, in `economy`; `None` for a
 /// ship without a class. Its propellant is a full tank unless it says,
-/// LOX and fuel at the class's mixture ratio.
+/// LOX and fuel at the class's mixture ratio. Its legs' manifests are
+/// read too ([`manifest`]), so that a game's ships' all read.
 pub fn read(ship: &Ship, economy: &Economy) -> Result<Option<Fitted>, String> {
+    let leg = |i: usize, e: String| format!("leg {}: {e}", i + 1);
     let Some(id) = &ship.class else {
         if ship.propellant_t.is_some() || !ship.cargo.is_empty() {
             return Err("a load needs a class".into());
         }
+        if let Some((i, _)) = manifests(ship).next() {
+            return Err(leg(i, "a manifest needs a class".into()));
+        }
         return Ok(None);
     };
+    for (i, m) in manifests(ship) {
+        m.map_err(|e| leg(i, e))?;
+    }
     let class = economy
         .ships
         .iter()
@@ -116,10 +188,6 @@ pub fn read(ship: &Ship, economy: &Economy) -> Result<Option<Fitted>, String> {
             format!("no class {id:?}; the classes are {}", ids.join(", "))
         })?;
     let c = &economy.ships[class];
-    let tonnes = |what: &str, t: f64| match t.is_finite() && t >= 0.0 {
-        true => Ok(t),
-        false => Err(format!("{what} is a number of tonnes, not negative")),
-    };
     let propellant = tonnes("propellant_t", ship.propellant_t.unwrap_or(c.tank))?;
     let lox_share = economy.propellant(c.propellant).lox_share;
     let mut load = Load {
@@ -128,11 +196,7 @@ pub fn read(ship: &Ship, economy: &Economy) -> Result<Option<Fitted>, String> {
         ..Load::default()
     };
     for (k, &t) in &ship.cargo {
-        let commodity = COMMODITIES.iter().find(|c| c.id() == k).ok_or_else(|| {
-            let ids: Vec<&str> = COMMODITIES.iter().map(|c| c.id()).collect();
-            format!("no commodity {k:?}; the commodities are {}", ids.join(", "))
-        })?;
-        load.cargo[*commodity as usize] = tonnes(&format!("cargo's {k}"), t)?;
+        load.cargo[commodity(k)? as usize] = tonnes(&format!("cargo's {k}"), t)?;
     }
     Ok(Some(Fitted { class, load }))
 }
@@ -177,37 +241,72 @@ fn lands_on(class: &ShipClass, body: BodyId) -> bool {
 }
 
 /// What `ship`'s class (`fitted`, as [`read`] has it) does not allow of
-/// it: a load beyond its tanks or its hold; being on a surface it does not
-/// land on (`lands`), at its start or after a leg; arriving through an
-/// atmosphere (`aero`); and, without `interplanetary`, being outside
-/// Earth's system, where it is bought, or leaving the system it is in (a
-/// planet's, or a small body alone).
-pub fn breaches(ship: &Ship, fitted: &Fitted, economy: &Economy, eph: &Ephemeris) -> Vec<Breach> {
+/// it: a load, or a manifest, beyond its tanks or its hold; being on a
+/// surface it does not land on (`lands`), at its start or after a leg;
+/// arriving through an atmosphere (`aero`); and, without
+/// `interplanetary`, being outside Earth's system, where it is bought, or
+/// leaving the system it is in (a planet's, or a small body alone). And
+/// what a manifest has no one for (M1b.md, step 3 plan, part 4): a stop
+/// with no vessel met, away from LEO, where Earth sells; or a vessel met
+/// (among `ships`, the plan's) without a class, which has no tanks or hold
+/// to transfer with.
+pub fn breaches(
+    ship: &Ship,
+    fitted: &Fitted,
+    economy: &Economy,
+    eph: &Ephemeris,
+    ships: &[Ship],
+) -> Vec<Breach> {
     let c = &economy.ships[fitted.class];
     let mut out = Vec::new();
     let mut breach = |step, why| out.push(Breach { step, why });
-    let load = &fitted.load;
-    if load.propellant() > c.tank + GRAM {
-        breach(
-            None,
+    let tanks = |propellant: f64| {
+        (propellant > c.tank + GRAM).then(|| {
             format!(
                 "a {}'s tanks hold {} t, not {}",
                 c.id,
                 t(c.tank),
-                t(load.propellant())
-            ),
-        );
+                t(propellant)
+            )
+        })
+    };
+    let hold = |cargo: f64| {
+        (cargo > c.cargo + GRAM)
+            .then(|| format!("a {}'s hold takes {} t, not {}", c.id, t(c.cargo), t(cargo)))
+    };
+    let load = &fitted.load;
+    for why in [tanks(load.propellant()), hold(load.cargo())]
+        .into_iter()
+        .flatten()
+    {
+        breach(None, why);
     }
-    if load.cargo() > c.cargo + GRAM {
-        breach(
-            None,
-            format!(
-                "a {}'s hold takes {} t, not {}",
-                c.id,
-                t(c.cargo),
-                t(load.cargo())
+    for (i, m) in manifests(ship) {
+        let m = m.expect("a game's manifests read (`read`)");
+        let full = m.propellant.and_then(tanks);
+        for why in [full, hold(m.cargo())].into_iter().flatten() {
+            breach(Some(i), why);
+        }
+        let Step::Go(go) = &ship.steps[i] else {
+            continue;
+        };
+        match go.to.meeting {
+            None if go.to.source.as_str() != Some("leo") => breach(
+                Some(i),
+                format!("no vessel to transfer with at {}", go.to.label),
             ),
-        );
+            None => {}
+            Some(met) => {
+                if let Some(vessel) = ships.iter().find(|s| s.id == met.ship)
+                    && vessel.class.is_none()
+                {
+                    breach(
+                        Some(i),
+                        format!("ship {:?} has no class to transfer with", vessel.name),
+                    );
+                }
+            }
+        }
     }
     let no_landing = |at: &Spot| format!("a {} can't land at {}", c.id, at.label);
     if let PlaceKind::Surface(b) = ship.start.kind
@@ -253,7 +352,7 @@ pub fn breaches(ship: &Ship, fitted: &Fitted, economy: &Economy, eph: &Ephemeris
 mod tests {
     use super::*;
     use crate::params::{Draw, EconomyFile};
-    use orbit::mission::Plan;
+    use orbit::mission::{Go, Plan};
 
     fn economy() -> Economy {
         EconomyFile::standard().draw(
@@ -263,18 +362,21 @@ mod tests {
         )
     }
 
-    fn ship(src: &str) -> Ship {
+    fn plan(src: &str) -> Plan {
         let src = format!("name = \"x\"\n{src}");
-        Plan::parse(&src, Ephemeris::standard(), Places::standard())
-            .unwrap()
-            .ships
-            .remove(0)
+        Plan::parse(&src, Ephemeris::standard(), Places::standard()).unwrap()
     }
 
+    fn ship(src: &str) -> Ship {
+        plan(src).ships.remove(0)
+    }
+
+    /// The first ship's breaches.
     fn breaches_of(src: &str) -> Vec<String> {
-        let (e, ship) = (economy(), ship(src));
-        let fitted = read(&ship, &e).unwrap().unwrap();
-        breaches(&ship, &fitted, &e, Ephemeris::standard())
+        let (e, plan) = (economy(), plan(src));
+        let ship = &plan.ships[0];
+        let fitted = read(ship, &e).unwrap().unwrap();
+        breaches(ship, &fitted, &e, Ephemeris::standard(), &plan.ships)
             .iter()
             .map(Breach::to_string)
             .collect()
@@ -486,6 +588,175 @@ to = "phobos"
 "#
             ),
             ["a tug-h can't leave Earth's system, where it is bought"]
+        );
+    }
+
+    /// A leg's manifest, by commodity (M1b.md, step 3 plan, part 4): what
+    /// it names, and nothing else; one at a vessel with a class, then at
+    /// LEO, has someone to transfer with.
+    #[test]
+    fn a_manifest_names_what_to_carry_after_the_stop() {
+        let p = plan(
+            r#"
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-02" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 40.0
+cargo = { lox = 0.0, equipment = 20.0 }
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+cargo = { equipment = 0.0 }
+"#,
+        );
+        let tug = &p.ships[1];
+        let Step::Go(out) = &tug.steps[0] else {
+            panic!("a leg")
+        };
+        let m = manifest(&out.manifest).unwrap();
+        assert_eq!(m.propellant, Some(40.0));
+        assert_eq!(m.cargo[Commodity::Lox as usize], Some(0.0));
+        assert_eq!(m.cargo[Commodity::Equipment as usize], Some(20.0));
+        assert_eq!(m.cargo[Commodity::Payload as usize], None);
+        assert_eq!(m.cargo(), 20.0);
+        let Step::Go(home) = &tug.steps[1] else {
+            panic!("a leg")
+        };
+        let m = manifest(&home.manifest).unwrap();
+        assert_eq!(m.propellant, None);
+        assert_eq!(m.cargo(), 0.0);
+        let e = economy();
+        let fitted = read(tug, &e).unwrap().unwrap();
+        assert!(breaches(tug, &fitted, &e, Ephemeris::standard(), &p.ships).is_empty());
+    }
+
+    #[test]
+    fn what_a_manifest_is_not() {
+        let e = economy();
+        let base = ship(
+            r#"
+[[ship]]
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "leo"
+days = [1.0]
+cargo = { equipment = 20.0 }
+"#,
+        );
+        let fails = |edit: &dyn Fn(&mut Ship)| {
+            let mut s = base.clone();
+            edit(&mut s);
+            read(&s, &e).unwrap_err()
+        };
+        fn leg(s: &mut Ship) -> &mut Go {
+            let Step::Go(go) = &mut s.steps[0] else {
+                panic!("a leg")
+            };
+            go
+        }
+        assert_eq!(
+            fails(&|s| {
+                leg(s).manifest.cargo.insert("water".into(), 1.0);
+            }),
+            "leg 1: no commodity \"water\"; the commodities are lox, ch4, lh2, equipment, payload, \
+             metal"
+        );
+        assert_eq!(
+            fails(&|s| leg(s).manifest.propellant_t = Some(-1.0)),
+            "leg 1: propellant_t is a number of tonnes, not negative"
+        );
+        assert_eq!(
+            fails(&|s| {
+                leg(s).manifest.cargo.insert("lox".into(), f64::NAN);
+            }),
+            "leg 1: cargo's lox is a number of tonnes, not negative"
+        );
+        assert_eq!(
+            fails(&|s| s.class = None),
+            "leg 1: a manifest needs a class"
+        );
+    }
+
+    /// What a manifest has no room or no one for: beyond the tanks or the
+    /// hold; at a stop with no vessel met, away from LEO; at a vessel met
+    /// without a class.
+    #[test]
+    fn what_a_manifest_has_no_room_or_no_one_for() {
+        assert_eq!(
+            breaches_of(
+                r#"
+[[ship]]
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+propellant_t = 150.5
+cargo = { equipment = 30.0, payload = 20.5 }
+
+[[ship.leg]]
+to = "llo"
+days = [0.5]
+cargo = { lox = 1.0 }
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+propellant_t = 150.0
+"#
+            ),
+            [
+                "leg 1: a tug-h's tanks hold 150 t, not 150.5",
+                "leg 1: a tug-h's hold takes 50 t, not 50.5",
+                "leg 1: no vessel to transfer with at nrho",
+                "leg 2: no vessel to transfer with at llo",
+            ]
+        );
+        assert_eq!(
+            breaches_of(
+                r#"
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-02" }
+
+[[ship.leg]]
+to = { ship = 0 }
+days = [5.0]
+propellant_t = 100.0
+
+[[ship]]
+id = 0
+name = "Depot"
+start = { at = "nrho", epoch = "2045-03-01" }
+"#
+            ),
+            ["leg 1: ship \"Depot\" has no class to transfer with"]
         );
     }
 }

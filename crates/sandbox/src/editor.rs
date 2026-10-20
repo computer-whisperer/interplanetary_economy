@@ -7,7 +7,7 @@
 //! planner's own rules (`mission::check`).
 
 use damascene_core::prelude::*;
-use orbit::mission::{Go, Ship, Spot, Step};
+use orbit::mission::{Go, Manifest, Ship, Spot, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::params::ShipClass;
@@ -352,6 +352,7 @@ pub fn press(ship: &Ship, field: Field, places: &Places) -> Option<Ship> {
             pin: None,
             aero: false,
             note: None,
+            manifest: Manifest::default(),
         })),
         Field::AddWait => ship.steps.push(Step::Wait(1.0)),
         _ => return None,

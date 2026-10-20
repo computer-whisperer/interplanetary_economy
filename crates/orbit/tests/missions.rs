@@ -97,6 +97,7 @@ fn assert_round_trip(p: &Plan) {
                         (&x.to.label, &x.days, x.window, x.pin, x.aero, &x.note),
                         (&y.to.label, &y.days, y.window, y.pin, y.aero, &y.note)
                     );
+                    assert_eq!(x.manifest, y.manifest);
                 }
                 _ => panic!("{x:?} read back as {y:?}"),
             }
@@ -106,8 +107,8 @@ fn assert_round_trip(p: &Plan) {
 
 /// Ships without an id get the next ones after the largest given, and
 /// two ships may not share one. The sim engine's tables come back as
-/// they were written, and legs written as a value read back as the same
-/// steps.
+/// they were written, legs written as a value read back as the same
+/// steps, and a leg's manifest is kept as written (a wait has none).
 #[test]
 fn ids_and_the_engines_tables() {
     let src = r#"
@@ -124,6 +125,8 @@ fn ids_and_the_engines_tables() {
         [[ship.leg]]
         to = "nrho"
         days = [5.0]
+        propellant_t = 40.0
+        cargo = { lox = 0.0, equipment = 20.0 }
         [[ship.leg]]
         wait = 2
         [[ship]]
@@ -146,8 +149,21 @@ fn ids_and_the_engines_tables() {
     assert_eq!(back.replans, plan.replans);
 
     let steps = &plan.ships[1].steps;
+    let Step::Go(out) = &steps[0] else {
+        panic!("a leg")
+    };
+    assert_eq!(out.manifest.propellant_t, Some(40.0));
+    assert_eq!(
+        out.manifest.cargo,
+        [("equipment".to_string(), 20.0), ("lox".to_string(), 0.0)].into()
+    );
     let again = parse_legs(legs_value(steps), eph, places).unwrap();
     assert_eq!(format!("{again:?}"), format!("{steps:?}"));
+    let waiting_manifest = src.replace("wait = 2", "wait = 2\n        propellant_t = 40.0");
+    assert_eq!(
+        Plan::parse(&waiting_manifest, eph, places).unwrap_err(),
+        "ship \"b\", leg 2: a wait takes no other keys"
+    );
     let bad = toml::Value::try_from(vec![toml::toml! { wait = -1 }]).unwrap();
     assert_eq!(
         parse_legs(bad, eph, places).unwrap_err(),

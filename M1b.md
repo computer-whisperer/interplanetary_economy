@@ -1,13 +1,13 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-19: steps 1 and 2 done; step 3's parts 1–3 done (the
+Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–4 done (the
 extended station orbits pass their kill-test, the planner designs on
-them, and a leg meets a vessel on its orbit), part 4 next (the plans
-below). Decided: one engine for both modes, with economy components
-landing in the sandbox first (Modes, below); the four decisions below,
-each as recommended; and stations as vessels, flown to where they
-stay, with docking a step of its own (Design, Vessels, stations and
-stocks).
+them, a leg meets a vessel on its orbit, and legs carry manifests the
+log keeps and checks), part 5 next (the plans below). Decided: one
+engine for both modes, with economy components landing in the sandbox
+first (Modes, below); the four decisions below, each as recommended;
+and stations as vessels, flown to where they stay, with docking a step
+of its own (Design, Vessels, stations and stocks).
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
   going on from a checkpoint gives a fresh design's bits
@@ -1653,6 +1653,55 @@ follows from it:
    - Rejected: on the leg that leaves (a last stop could deliver
      nothing); as steps of their own, like waits (they would shift the
      step numbers that keys, re-plans, breaches and checks count).
+   - Settled before building it (2026-10-20):
+     - The manifest is a field of the leg (`mission::Go::manifest`, a
+       `Manifest` as written: `propellant_t`, `cargo`). Design keys and
+       the game's inputs hash steps through `designs::flight`, which
+       leaves it out, so a manifest edit keeps the ship's design, its
+       revision and the day's hashes. The game's edit treats one as a
+       refit, like a new class or load: re-plans are kept, and each
+       manifest is written to the step it stands on (the plan's, the
+       re-plan's leg that made it, or the re-plan's `here` that set it
+       last). Rejected: manifests beside the steps on the ship (every
+       edit of the steps would have to move them, and re-plans carry
+       their own).
+     - With whom, checked where the plan is read: a manifest at a stop
+       with no vessel met, away from LEO, has no one ("no vessel to
+       transfer with at nrho"); a vessel met without a class has no
+       tanks or hold ("ship \"Depot\" has no class to transfer with"):
+       breaches, a warning in the sandbox and refused in career. At LEO
+       with none nothing is said here: a take buys from Earth, and a
+       give with none is the loop's to record as short (part 5). A
+       manifest on a ship without a class is a read error, as a load's
+       is. Tank and hold capacity are checked per leg with the start's
+       wording ("leg 1: a tug-h's tanks hold 150 t, not 160").
+     - `here` (`Replan::here`) sets the manifest of the last leg before
+       `from`, applied with the re-plan (`designs::apply`); refused, by
+       the log and by career, when no leg before `from` arrives at a
+       stop; a breach of it reads "replan 1: here: ...". What was given
+       on arrival was by the manifest standing then: the loop reads
+       re-plans by their dates when it comes to transfers (part 5).
+   - Built (2026-10-20): `Manifest` on `Go`, its keys and the wait's
+     refusal (`orbit::mission`); `Replan::here`, parsed, written and
+     checked (`sim::log`); `flight` and `apply` (`sim::designs`);
+     `ships::Manifest`, `manifest`, `read`'s checks and `breaches`'s,
+     given the plan's ships (`sim::ships`); `Game::edit`'s refit and
+     `remanifest`, `Game::replan`'s `here`, `allowed`'s label
+     (`sim::game`); the editor's new leg (`sandbox::editor`). Tests:
+     three in `sim::ships` (a manifest by commodity; what one is not;
+     no room or no one), the log's round trip and refusal, the orbit
+     plan's round trip, and two in `crates/sim/tests/game.rs` (a
+     manifest edit designs nothing, in a plain plan and in a re-planned
+     career log in the sandbox, and reads back; each manifest check
+     refused in career and warned in the sandbox, and `here` set, refused
+     at the start and beyond the tanks, read back).
+   - Measured (2026-10-20): the manifest edit keeps the design count,
+     the revision and the day's hashes, in the sortie and in the
+     re-planned round trip; the two game tests run in 7 s. The full
+     workspace suite: 328 passed, 13 ignored (as before), none failed,
+     in 9.4 min; clippy and the formatter clean.
+   - Open: the sandbox's editor edits no manifests and its panel shows
+     none (part 7); the loop reads none (part 5).
 5. **Transfers and purchases in the loop** (`sim::state`).
    - What a ship gives goes into the vessel met: the propellant that
      vessel burns into its tanks, the rest into its hold, within their

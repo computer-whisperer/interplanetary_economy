@@ -6,7 +6,9 @@
 //! aerocapture), with their paths for drawing (`track`: sampled, or a
 //! stay's made when asked). A leg may go to where another ship of the plan
 //! is after one of its legs ([`Meeting`], M1b.md, step 3 plan, part 3): the
-//! planner is then given where that vessel is ([`Planner::meet`]).
+//! planner is then given where that vessel is ([`Planner::meet`]). A leg
+//! may carry a [`Manifest`] for the stop it arrives at (step 3 plan, part
+//! 4), which the sim engine reads and designing the ship does not.
 
 use crate::ephem::{BodyId, Ephemeris};
 use crate::families::Catalog;
@@ -194,6 +196,28 @@ pub struct Go {
     /// entry to the surface.
     pub aero: bool,
     pub note: Option<String>,
+    /// What the ship is to carry after the stop the leg arrives at.
+    pub manifest: Manifest,
+}
+
+/// What a ship is to carry after the stop its leg arrives at (M1b.md,
+/// step 3 plan, part 4): propellant, t, and cargo, t by commodity, as the
+/// plan writes them (`propellant_t`, `cargo`). What the ship carries above
+/// them is given on arrival, what is below them taken as it leaves, and
+/// what is not named left as it is; with whom is the vessel met, or Earth
+/// at LEO. Kept as written: the sim engine reads and checks them
+/// (`sim::ships`), and designing the ship does not read them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Manifest {
+    pub propellant_t: Option<f64>,
+    pub cargo: BTreeMap<String, f64>,
+}
+
+impl Manifest {
+    /// Whether it names nothing.
+    pub fn is_empty(&self) -> bool {
+        self.propellant_t.is_none() && self.cargo.is_empty()
+    }
 }
 
 /// A leg's option chosen: when it leaves (a leg between planets, or an
@@ -288,6 +312,10 @@ struct LegFile {
     aero: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    propellant_t: Option<f64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cargo: BTreeMap<String, f64>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -445,6 +473,8 @@ fn legs(steps: &[Step]) -> Vec<LegFile> {
                 }),
                 aero: go.aero,
                 note: go.note.clone(),
+                propellant_t: go.manifest.propellant_t,
+                cargo: go.manifest.cargo.clone(),
                 ..LegFile::default()
             },
         })
@@ -464,7 +494,13 @@ fn steps(
             let fail = |e: String| (i, e);
             match (leg.to, leg.wait) {
                 (None, Some(days)) => {
-                    if leg.days.is_some() || leg.window.is_some() || leg.pin.is_some() || leg.aero {
+                    if leg.days.is_some()
+                        || leg.window.is_some()
+                        || leg.pin.is_some()
+                        || leg.aero
+                        || leg.propellant_t.is_some()
+                        || !leg.cargo.is_empty()
+                    {
                         return Err(fail("a wait takes no other keys".into()));
                     }
                     if !days.is_finite() || days < 0.0 {
@@ -509,6 +545,10 @@ fn steps(
                         .map_err(fail)?,
                     aero: leg.aero,
                     note: leg.note,
+                    manifest: Manifest {
+                        propellant_t: leg.propellant_t,
+                        cargo: leg.cargo,
+                    },
                 })),
                 _ => Err(fail("a leg has `to` or `wait`".into())),
             }

@@ -6,10 +6,11 @@
 
 use crate::designs::apply;
 use orbit::ephem::Ephemeris;
-use orbit::mission::{Meeting, Meetings, Plan, Step, legs_value, parse_legs};
+use orbit::mission::{Manifest, Meeting, Meetings, Plan, Step, legs_value, parse_legs};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -42,6 +43,11 @@ pub struct Replan {
     /// The first of the ship's steps it replaces; those before stay.
     pub from: usize,
     pub steps: Vec<Step>,
+    /// The manifest of the stop the ship is at, set anew (M1b.md, step 3
+    /// plan, part 4): that of the last leg before `from`, whose takes are
+    /// still to come (what was given on its arrival was by the manifest
+    /// standing then; the loop reads re-plans by their dates).
+    pub here: Option<Manifest>,
 }
 
 /// A scenario's check (M1b.md, step 1 plan, part 8; step 2 plan, part 5).
@@ -127,7 +133,28 @@ struct ReplanFile {
     at: String,
     from: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    here: Option<HereFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     leg: Option<toml::Value>,
+}
+
+/// A re-plan's `here`: a manifest, written as a leg writes its own.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HereFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    propellant_t: Option<f64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cargo: BTreeMap<String, f64>,
+}
+
+/// Why a re-plan from step `from` cannot set the manifest of the stop the
+/// ship is at: no leg before `from` arrives at one.
+pub fn here_without_a_stop(from: usize) -> String {
+    format!(
+        "`here` sets the manifest of the stop the ship is at, but no leg before step {from} \
+         arrives at one"
+    )
 }
 
 /// `t` rounded up to the minute, as a log writes it: actions are made at
@@ -194,6 +221,10 @@ impl Log {
                         Some(legs) => parse_legs(legs, eph, places).map_err(fail)?,
                         None => Vec::new(),
                     },
+                    here: r.here.map(|h| Manifest {
+                        propellant_t: h.propellant_t,
+                        cargo: h.cargo,
+                    }),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -268,8 +299,10 @@ impl Log {
 
     /// Why the log is not a game, if it is not: career has a now, and its
     /// re-plans were made by then; re-plans are in time order, each of a
-    /// ship the log has, from one of the steps it had then; and its
-    /// meetings can be designed (M1b.md, step 3 plan, part 3:
+    /// ship the log has, from one of the steps it had then, and one that
+    /// sets the manifest of the stop the ship is at (`here`) has a leg
+    /// before them that arrives at one; and its meetings can be designed
+    /// (M1b.md, step 3 plan, part 3:
     /// [`Meetings`]), as the plan stands with its re-plans, which is how
     /// they are resolved here, into each meeting's place. A re-plan does
     /// not replace a leg another ship's plan meets its ship after, where
@@ -347,6 +380,9 @@ impl Log {
                 .iter_mut()
                 .find(|s| s.id == r.ship)
                 .expect("a re-plan's ship is in the plan (checked above)");
+            if r.here.is_some() && !s.steps[..r.from].iter().any(|s| matches!(s, Step::Go(_))) {
+                return Err(format!("replan {}: {}", i + 1, here_without_a_stop(r.from)));
+            }
             apply(&mut s.steps, r);
         }
         let meetings = Meetings::new(&standing)?;
@@ -387,6 +423,10 @@ impl Log {
                         ship: r.ship,
                         at: r.at.stamp(),
                         from: r.from,
+                        here: r.here.as_ref().map(|m| HereFile {
+                            propellant_t: m.propellant_t,
+                            cargo: m.cargo.clone(),
+                        }),
                         leg: (!r.steps.is_empty()).then(|| legs_value(&r.steps)),
                     })
                     .expect("a re-plan serializes"),
@@ -456,11 +496,14 @@ start = { at = "leo", epoch = "2045-03-01", propellant_t = 120.0, cargo = { equi
 [[ship.leg]]
 to = "nrho"
 days = [5.0]
+propellant_t = 100.0
+cargo = { equipment = 0.0 }
 
 [[replan]]
 ship = 2
 at = "2045-03-02T12:00"
 from = 1
+here = { propellant_t = 120.0, cargo = { equipment = 5.0 } }
 
 [[replan.leg]]
 wait = 3
@@ -509,6 +552,14 @@ dry = false
         assert_eq!(tug.class.as_deref(), Some("tug-h"));
         assert_eq!(tug.propellant_t, Some(120.0));
         assert_eq!(tug.cargo.get("equipment"), Some(&20.0));
+        let Step::Go(out) = &tug.steps[0] else {
+            panic!("a leg")
+        };
+        assert_eq!(out.manifest.propellant_t, Some(100.0));
+        assert_eq!(out.manifest.cargo.get("equipment"), Some(&0.0));
+        let here = log.replans[0].here.as_ref().unwrap();
+        assert_eq!(here.propellant_t, Some(120.0));
+        assert_eq!(here.cargo.get("equipment"), Some(&5.0));
         let text = log.to_toml();
         assert!(text.starts_with("# A career game.\n"), "{text}");
         let back = parse(&text).unwrap();
@@ -519,6 +570,7 @@ dry = false
         );
         assert_eq!(back.setup, log.setup);
         assert_eq!(back.replans[0].at, log.replans[0].at);
+        assert_eq!(back.replans[0].here, log.replans[0].here);
         assert_eq!(back.checks, log.checks);
         assert_eq!(
             log.checks[1..],
@@ -589,6 +641,12 @@ dry = false
         assert_eq!(
             parse(&past_the_end).unwrap_err(),
             "replan 1: from step 2, but the ship has 1"
+        );
+        let here_at_the_start = CAREER.replace("from = 1", "from = 0");
+        assert_eq!(
+            parse(&here_at_the_start).unwrap_err(),
+            "replan 1: `here` sets the manifest of the stop the ship is at, but no leg before \
+             step 0 arrives at one"
         );
     }
 

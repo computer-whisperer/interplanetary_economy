@@ -53,14 +53,37 @@ pub type Met = Result<(Key, Checkpoint), String>;
 /// `None` while the vessel's design has not got there.
 pub type Meet<'a> = dyn Fn(&Meeting) -> Option<Met> + 'a;
 
+/// Hashes what designing `steps` reads: a wait's days, and a leg's all
+/// but its manifest, which is kept as written and designs nothing (M1b.md,
+/// step 3 plan, part 4).
+pub fn flight(h: &mut Fixed, steps: &[Step]) {
+    for s in steps {
+        match s {
+            Step::Wait(days) => {
+                h.str("wait").f64(*days);
+            }
+            Step::Go(go) => {
+                h.str("go")
+                    .debug(&go.to)
+                    .debug(&go.days)
+                    .debug(&go.window)
+                    .debug(&go.pin)
+                    .debug(&go.aero)
+                    .debug(&go.note);
+            }
+        }
+    }
+}
+
 /// The key of the step from the checkpoint keyed `at`, which goes on
 /// from step `next` of `ship`; `met`, where its leg meets a vessel.
 pub fn step_key(at: Key, ship: &Ship, next: usize, met: Option<&Met>) -> Key {
     let mut h = Fixed::default();
     h.str("step").u64(at).u64(next as u64);
-    for s in &ship.steps[next.min(ship.steps.len())..reads(ship, next)] {
-        h.debug(s);
-    }
+    flight(
+        &mut h,
+        &ship.steps[next.min(ship.steps.len())..reads(ship, next)],
+    );
     match met {
         None => {}
         Some(Ok((key, _))) => {
@@ -143,9 +166,16 @@ fn holds(c: &Checkpoint, steps: &[Step], r: &Replan) -> bool {
     c.next() <= r.from && go.is_none_or(|g| r.from <= g)
 }
 
-/// `steps` with re-plan `r` applied.
+/// `steps` with re-plan `r` applied: those from `r.from` replaced, and
+/// the manifest of the stop the ship is at (the last leg's before them)
+/// where `r` sets it.
 pub fn apply(steps: &mut Vec<Step>, r: &Replan) {
     steps.truncate(r.from);
+    if let Some(here) = &r.here
+        && let Some(Step::Go(go)) = steps.iter_mut().rev().find(|s| matches!(s, Step::Go(_)))
+    {
+        go.manifest = here.clone();
+    }
     steps.extend(r.steps.iter().cloned());
 }
 

@@ -5,7 +5,7 @@
 //! it, and its log reads back, in career and in the sandbox, as the game
 //! it was.
 
-use orbit::mission::{Item, ItemKind, Planner, Step};
+use orbit::mission::{Item, ItemKind, Manifest, Planner, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::game::{Game, world};
@@ -193,7 +193,7 @@ fn career_replans_from_now() {
         panic!("the first step is the leg to the Moon")
     };
     go.days = vec![4.0];
-    game.replan(id, 0, steps).unwrap();
+    game.replan(id, 0, steps, None).unwrap();
     game.wait();
     let after = hashes(&game);
     assert_eq!(after[..past], before[..past], "the past is kept");
@@ -209,7 +209,7 @@ fn career_replans_from_now() {
     let reached = game.advance(leg.start.plus_days(1.0));
     assert!(reached.0 > leg.start.0, "now {}", reached.stamp());
     let steps = game.plan().ships[0].steps.clone();
-    let why = game.replan(id, 0, steps).unwrap_err();
+    let why = game.replan(id, 0, steps, None).unwrap_err();
     assert!(why.ends_with("changes a step whose leg had begun"), "{why}");
     let ship = game.plan().ships[0].clone();
     assert!(game.edit(id, ship).is_err(), "career does not edit");
@@ -247,7 +247,7 @@ fn a_longer_station_visit_is_designed() {
 
     let mut longer = steps[1..].to_vec();
     longer[0] = Step::Wait(40.0);
-    game.replan(id, 1, longer).unwrap();
+    game.replan(id, 1, longer, None).unwrap();
     game.wait();
     assert!(game.ships()[0].failure.is_none());
     let stayed = game.ships()[0]
@@ -322,10 +322,10 @@ fn a_later_replan_takes_effect_where_it_holds() {
     let mut game = Game::new(round_trip_in_career("2045-03-01T12:00"), pool(24)).unwrap();
     game.wait();
     let id = game.ships()[0].id;
-    game.replan(id, 1, vec![go("leo", 4.0)]).unwrap();
+    game.replan(id, 1, vec![go("leo", 4.0)], None).unwrap();
     game.wait();
     game.advance("2045-03-02T00:00".parse().unwrap());
-    game.replan(id, 0, vec![go("llo", 4.0), go("leo", 3.5)])
+    game.replan(id, 0, vec![go("llo", 4.0), go("leo", 3.5)], None)
         .unwrap();
     game.wait();
     let legs: Vec<f64> = game.ships()[0]
@@ -357,6 +357,7 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
         at: "2045-03-04T00:00".parse().unwrap(),
         from: 0,
         steps: vec![go("llo", 4.0), go("leo", 3.5)],
+        here: None,
     });
     let mut game = Game::new(log, pool(24)).unwrap();
     game.wait();
@@ -372,7 +373,7 @@ fn a_replan_passed_over_does_not_stop_the_ship() {
         panic!("a leg")
     };
     assert_eq!(out.days, vec![3.5], "the plan as it stands leaves it out");
-    game.replan(id, 1, vec![go("leo", 4.0)]).unwrap();
+    game.replan(id, 1, vec![go("leo", 4.0)], None).unwrap();
     game.wait();
     let home = game.ships()[0]
         .items()
@@ -392,13 +393,13 @@ fn a_log_the_game_wrote_reads_back() {
     let mut game = Game::new(round_trip_in_career("2045-03-04T00:00"), pool(24)).unwrap();
     let id = game.ships()[0].id;
     // Its step not yet designed, it is taken; designed, it is passed over.
-    game.replan(id, 0, vec![go("llo", 4.0)]).unwrap();
+    game.replan(id, 0, vec![go("llo", 4.0)], None).unwrap();
     game.wait();
     assert_eq!(game.ships()[0].refused.len(), 1);
     assert_eq!(game.plan().ships[0].steps.len(), 2);
-    let why = game.replan(id, 2, vec![go("llo", 3.5)]).unwrap_err();
+    let why = game.replan(id, 2, vec![go("llo", 3.5)], None).unwrap_err();
     assert_eq!(why, "replan 2: from step 2, but the ship has 1");
-    game.replan(id, 1, vec![go("leo", 4.0)]).unwrap();
+    game.replan(id, 1, vec![go("leo", 4.0)], None).unwrap();
     game.wait();
     let mut again = Game::new(parse(&game.log().to_toml()), pool(24)).unwrap();
     again.wait();
@@ -417,7 +418,7 @@ fn a_ship_with_no_legs_begins_its_stay_at_now() {
     let start = Epoch::from_ymd(2045, 3, 1);
     let before = game.day_hashes(start, 9);
     let id = game.ships()[0].id;
-    game.replan(id, 0, vec![go("llo", 3.5)]).unwrap();
+    game.replan(id, 0, vec![go("llo", 3.5)], None).unwrap();
     game.wait();
     assert_eq!(game.day_hashes(start, 9), before);
     // Its plane free from now, it leaves at once.
@@ -530,7 +531,7 @@ days = [3.5]
     // Its legs counted as the re-plan's, as a log reads them (found in
     // review: they were counted as the ship's steps).
     let why = game
-        .replan(id, 1, vec![go("moon-south-pole", 0.1)])
+        .replan(id, 1, vec![go("moon-south-pole", 0.1)], None)
         .unwrap_err();
     assert_eq!(
         why,
@@ -635,6 +636,211 @@ start = {{ at = "leo", epoch = "2045-03-01"{load} }}
             .collect();
         assert_eq!(warned, [breach]);
     }
+}
+
+/// A manifest edit designs nothing (M1b.md, step 3 plan, part 4): the
+/// design, its revision and the day's hashes are kept, in a plain plan
+/// and in a re-planned career log in the sandbox, where the manifest is
+/// written to the re-plan's leg; a log with it reads back.
+#[test]
+fn a_manifest_edit_designs_nothing() {
+    let mut game = Game::new(parse(SORTIE), pool(24)).unwrap();
+    game.wait();
+    let (made, revision) = (game.designs_made(), game.ships()[0].revision);
+    let before = hashes(&game);
+    let id = game.ships()[0].id;
+    let mut lander = game.plan().ships[0].clone();
+    let Step::Go(leg) = &mut lander.steps[0] else {
+        panic!("a leg")
+    };
+    leg.manifest.propellant_t = Some(160.0);
+    leg.manifest.cargo.insert("equipment".into(), 10.0);
+    game.edit(id, lander).unwrap();
+    game.wait();
+    assert_eq!(game.designs_made(), made);
+    assert_eq!(game.ships()[0].revision, revision);
+    assert_eq!(hashes(&game), before);
+    let warned: Vec<String> = game.ships()[0]
+        .breaches
+        .iter()
+        .map(|b| b.to_string())
+        .collect();
+    assert_eq!(
+        warned,
+        [
+            "leg 1: a lander-h's tanks hold 150 t, not 160",
+            "leg 1: no vessel to transfer with at llo",
+        ]
+    );
+    let text = game.log().to_toml();
+    assert!(text.contains("propellant_t = 160.0"), "{text}");
+    let again = Game::new(parse(&text), pool(1)).unwrap();
+    assert_eq!(again.ships()[0].breaches, game.ships()[0].breaches);
+    assert!(game.undo());
+    assert!(game.ships()[0].breaches.is_empty());
+    assert_eq!(game.designs_made(), made);
+
+    // A career log in the sandbox: the re-plan is kept, and the manifest
+    // goes to its leg, the log's first steps untouched.
+    let path = format!(
+        "{}/../../data/scenarios/llo-round-trip-replanned.toml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let log = parse(&std::fs::read_to_string(path).unwrap());
+    let mut game = Game::in_mode(log, Mode::Sandbox, pool(24)).unwrap();
+    game.wait();
+    let made = game.designs_made();
+    let id = game.ships()[0].id;
+    let mut tug = game.plan().ships[0].clone();
+    tug.class = Some("tug-h".into());
+    let Step::Go(home) = &mut tug.steps[1] else {
+        panic!("a leg")
+    };
+    home.manifest.propellant_t = Some(10.0);
+    game.edit(id, tug).unwrap();
+    game.wait();
+    assert_eq!(game.designs_made(), made);
+    let log = game.log();
+    assert_eq!(log.replans.len(), 1);
+    let Step::Go(home) = &log.replans[0].steps[1] else {
+        panic!("a leg")
+    };
+    assert_eq!(home.manifest.propellant_t, Some(10.0));
+    let Step::Go(first) = &log.plan.ships[0].steps[1] else {
+        panic!("a leg")
+    };
+    assert_eq!(first.manifest.propellant_t, None);
+    let Step::Go(standing) = &game.plan().ships[0].steps[1] else {
+        panic!("a leg")
+    };
+    assert_eq!(standing.manifest.propellant_t, Some(10.0));
+}
+
+/// Each check of a manifest, broken alone: refused in career, a warning
+/// on the step in the sandbox. A career re-plan sets the manifest of the
+/// stop the ship is at (`here`), within its class, and not at its start.
+#[test]
+fn career_refuses_a_manifest_it_cannot_fill_and_sets_one_here() {
+    let cases = [
+        (
+            "leo",
+            "propellant_t = 150.5",
+            "leg 1: a tug-h's tanks hold 150 t, not 150.5",
+        ),
+        (
+            "leo",
+            "cargo = { equipment = 50.5 }",
+            "leg 1: a tug-h's hold takes 50 t, not 50.5",
+        ),
+        (
+            "llo",
+            "cargo = { equipment = 20.0 }",
+            "leg 1: no vessel to transfer with at llo",
+        ),
+    ];
+    for (to, manifest, breach) in cases {
+        let src = format!(
+            r#"
+name = "manifest"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+name = "Tug"
+class = "tug-h"
+start = {{ at = "leo", epoch = "2045-03-01" }}
+
+[[ship.leg]]
+to = "{to}"
+days = [3.5]
+{manifest}
+"#
+        );
+        let why = Game::new(parse(&src), pool(1)).err().unwrap();
+        assert_eq!(why, format!("ship \"Tug\": {breach}"));
+        let game = Game::in_mode(parse(&src), Mode::Sandbox, pool(1)).unwrap();
+        let warned: Vec<String> = game.ships()[0]
+            .breaches
+            .iter()
+            .map(|b| b.to_string())
+            .collect();
+        assert_eq!(warned, [breach]);
+    }
+
+    let src = r#"
+name = "here"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 10
+
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-02" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 40.0
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+"#;
+    let mut game = Game::new(parse(src), pool(24)).unwrap();
+    let here = Manifest {
+        propellant_t: Some(60.0),
+        cargo: [("equipment".to_string(), 5.0)].into(),
+    };
+    let why = game.replan(1, 0, vec![], Some(here.clone())).unwrap_err();
+    assert_eq!(
+        why,
+        "`here` sets the manifest of the stop the ship is at, but no leg before step 0 arrives \
+         at one"
+    );
+    let too_much = Manifest {
+        propellant_t: Some(151.0),
+        cargo: Default::default(),
+    };
+    let why = game
+        .replan(1, 1, vec![go("leo", 5.0)], Some(too_much))
+        .unwrap_err();
+    assert_eq!(why, "replan 1: here: a tug-h's tanks hold 150 t, not 151");
+    assert!(game.log().replans.is_empty());
+    game.replan(1, 1, vec![go("leo", 5.0)], Some(here.clone()))
+        .unwrap();
+    assert_eq!(game.log().replans[0].here, Some(here.clone()));
+    let Step::Go(out) = &game.plan().ships[1].steps[0] else {
+        panic!("a leg")
+    };
+    assert_eq!(out.manifest, here);
+    let again = Game::new(parse(&game.log().to_toml()), pool(1)).unwrap();
+    assert_eq!(again.log().replans[0].here, Some(here.clone()));
+    let Step::Go(out) = &again.plan().ships[1].steps[0] else {
+        panic!("a leg")
+    };
+    assert_eq!(out.manifest, here);
 }
 
 /// A depot flown to the NRHO and home, and a tug that meets it there
@@ -964,10 +1170,10 @@ fn career_keeps_a_leg_another_ship_meets() {
     log.setup.now = Some("2045-03-01".parse().unwrap());
     let mut game = Game::new(log, pool(24)).unwrap();
     let steps = game.plan().ships[0].steps.clone();
-    let why = game.replan(0, 0, steps.clone()).unwrap_err();
+    let why = game.replan(0, 0, steps.clone(), None).unwrap_err();
     assert_eq!(
         why,
         "ship \"Tug\" meets it after leg 0 (step 0 of its plan), which the re-plan replaces"
     );
-    game.replan(0, 1, steps[1..].to_vec()).unwrap();
+    game.replan(0, 1, steps[1..].to_vec(), None).unwrap();
 }
