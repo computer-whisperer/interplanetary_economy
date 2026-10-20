@@ -2,7 +2,8 @@
 //! opened from a ship's row; a leg's durations typed and committed with
 //! Enter, the leg designed again; a wait added; a destination the
 //! planner cannot reach saying why at once; undo; ships added and
-//! removed. Its class and load (M1b.md, step 2 plan, part 4).
+//! removed. Its class and load (M1b.md, step 2 plan, part 4); a leg that
+//! meets a vessel, and its manifest (M1b.md, step 3 plan, part 7).
 
 use damascene_core::prelude::*;
 use damascene_wgpu::Runner;
@@ -50,7 +51,7 @@ impl Harness {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: frame::OFFSCREEN_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let mut ui = Runner::new(&gpu.device, &gpu.queue, frame::OFFSCREEN_FORMAT);
@@ -106,27 +107,21 @@ impl Harness {
         }
     }
 
-    /// Writes the last frame where `OPTIONS_SHOT` says, if it does.
+    /// Writes the frame as the harness's own runner draws it (menus and
+    /// scroll positions as they stand) where `OPTIONS_SHOT` says, if it
+    /// does.
     fn shot(&mut self, app: &mut Shell, name: &str) {
         let Ok(dir) = std::env::var("OPTIONS_SHOT") else {
             return;
         };
-        let s = frame::shot(
-            &self.gpu,
-            app,
-            None,
-            self.size.0 as u32,
-            self.size.1 as u32,
-            1.0,
-        );
+        self.draw(app);
+        let rgba = self.gpu.read(&self.texture);
+        let (width, height) = (self.size.0 as u32, self.size.1 as u32);
         let file = std::fs::File::create(format!("{dir}/{name}.png")).unwrap();
-        let mut png = png::Encoder::new(std::io::BufWriter::new(file), s.width, s.height);
+        let mut png = png::Encoder::new(std::io::BufWriter::new(file), width, height);
         png.set_color(png::ColorType::Rgba);
         png.set_depth(png::BitDepth::Eight);
-        png.write_header()
-            .unwrap()
-            .write_image_data(&s.rgba)
-            .unwrap();
+        png.write_header().unwrap().write_image_data(&rgba).unwrap();
     }
 }
 
@@ -164,6 +159,37 @@ impl Harness {
         self.draw(app);
     }
 
+    /// Scrolls the view keyed `scroll` until `key` lies within it, a
+    /// wheel line at a time as the host does: offered to the app, then
+    /// the runner's own scroll.
+    fn scroll_to(&mut self, app: &mut Shell, scroll: &str, key: &str) {
+        for _ in 0..100 {
+            let view = self.ui.rect_of_key(scroll).expect("the scroll view");
+            let r = self
+                .ui
+                .rect_of_key(key)
+                .unwrap_or_else(|| panic!("{key} is laid out"));
+            if r.y >= view.y && r.y + r.h <= view.y + view.h {
+                return;
+            }
+            let (x, y) = (view.x + view.w / 2.0, view.y + view.h / 2.0);
+            let dy = if r.y + r.h > view.y + view.h {
+                sandbox::host::WHEEL_LINE
+            } else {
+                -sandbox::host::WHEEL_LINE
+            };
+            let taken = self.ui.pointer_wheel_event(x, y, 0.0, dy).is_some_and(|e| {
+                let cx = EventCx::new().with_ui_state(self.ui.ui_state());
+                app.on_wheel_event(e, &cx)
+            });
+            if !taken {
+                self.ui.pointer_wheel(x, y, dy);
+            }
+            self.draw(app);
+        }
+        panic!("{key} did not come into {scroll}");
+    }
+
     fn click_key(&mut self, app: &mut Shell, key: &str) {
         let r = self
             .ui
@@ -178,24 +204,29 @@ fn steps(app: &Shell) -> Vec<Step> {
     app.plan.as_ref().unwrap().plan().ships[0].steps.clone()
 }
 
-/// Opens the editor on the first ship by its row, found down the panel's
-/// list (damascene does not index keyed nodes in a virtual list's rows).
-fn open_editor(h: &mut Harness, app: &mut Shell) {
+/// Opens the editor on ship `s` by its row, found down the panel's list
+/// (damascene does not index keyed nodes in a virtual list's rows).
+fn open_editor_on(h: &mut Harness, app: &mut Shell, s: usize) {
     let list = h.ui.rect_of_key(panel::LIST_KEY).unwrap();
     let x = list.x + list.w / 2.0;
-    let y = (0..100)
+    let y = (0..250)
         .map(|i| list.y + i as f32 * 4.0)
         .find(|&y| {
             let down =
                 h.ui.pointer_down(Pointer::mouse(x, y, PointerButton::Primary));
             h.ui.pointer_up(Pointer::mouse(x, y, PointerButton::Primary));
             down.iter()
-                .any(|e| e.route() == Some(panel::ship_key(0).as_str()))
+                .any(|e| e.route() == Some(panel::ship_key(s).as_str()))
         })
         .expect("the ship's row");
     h.click(app, (x, y));
     h.draw(app);
-    assert_eq!(app.editor.as_ref().map(|e| e.ship), Some(0));
+    assert_eq!(app.editor.as_ref().map(|e| e.ship), Some(s));
+}
+
+/// Opens the editor on the first ship.
+fn open_editor(h: &mut Harness, app: &mut Shell) {
+    open_editor_on(h, app, 0);
 }
 
 /// Selects all of the focused field's text.
@@ -392,4 +423,125 @@ fn class_and_load_edited() {
     assert!(app.editor.is_none());
     assert!(ship(&app).class.is_none() && ship(&app).propellant_t.is_none());
     assert_eq!(app.plan.as_ref().unwrap().game().designs_made(), made);
+}
+
+/// A leg's destination chosen among the plan's vessels, and its manifest
+/// typed (M1b.md, step 3 plan, part 7): the tug meets the depot where it
+/// starts, the trigger names it, and once designed the panel shows what
+/// it gave on arrival and what both were bought for at LEO.
+#[test]
+fn a_leg_meets_a_vessel_with_a_manifest() {
+    const MEET: &str = r#"
+name = "Meet"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "nrho", epoch = "2045-03-01" }
+
+[[ship.leg]]
+wait = 30
+
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+"#;
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(MEET, eph, Places::standard()).unwrap()).unwrap();
+    plan.wait();
+    let mut app = Shell::new(plan.epoch());
+    app.load(plan);
+    let mut h = Harness::new(&app, (1400.0, 1000.0));
+    h.draw(&mut app);
+    open_editor_on(&mut h, &mut app, 1);
+    let tug = |app: &Shell| app.plan.as_ref().unwrap().plan().ships[1].clone();
+
+    h.click_key(&mut app, &Field::To(0).key());
+    h.shot(&mut app, "vessel-menu");
+    h.click_key(&mut app, &format!("{}:option:meet:0", Field::To(0).key()));
+    assert_eq!(app.editor.as_ref().unwrap().refused, None);
+    let Step::Go(go) = &tug(&app).steps[0] else {
+        unreachable!()
+    };
+    assert_eq!(
+        go.to.meeting,
+        Some(orbit::mission::Meeting { ship: 0, leg: None })
+    );
+    assert_eq!(
+        sandbox::editor::destination(&tug(&app), &app.plan.as_ref().unwrap().plan().ships, 0),
+        "Depot, start"
+    );
+    assert!(app.editor.as_ref().unwrap().refused.is_none());
+
+    // Under the editor's fold: scrolled to, as the wheel would.
+    let field = Field::LegPropellant(0).key();
+    h.scroll_to(&mut app, sandbox::editor::SCROLL_KEY, &field);
+    h.click_key(&mut app, &field);
+    assert!(
+        app.editor.as_ref().unwrap().typing,
+        "the field has the keyboard"
+    );
+    select_all(&mut h, &mut app);
+    h.type_text(&mut app, "20");
+    h.key(&mut app, NamedKey::Enter, KeyModifiers::default());
+    let Step::Go(go) = &tug(&app).steps[0] else {
+        unreachable!()
+    };
+    assert_eq!(go.manifest.propellant_t, Some(20.0));
+    h.shot(&mut app, "manifest");
+
+    app.plan.as_mut().unwrap().wait();
+    h.draw(&mut app);
+    let plan = app.plan.as_ref().unwrap();
+    assert!(
+        plan.ships[1].failure.is_none(),
+        "{:?}",
+        plan.ships[1].failure
+    );
+    let rows = panel::rows(eph, &plan.ships, app.clock.t, None);
+    let tug_row = 1 + plan.ships[0].items.len();
+    let starts = |row: &panel::Row, prefix: &str| {
+        assert!(
+            row.lines.iter().any(|(l, _)| l.starts_with(prefix)),
+            "no line {prefix:?} in {:?}",
+            row.lines
+        );
+    };
+    // The tug, starting at LEO, is bought there; the depot, starting at
+    // the NRHO, is simply there.
+    starts(&rows[tug_row], "Bought at LEO for $");
+    assert!(
+        rows[0].lines.iter().all(|(l, _)| !l.starts_with("Bought")),
+        "{:?}",
+        rows[0].lines
+    );
+    // The tug's plan ends at the depot: its arrival is the stop. The
+    // depot's tanks are full (its start names no load), so the hydrogen
+    // goes into its hold and the LOX has no room.
+    let arrival = plan.ships[1].items.len() - 1;
+    let stop = &rows[tug_row + 1 + arrival];
+    let line = |prefix: &str| {
+        stop.lines
+            .iter()
+            .find(|(l, _)| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no line {prefix:?} in {:?}", stop.lines))
+            .clone()
+    };
+    let gave = line("gave LH2 ");
+    assert_eq!(gave.1, panel::Tone::Muted);
+    assert!(gave.0.ends_with(" to Depot"), "{}", gave.0);
+    let short = line("give of ");
+    assert_eq!(short.1, panel::Tone::Warning);
+    assert!(
+        short.0.contains(" of LOX fell short: 0 g (no room for it)"),
+        "{}",
+        short.0
+    );
 }

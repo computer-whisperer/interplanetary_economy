@@ -1,5 +1,8 @@
 //! The plan's panel (M1c.md, step 5 plan, item 2): beside the map, each
-//! ship and its items, with their times and Δv, the failures and why.
+//! ship and its items, with their times and Δv, the failures and why; its
+//! tanks and hold, what each burn took, where it ran dry (M1b.md, step 2
+//! plan, part 4); what it was bought for, and each stop's transfers
+//! (M1b.md, step 3 plan, parts 5 and 7).
 
 use crate::labels::{grouped, mps};
 use crate::plan::{Ship, Tanks};
@@ -7,7 +10,8 @@ use damascene_core::prelude::*;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Item, ItemKind, MarkerKind, when};
 use orbit::time::Epoch;
-use sim::ships::{Commodity, Load};
+use sim::ships::{COMMODITIES, Commodity, Load};
+use sim::state::{Bought, Kind, Purchase, Transfer, With};
 use std::sync::Arc;
 
 /// The panel's list's key.
@@ -95,6 +99,7 @@ pub fn rows(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for (s, ship) in ships.iter().enumerate() {
+        let base = rows.len();
         let state = match (&ship.failure, ship.done) {
             (Some(_), _) => "failed",
             (None, true) => "designed",
@@ -141,6 +146,9 @@ pub fn rows(
                 None => String::new(),
             };
             lines.push((format!("{}{now}", tanks.class), Tone::Muted));
+            if !tanks.state.purchases.is_empty() {
+                lines.push((bought(&tanks.state.purchases), Tone::Muted));
+            }
             if let Some(dry) = tanks.dry() {
                 let at = ship
                     .items
@@ -186,8 +194,124 @@ pub fn rows(
             row.selected = selected == Some((s, k));
             rows.push(row);
         }
+        // Its transfers, on the stop each was made at (the ship's own row
+        // where no item is the stop's: not expected, and not dropped).
+        if let Some(tanks) = &ship.tanks {
+            let mut stops: Vec<(Option<usize>, Vec<&Transfer>)> = Vec::new();
+            for x in &tanks.state.transfers {
+                let at = stop_item(&ship.items, x.step);
+                match stops.iter_mut().find(|(k, _)| *k == at) {
+                    Some((_, made)) => made.push(x),
+                    None => stops.push((at, vec![x])),
+                }
+            }
+            for (at, made) in stops {
+                let r = at.map_or(base, |k| base + 1 + k);
+                rows[r].lines.extend(transferred(ships, &made));
+            }
+        }
     }
     rows
+}
+
+/// The item a stop's transfers are shown on, for the stop the leg at
+/// `step` arrives at: the stay after it, or the arrival itself where the
+/// ship does not stay (its plan ends there, or its next leg leaves at
+/// once).
+fn stop_item(items: &[Item], step: usize) -> Option<usize> {
+    let arrival = items.iter().rposition(|i| i.step == step)?;
+    match items.get(arrival + 1) {
+        Some(next) if next.kind == ItemKind::Stay => Some(arrival + 1),
+        _ => Some(arrival),
+    }
+}
+
+/// Whom a transfer was with: the vessel by its name among `ships`.
+fn whom(ships: &[Ship], with: With) -> String {
+    match with {
+        With::Vessel { id, .. } => ships
+            .iter()
+            .find(|s| s.id == id)
+            .map_or_else(|| format!("ship {id}"), |s| s.name.clone()),
+        With::Earth => "Earth".into(),
+        With::NoOne => "no one".into(),
+    }
+}
+
+/// A stop's transfers, `made` in time order: those made in full as one
+/// line each way ("gave LOX 60.0 t, LH2 8.6 t to Depot"; at LEO, "bought
+/// LOX 85.7 t from Earth for $12.3M"), and each that fell short with why.
+fn transferred(ships: &[Ship], made: &[&Transfer]) -> Vec<(String, Tone)> {
+    let mut lines = Vec::new();
+    for kind in [Kind::Give, Kind::Take] {
+        let full: Vec<&&Transfer> = made
+            .iter()
+            .filter(|x| x.kind == kind && x.short.is_none())
+            .collect();
+        let Some(first) = full.first() else {
+            continue;
+        };
+        let amounts: Vec<String> = full
+            .iter()
+            .map(|x| format!("{} {}", x.commodity.name(), mass(x.got)))
+            .collect();
+        let with = whom(ships, first.with);
+        let cost: f64 = full.iter().filter_map(|x| x.cost_musd).sum();
+        let line = match (kind, first.with) {
+            (Kind::Give, _) => format!("gave {} to {with}", amounts.join(", ")),
+            (Kind::Take, With::Earth) => {
+                format!(
+                    "bought {} from {with} for {}",
+                    amounts.join(", "),
+                    musd(cost)
+                )
+            }
+            (Kind::Take, _) => format!("took {} from {with}", amounts.join(", ")),
+        };
+        lines.push((line, Tone::Muted));
+    }
+    for x in made.iter().filter(|x| x.short.is_some()) {
+        let kind = match x.kind {
+            Kind::Give => "give",
+            Kind::Take => "take",
+        };
+        lines.push((
+            format!(
+                "{kind} of {} of {} fell short: {} ({})",
+                mass(x.asked),
+                x.commodity.name(),
+                mass(x.got),
+                x.short.expect("filtered")
+            ),
+            Tone::Warning,
+        ));
+    }
+    lines
+}
+
+/// What a ship was bought for at LEO: "Bought at LEO for $1,150M: the ship
+/// $900M, LOX 85.7 t $200M, LH2 12.2 t $50M".
+fn bought(purchases: &[Purchase]) -> String {
+    let total: f64 = purchases.iter().map(|p| p.musd).sum();
+    let parts: Vec<String> = purchases
+        .iter()
+        .map(|p| match p.what {
+            Bought::Ship => format!("the ship {}", musd(p.musd)),
+            Bought::Commodity(c) => format!("{} {} {}", c.name(), mass(p.tonnes), musd(p.musd)),
+        })
+        .collect();
+    format!("Bought at LEO for {}: {}", musd(total), parts.join(", "))
+}
+
+/// Millions of dollars, to three figures: "$1,234M", "$12.3M", "$1.23M".
+fn musd(x: f64) -> String {
+    if x >= 100.0 {
+        format!("${}M", grouped(x))
+    } else if x >= 10.0 {
+        format!("${x:.1}M")
+    } else {
+        format!("${x:.2}M")
+    }
 }
 
 /// A shortfall, km/s: in m/s, to a tenth under 100; under a tenth, in
@@ -216,8 +340,8 @@ fn mass(t: f64) -> String {
     }
 }
 
-/// What a ship carries: its tanks' LOX and fuel, and its hold, if it
-/// holds anything.
+/// What a ship carries: its tanks' LOX and fuel, and its hold by
+/// commodity, if it holds anything.
 fn carried(load: &Load, fuel: Commodity) -> String {
     let mut s = format!(
         "{} {}, {} {}",
@@ -226,8 +350,13 @@ fn carried(load: &Load, fuel: Commodity) -> String {
         fuel.name(),
         mass(load.fuel)
     );
-    if load.cargo() > 0.0 {
-        s.push_str(&format!(" · hold {}", mass(load.cargo())));
+    let held: Vec<String> = COMMODITIES
+        .iter()
+        .filter(|&&c| load.cargo[c as usize] > 0.0)
+        .map(|&c| format!("{} {}", c.name(), mass(load.cargo[c as usize])))
+        .collect();
+    if !held.is_empty() {
+        s.push_str(&format!(" · hold {}", held.join(", ")));
     }
     s
 }
@@ -444,5 +573,158 @@ mod tests {
         assert_eq!(parse_item_key("ship:3"), None);
         assert_eq!(parse_ship_key(&ship_key(3)), Some(3));
         assert_eq!(parse_item_key("item:3"), None);
+    }
+
+    #[test]
+    fn money_and_mass_read() {
+        assert_eq!(musd(1234.4), "$1,234M");
+        assert_eq!(musd(99.96), "$100.0M");
+        assert_eq!(musd(12.345), "$12.3M");
+        assert_eq!(musd(1.2345), "$1.23M");
+        assert_eq!(musd(0.0), "$0.00M");
+        assert_eq!(mass(85.66), "85.7 t");
+        assert_eq!(mass(1.234), "1.23 t");
+        assert_eq!(mass(0.308), "308.0 kg");
+        assert_eq!(mass(0.0), "0 g");
+    }
+
+    /// Transfers and purchases as lines: in full each way, and each that
+    /// fell short with why; a vessel by its name.
+    #[test]
+    fn transfers_and_purchases_read() {
+        use orbit::time::Epoch;
+        let t = Epoch::from_ymd(2045, 3, 11);
+        let x = |kind, with, commodity, asked, got, short, cost_musd| Transfer {
+            t,
+            step: 0,
+            with,
+            kind,
+            commodity,
+            asked,
+            got,
+            short,
+            cost_musd,
+        };
+        let depot = With::Vessel {
+            id: 7,
+            leg: Some(0),
+        };
+        let ships = [Ship {
+            id: 7,
+            name: "Depot".into(),
+            items: Vec::new(),
+            done: true,
+            failure: None,
+            first_leg: 0,
+            revision: 0,
+            warnings: Vec::new(),
+            tanks: None,
+        }];
+        let made = [
+            x(Kind::Give, depot, Commodity::Lox, 60.0, 60.0, None, None),
+            x(Kind::Give, depot, Commodity::Lh2, 8.6, 8.6, None, None),
+            x(
+                Kind::Take,
+                depot,
+                Commodity::Lh2,
+                0.308,
+                0.0,
+                Some(sim::state::Short::Stock),
+                None,
+            ),
+            x(
+                Kind::Take,
+                depot,
+                Commodity::Lox,
+                0.0231,
+                0.0231,
+                None,
+                None,
+            ),
+        ];
+        let lines = transferred(&ships, &made.iter().collect::<Vec<_>>());
+        assert_eq!(
+            lines,
+            vec![
+                (
+                    "gave LOX 60.0 t, LH2 8.60 t to Depot".to_string(),
+                    Tone::Muted
+                ),
+                ("took LOX 23.1 kg from Depot".to_string(), Tone::Muted),
+                (
+                    "take of 308.0 kg of LH2 fell short: 0 g (the vessel has less)".to_string(),
+                    Tone::Warning
+                ),
+            ]
+        );
+        let earth = [
+            x(
+                Kind::Take,
+                With::Earth,
+                Commodity::Lox,
+                85.7,
+                85.7,
+                None,
+                Some(10.0),
+            ),
+            x(
+                Kind::Take,
+                With::Earth,
+                Commodity::Lh2,
+                12.2,
+                12.2,
+                None,
+                Some(2.3),
+            ),
+            x(
+                Kind::Give,
+                With::NoOne,
+                Commodity::Equipment,
+                5.0,
+                0.0,
+                Some(sim::state::Short::NoOne),
+                None,
+            ),
+        ];
+        let lines = transferred(&[], &earth.iter().collect::<Vec<_>>());
+        assert_eq!(
+            lines,
+            vec![
+                (
+                    "bought LOX 85.7 t, LH2 12.2 t from Earth for $12.3M".to_string(),
+                    Tone::Muted
+                ),
+                (
+                    "give of 5.00 t of equipment fell short: 0 g (no one to transfer with)"
+                        .to_string(),
+                    Tone::Warning
+                ),
+            ]
+        );
+        assert_eq!(whom(&[], depot), "ship 7");
+        let purchases = [
+            Purchase {
+                t,
+                what: Bought::Ship,
+                tonnes: 0.0,
+                musd: 900.0,
+            },
+            Purchase {
+                t,
+                what: Bought::Commodity(Commodity::Lox),
+                tonnes: 85.7,
+                musd: 200.0,
+            },
+            Purchase {
+                t,
+                what: Bought::Commodity(Commodity::Lh2),
+                tonnes: 12.2,
+                musd: 50.0,
+            },
+        ];
+        assert_eq!(
+            bought(&purchases),
+            "Bought at LEO for $1,150M: the ship $900M, LOX 85.7 t $200M, LH2 12.2 t $50.0M"
+        );
     }
 }

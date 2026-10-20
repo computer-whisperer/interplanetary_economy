@@ -666,12 +666,14 @@ impl Shell {
             }
         }
         let clicked = matches!(event.kind, UiEventKind::Click | UiEventKind::Activate);
-        // A menu's option (a place, or the class), or its trigger.
+        // A menu's option (a place, a vessel, or the class), or its
+        // trigger.
         let ed = self.editor.as_mut().unwrap();
         if let Some(f) = ed.menu {
             if clicked && let Some(id) = event.route_suffix(&format!("{}:option", f.key())) {
                 ed.menu = None;
-                let changed = editor::choose(&ship, f, id, Places::standard(), &classes);
+                let ships = &self.plan.as_ref().unwrap().plan().ships;
+                let changed = editor::choose(&ship, f, id, Places::standard(), ships, &classes);
                 match changed {
                     Ok(ship) => self.change(s, ship),
                     Err(why) => self.editor.as_mut().unwrap().refused = Some(why),
@@ -1294,6 +1296,7 @@ impl App for Shell {
                                 editor::section(
                                     ed,
                                     &plan.plan().ships[ed.ship],
+                                    &plan.plan().ships,
                                     &orbit::mission::check(self.eph, &plan.plan().ships[ed.ship]),
                                     &plan.game().economy().ships,
                                     &self.selection,
@@ -1403,9 +1406,14 @@ impl App for Shell {
         if self.settings_open {
             layers.push(settings::menu(&self.settings));
         }
-        if let (Some(f), Some(plan)) = (self.editor.as_ref().and_then(|e| e.menu), &self.plan) {
+        if let (Some(ed), Some(plan)) = (self.editor.as_ref(), &self.plan)
+            && let Some(f) = ed.menu
+            && let Some(ship) = plan.plan().ships.get(ed.ship)
+        {
             layers.push(editor::menu(
                 f,
+                ship,
+                &plan.plan().ships,
                 Places::standard(),
                 &plan.game().economy().ships,
             ));

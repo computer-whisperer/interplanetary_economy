@@ -142,6 +142,22 @@ impl Spot {
             meeting: None,
         })
     }
+
+    /// Meeting `m`, at `kind`: where the vessel is after the leg named
+    /// ([`Meetings::place`]), or a stand-in to be resolved.
+    pub fn meeting(m: Meeting, kind: PlaceKind) -> Spot {
+        let mut source = toml::Table::new();
+        source.insert("ship".into(), toml::Value::Integer(m.ship as i64));
+        if let Some(leg) = m.leg {
+            source.insert("leg".into(), toml::Value::Integer(leg as i64));
+        }
+        Spot {
+            label: m.label(),
+            kind,
+            source: toml::Value::Table(source),
+            meeting: Some(m),
+        }
+    }
 }
 
 /// A vessel of the plan, met where it is after one of its legs: `to = {
@@ -581,16 +597,10 @@ fn spot(v: &toml::Value, eph: &Ephemeris, places: &Places) -> Result<Spot, Strin
                 meeting: None,
             })
             .ok_or_else(|| format!("no place {id:?}")),
+        // Where the vessel is: resolved against the plan once every ship
+        // is read (`Plan::resolve`).
         toml::Value::Table(t) if t.contains_key("ship") => {
-            let meeting = meeting(t)?;
-            Ok(Spot {
-                label: meeting.label(),
-                // Where the vessel is: resolved against the plan once
-                // every ship is read (`Plan::resolve`).
-                kind: PlaceKind::Body(eph.sun()),
-                source: v.clone(),
-                meeting: Some(meeting),
-            })
+            Ok(Spot::meeting(meeting(t)?, PlaceKind::Body(eph.sun())))
         }
         toml::Value::Table(t) => {
             let kind = PlaceKind::from_table(t, eph, &[])?;

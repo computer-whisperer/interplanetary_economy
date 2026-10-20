@@ -1,10 +1,12 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–6 done (the
+Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–7 done (the
 extended station orbits pass their kill-test, the planner designs on
 them, a leg meets a vessel on its orbit, legs carry manifests the log
-keeps and checks, the loop makes their transfers and purchases, and
-career refuses an action that runs a vessel dry or short), part 7 next
+keeps and checks, the loop makes their transfers and purchases, career
+refuses an action that runs a vessel dry or short, and the sandbox's
+editor sets meetings and manifests while its panel shows transfers and
+purchases), part 8 next
 (the plans below). Decided: one engine for both modes, with economy
 components landing in the sandbox first (Modes, below); the four
 decisions below, each as recommended; and stations as vessels, flown
@@ -1882,6 +1884,79 @@ follows from it:
      and leg; a manifest per leg, as the start's load.
    - The panel: each stop's transfers (given, taken, with whom; what
      fell short and why); purchases and their cost.
+   - Settled before building it (2026-10-20):
+     - The destination menu lists every other ship of the plan where it
+       starts and after each of its legs ("Depot, start — leo", "Depot,
+       leg 2 — nrho"), then the places (the vessels are few and the
+       plan's own; the 22 places run past the menu's height, which the
+       GPU test found when its vessel, listed last, sat under the
+       scrim), legs counted from 0 as the file's
+       `leg` and the engine's messages count them (the editor's own step
+       rows count from 1; left as it was). Choosing one makes the meeting
+       (`Spot::meeting`, new in `orbit::mission`, which the file's reader
+       shares) at the place it resolves to as the plan stands
+       (`Meetings::place`); a vessel the plan has not, or a wait of its,
+       is refused there, and a ship meeting itself or meetings waiting on
+       each other by the game's check, shown in the editor. The trigger
+       names the vessel ("Depot, leg 2"; `editor::destination`), the
+       engine's labels elsewhere stay "ship 0, leg 2". A start is a
+       place, never a meeting.
+     - A manifest is edited under its leg, as the start's load is edited
+       under the class: propellant, t, and cargo by commodity
+       (`Field::LegPropellant`, `Field::LegCargo`), shown only with a
+       class. Empty leaves a commodity as it is; a cargo at 0 is kept (it
+       gives the commodity away), unlike the start's cargo, where 0 is
+       none. The game treats the edit as a refit (part 4): nothing is
+       designed again.
+     - The panel shows a stop's transfers on the stay after the arriving
+       leg, or on the arrival itself where the ship does not stay (its
+       plan ends there, or its next leg leaves at once): those made in
+       full as one line each way ("gave LOX 60.0 t, LH2 8.60 t to Depot";
+       "took LOX 23.1 kg from Depot"; at LEO, "bought LOX 85.7 t, LH2
+       12.2 t from Earth for $12.3M"), and each that fell short as a
+       warning with why ("take of 308.0 kg of LH2 fell short: 0 g (the
+       vessel has less)"). Purchases on the ship's row ("Bought at LEO
+       for $1,150M: the ship $900M, LOX 85.7 t $200M, …"). The hold is
+       shown by commodity. Rejected: transfers on the leg that asked (a
+       give and the take it pairs with would sit two rows apart, with
+       the stay between).
+   - Built (2026-10-20): `Spot::meeting` (`orbit::mission`); the fields,
+     `destination`, the vessel options of `menu`, `choose`/`place` given
+     the plan's ships (`sandbox::editor`); the stop rows, `bought`,
+     `musd`, the hold by commodity (`sandbox::panel`); the app passes the
+     plan's ships. Tests: the editor's unit tests (keys; a vessel chosen,
+     refused; a manifest set and read), the panel's (money and mass;
+     transfer and purchase lines), `crates/sandbox/tests/stops.rs` (the
+     loop's depot plan in the sandbox: both ships bought at LEO, the
+     tug's stop row gives and takes with the depot, its LEO stay buys from
+     Earth with the cost, the depot's hold shows the hydrogen; a tug with
+     no one to give to warns on the leg and says what fell short at the
+     stop) and `a_leg_meets_a_vessel_with_a_manifest` in
+     `crates/sandbox/tests/editor.rs` (the menu's vessel option clicked,
+     the trigger's name, a manifest typed, the panel's lines once
+     designed).
+   - Measured (2026-10-20): the stops tests design the depot plan and the
+     lone tug in 51 s; the editor's three GPU tests, the new one
+     designing the tug's leg to the depot met at its start, in 35–38 s.
+     Found building it: the depot is a methalox hauler, so the tug's
+     hydrogen goes into its hold (the stops test first asked for
+     hydrogen on the depot's purchase line); a depot whose start names
+     no load has full tanks, so the LOX given has no room (the GPU test
+     asserts the warning); the vessel option, listed after the 22
+     places, lay under the menu's scrim (vessels first now); the
+     manifest rows lie under the editor's 320 px fold, so the test
+     scrolls the editor a wheel line at a time as the host does; and
+     `frame::shot` draws with a fresh runner, which loses the scroll, so
+     the harness reads its own texture back. The full workspace suite:
+     342 passed, 13 ignored (as before), none failed, in 16.3 min run
+     beside the screenshot runs and clippy (12.4 min alone at part 6);
+     the harness's last change, test-only, was run again on its own.
+   - Open: the editor's step rows count from 1 while a meeting's leg
+     counts from 0 as the file does; the destination menu scrolls its
+     22 places with no search; the options section and the panel's
+     items label a meeting "ship 0, leg 0" as the engine does, the
+     editor's trigger alone naming the vessel; `sim run` prints no
+     transfers or purchases (part 8).
 8. **Headless.**
    - `sim run` prints each stop's transfers, and each purchase with its
      cost.

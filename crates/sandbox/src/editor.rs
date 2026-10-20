@@ -1,13 +1,15 @@
 //! Editing a ship (M1c.md, step 7 plan, item 6): its name, its start,
 //! its class and load (M1b.md, step 2 plan, part 4), and its steps (a
-//! leg's destination, durations, window and aerocapture; a wait's days),
-//! steps added, removed and moved. Each change makes a new ship, which the
-//! plan designs again from the first step it changes (a new class or load
-//! designs nothing); legs that cannot be flown say why at once, by the
-//! planner's own rules (`mission::check`).
+//! leg's destination, a place or a vessel of the plan met where it is
+//! after one of its legs; durations, window and aerocapture; its manifest,
+//! what to carry after the stop; a wait's days), steps added, removed and
+//! moved. Each change makes a new ship, which the plan designs again from
+//! the first step it changes (a new class, load or manifest designs
+//! nothing); legs that cannot be flown say why at once, by the planner's
+//! own rules (`mission::check`).
 
 use damascene_core::prelude::*;
-use orbit::mission::{Go, Manifest, Ship, Spot, Step};
+use orbit::mission::{Go, Manifest, Meeting, Meetings, Ship, Spot, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::params::ShipClass;
@@ -35,6 +37,11 @@ pub enum Field {
     Close(usize),
     Aero(usize),
     Wait(usize),
+    /// Leg `i`'s manifest (M1b.md, step 3 plan, part 4): the propellant,
+    /// t, and cargo, t by commodity, to carry after its stop; empty, left
+    /// as it is.
+    LegPropellant(usize),
+    LegCargo(usize, Commodity),
     /// Step `i` moved up or down, or removed.
     Up(usize),
     Down(usize),
@@ -60,6 +67,8 @@ impl Field {
             Field::Close(i) => format!("edit:{i}:close"),
             Field::Aero(i) => format!("edit:{i}:aero"),
             Field::Wait(i) => format!("edit:{i}:wait"),
+            Field::LegPropellant(i) => format!("edit:{i}:propellant"),
+            Field::LegCargo(i, c) => format!("edit:{i}:cargo:{}", c.id()),
             Field::Up(i) => format!("edit:{i}:up"),
             Field::Down(i) => format!("edit:{i}:down"),
             Field::Remove(i) => format!("edit:{i}:remove"),
@@ -84,10 +93,7 @@ impl Field {
             "add-wait" => Field::AddWait,
             "remove-ship" => Field::RemoveShip,
             "done" => Field::Done,
-            _ if rest.starts_with("cargo:") => {
-                let id = rest.strip_prefix("cargo:")?;
-                Field::Cargo(*COMMODITIES.iter().find(|c| c.id() == id)?)
-            }
+            _ if rest.starts_with("cargo:") => Field::Cargo(commodity(rest)?),
             _ => {
                 let (i, what) = rest.split_once(':')?;
                 let i: usize = i.parse().ok()?;
@@ -98,6 +104,8 @@ impl Field {
                     "close" => Field::Close(i),
                     "aero" => Field::Aero(i),
                     "wait" => Field::Wait(i),
+                    "propellant" => Field::LegPropellant(i),
+                    _ if what.starts_with("cargo:") => Field::LegCargo(i, commodity(what)?),
                     "up" => Field::Up(i),
                     "down" => Field::Down(i),
                     "remove" => Field::Remove(i),
@@ -119,9 +127,51 @@ impl Field {
                 | Field::Open(_)
                 | Field::Close(_)
                 | Field::Wait(_)
+                | Field::LegPropellant(_)
+                | Field::LegCargo(..)
+        )
+    }
+
+    /// Whether it is an amount of the start's load or a leg's manifest,
+    /// which needs a class.
+    fn carried(self) -> bool {
+        matches!(
+            self,
+            Field::Propellant | Field::Cargo(_) | Field::LegPropellant(_) | Field::LegCargo(..)
         )
     }
 }
+
+/// The commodity a `cargo:ID` key names.
+fn commodity(key: &str) -> Option<Commodity> {
+    let id = key.strip_prefix("cargo:")?;
+    COMMODITIES.iter().find(|c| c.id() == id).copied()
+}
+
+/// A menu's option for meeting a vessel: `meet:ID` where it starts,
+/// `meet:ID:LEG` after its leg.
+fn meet_option(m: &Meeting) -> String {
+    match m.leg {
+        Some(leg) => format!("meet:{}:{leg}", m.ship),
+        None => format!("meet:{}", m.ship),
+    }
+}
+
+/// The meeting a menu's option names, if it is one.
+fn parse_meet_option(id: &str) -> Option<Meeting> {
+    let rest = id.strip_prefix("meet:")?;
+    let (ship, leg) = match rest.split_once(':') {
+        Some((ship, leg)) => (ship, Some(leg.parse().ok()?)),
+        None => (rest, None),
+    };
+    Some(Meeting {
+        ship: ship.parse().ok()?,
+        leg,
+    })
+}
+
+/// The key of the editor's scroll view, under its header.
+pub const SCROLL_KEY: &str = "edit:scroll";
 
 /// What the editor holds between frames.
 #[derive(Clone, Debug, Default)]
@@ -163,6 +213,12 @@ pub fn value(ship: &Ship, field: Field) -> String {
         Field::Propellant => ship.propellant_t.map_or(String::new(), figure),
         Field::Cargo(c) => ship.cargo.get(c.id()).map_or(String::new(), |&t| figure(t)),
         Field::To(i) => go(i).map_or(String::new(), |g| g.to.label.clone()),
+        Field::LegPropellant(i) => go(i)
+            .and_then(|g| g.manifest.propellant_t)
+            .map_or(String::new(), figure),
+        Field::LegCargo(i, c) => go(i)
+            .and_then(|g| g.manifest.cargo.get(c.id()))
+            .map_or(String::new(), |&t| figure(t)),
         Field::Days(i) => go(i).map_or(String::new(), |g| {
             g.days
                 .iter()
@@ -211,8 +267,12 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
         // Not "-0".
         Ok(Some(if t == 0.0 { 0.0 } else { t }))
     };
-    if matches!(field, Field::Propellant | Field::Cargo(_)) && ship.class.is_none() {
-        return Err("a load needs a class: choose one first".into());
+    if field.carried() && ship.class.is_none() {
+        return Err(match field {
+            Field::Propellant | Field::Cargo(_) => "a load needs a class: choose one first",
+            _ => "a manifest needs a class: choose one first",
+        }
+        .into());
     }
     match field {
         Field::Name => {
@@ -244,11 +304,26 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
             };
             *wait = d;
         }
-        Field::Days(i) | Field::Open(i) | Field::Close(i) => {
+        Field::Days(i)
+        | Field::Open(i)
+        | Field::Close(i)
+        | Field::LegPropellant(i)
+        | Field::LegCargo(i, _) => {
             let Some(Step::Go(go)) = ship.steps.get_mut(i) else {
                 return Err("not a leg".into());
             };
             match field {
+                // A manifest's cargo at 0 means to give it all; empty
+                // leaves it as it is.
+                Field::LegPropellant(_) => go.manifest.propellant_t = tonnes(text)?,
+                Field::LegCargo(_, c) => match tonnes(text)? {
+                    Some(t) => {
+                        go.manifest.cargo.insert(c.id().to_string(), t);
+                    }
+                    None => {
+                        go.manifest.cargo.remove(c.id());
+                    }
+                },
                 Field::Days(_) => {
                     go.days = text
                         .split(',')
@@ -288,17 +363,18 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
 }
 
 /// `ship` with a menu's option `id` chosen: its start's place or step
-/// `i`'s destination, from `places`; its class, from `classes` ("none":
-/// massless, carrying nothing).
+/// `i`'s destination, from `places` or a vessel among the plan's `ships`;
+/// its class, from `classes` ("none": massless, carrying nothing).
 pub fn choose(
     ship: &Ship,
     field: Field,
     id: &str,
     places: &Places,
+    ships: &[Ship],
     classes: &[ShipClass],
 ) -> Result<Ship, String> {
     if field != Field::Class {
-        return place(ship, field, id, places);
+        return place(ship, field, id, places, ships);
     }
     let mut ship = ship.clone();
     if id == "none" {
@@ -314,9 +390,27 @@ pub fn choose(
 }
 
 /// `ship` with its start's place, or step `i`'s destination, set to the
-/// place `id`.
-fn place(ship: &Ship, field: Field, id: &str, places: &Places) -> Result<Ship, String> {
-    let spot = Spot::named(id, places).ok_or_else(|| format!("no place {id:?}"))?;
+/// place `id`; or its destination to meeting a vessel (`meet:ID:LEG`),
+/// where the vessel is after that leg as the plan's `ships` stand (the
+/// game's check refuses what cannot be designed: a ship meeting itself,
+/// or meetings waiting on each other).
+fn place(
+    ship: &Ship,
+    field: Field,
+    id: &str,
+    places: &Places,
+    ships: &[Ship],
+) -> Result<Ship, String> {
+    let spot = match parse_meet_option(id) {
+        Some(m) => {
+            if field == Field::Start {
+                return Err("a start is a place".into());
+            }
+            let kind = Meetings::new(ships)?.place(&m)?;
+            Spot::meeting(m, kind)
+        }
+        None => Spot::named(id, places).ok_or_else(|| format!("no place {id:?}"))?,
+    };
     let mut ship = ship.clone();
     match field {
         Field::Start => ship.start = spot,
@@ -327,6 +421,25 @@ fn place(ship: &Ship, field: Field, id: &str, places: &Places) -> Result<Ship, S
         _ => return Err("not a place".into()),
     }
     Ok(ship)
+}
+
+/// Where leg `i` of `ship` goes, as the editor shows it: a vessel of the
+/// plan's `ships` by its name ("Depot, leg 2"; "Depot, start"), a place by
+/// its label.
+pub fn destination(ship: &Ship, ships: &[Ship], i: usize) -> String {
+    let Some(Step::Go(go)) = ship.steps.get(i) else {
+        return String::new();
+    };
+    let Some(m) = &go.to.meeting else {
+        return go.to.label.clone();
+    };
+    let Some(vessel) = ships.iter().find(|s| s.id == m.ship) else {
+        return go.to.label.clone();
+    };
+    match m.leg {
+        Some(leg) => format!("{}, leg {leg}", vessel.name),
+        None => format!("{}, start", vessel.name),
+    }
 }
 
 /// `ship` after pressing `field`: aerocapture toggled, a step moved,
@@ -392,19 +505,35 @@ fn small(label: &str, field: Field) -> El {
     button(label).key(field.key())
 }
 
-/// The editor's section for `ship`, with the legs that cannot be flown
-/// (`problems`, by step), the classes a ship may have, and the selection
-/// the fields share.
+/// The editor's section for `ship`, one of the plan's `ships`, with the
+/// legs that cannot be flown (`problems`, by step), the classes a ship may
+/// have, and the selection the fields share.
 pub fn section(
     editor: &Editor,
     ship: &Ship,
+    ships: &[Ship],
     problems: &[(usize, String)],
     classes: &[ShipClass],
     selection: &Selection,
 ) -> El {
     let caption = |s: &str| text(s.to_string()).caption().muted();
-    let menu =
-        |field: Field| select_trigger(field.key(), value(ship, field)).width(Size::Fixed(150.0));
+    let menu = |field: Field| {
+        let shown = match field {
+            Field::To(i) => destination(ship, ships, i),
+            _ => value(ship, field),
+        };
+        select_trigger(field.key(), shown).width(Size::Fixed(150.0))
+    };
+    let indented = |els: Vec<El>, left: f32| {
+        row(els)
+            .gap(tokens::SPACE_1)
+            .align(Align::Center)
+            .padding(Sides {
+                left,
+                ..Sides::zero()
+            })
+    };
+    let class = classes.iter().find(|c| ship.class.as_ref() == Some(&c.id));
     // The header stays in view; the steps scroll under it.
     let head = row([
         text(format!("Edit · {}", ship.name))
@@ -438,7 +567,7 @@ pub fn section(
             .align(Align::Center),
     ];
     // What it carries at its start: a classless ship, nothing.
-    if let Some(class) = classes.iter().find(|c| ship.class.as_ref() == Some(&c.id)) {
+    if let Some(class) = class {
         let full = if ship.propellant_t.is_none() {
             ", full"
         } else {
@@ -458,20 +587,18 @@ pub fn section(
             figure(class.cargo)
         )));
         for three in COMMODITIES.chunks(3) {
-            rows.push(
-                row(three.iter().flat_map(|&c| {
-                    [
-                        caption(c.name()),
-                        input(editor, ship, Field::Cargo(c), selection, 50.0),
-                    ]
-                }))
-                .gap(tokens::SPACE_1)
-                .align(Align::Center)
-                .padding(Sides {
-                    left: 16.0,
-                    ..Sides::zero()
-                }),
-            );
+            rows.push(indented(
+                three
+                    .iter()
+                    .flat_map(|&c| {
+                        [
+                            caption(c.name()),
+                            input(editor, ship, Field::Cargo(c), selection, 50.0),
+                        ]
+                    })
+                    .collect(),
+                16.0,
+            ));
         }
     }
     for (i, step) in ship.steps.iter().enumerate() {
@@ -545,6 +672,37 @@ pub fn section(
                         days.unwrap_or_default()
                     )));
                 }
+                // Its manifest, where the ship has tanks and a hold to
+                // carry one.
+                if class.is_some() {
+                    rows.push(indented(
+                        vec![
+                            caption("manifest").tooltip(
+                                "What to carry after the stop, t: more than this is given on \
+                                 arrival, less is taken on leaving, and what is not named is \
+                                 left as it is. A cargo at 0 gives it all.",
+                            ),
+                            caption("propellant"),
+                            input(editor, ship, Field::LegPropellant(i), selection, 70.0),
+                            caption("t"),
+                        ],
+                        16.0,
+                    ));
+                    for three in COMMODITIES.chunks(3) {
+                        rows.push(indented(
+                            three
+                                .iter()
+                                .flat_map(|&c| {
+                                    [
+                                        caption(c.name()),
+                                        input(editor, ship, Field::LegCargo(i, c), selection, 50.0),
+                                    ]
+                                })
+                                .collect(),
+                            32.0,
+                        ));
+                    }
+                }
             }
         }
         for (_, why) in problems.iter().filter(|p| p.0 == i) {
@@ -577,15 +735,52 @@ pub fn section(
             .gap(tokens::SPACE_1)
             .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
             .width(Size::Fill(1.0))])
-        .key("edit:scroll")
+        .key(SCROLL_KEY)
         .height(Size::Fixed(320.0)),
     ])
     .width(Size::Fill(1.0))
 }
 
-/// The menu for `field`: every place by id, with its name; or, for the
-/// class, "none" and every class, with its propellant, tanks and hold.
-pub fn menu(field: Field, places: &Places, classes: &[ShipClass]) -> El {
+/// The menu for `field` of `ship`: for a leg's destination, every other
+/// ship of the plan's `ships` by name, where it starts and after each of
+/// its legs ("Depot, leg 2 — nrho"), then every place by id, with its
+/// name (a start's menu: the places); or, for the class, "none" and every
+/// class, with its propellant, tanks and hold.
+pub fn menu(
+    field: Field,
+    ship: &Ship,
+    ships: &[Ship],
+    places: &Places,
+    classes: &[ShipClass],
+) -> El {
+    let vessels = || {
+        ships
+            .iter()
+            .filter(|v| v.id != ship.id)
+            .flat_map(|v| {
+                let start = Meeting {
+                    ship: v.id,
+                    leg: None,
+                };
+                let legs = v
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(k, s)| match s {
+                        Step::Go(go) => Some((
+                            Meeting {
+                                ship: v.id,
+                                leg: Some(k),
+                            },
+                            format!("{}, leg {k} — {}", v.name, go.to.label),
+                        )),
+                        Step::Wait(_) => None,
+                    });
+                std::iter::once((start, format!("{}, start — {}", v.name, v.start.label)))
+                    .chain(legs)
+            })
+            .map(|(m, label)| (meet_option(&m), label))
+    };
     let options: Vec<(String, String)> = match field {
         Field::Class => std::iter::once(("none".to_string(), "none — massless".to_string()))
             .chain(classes.iter().map(|c| {
@@ -601,6 +796,13 @@ pub fn menu(field: Field, places: &Places, classes: &[ShipClass]) -> El {
                     .to_lowercase(),
                 )
             }))
+            .collect(),
+        Field::To(_) => vessels()
+            .chain(
+                places
+                    .iter()
+                    .map(|p| (p.id.clone(), format!("{} — {}", p.id, p.name))),
+            )
             .collect(),
         _ => places
             .iter()
@@ -653,6 +855,9 @@ window = ["2045-03-08", "2045-03-10"]
             Field::Close(1),
             Field::Aero(2),
             Field::Wait(4),
+            Field::LegPropellant(2),
+            Field::LegCargo(0, Commodity::Lox),
+            Field::LegCargo(3, Commodity::Metal),
             Field::Up(1),
             Field::Down(2),
             Field::Remove(0),
@@ -664,8 +869,22 @@ window = ["2045-03-08", "2045-03-10"]
             assert_eq!(Field::parse(&f.key()), Some(f));
         }
         assert_eq!(Field::parse("edit:2:to:option:llo"), None);
+        assert_eq!(Field::parse("edit:2:to:option:meet:0:1"), None);
         assert_eq!(Field::parse("edit:cargo:water"), None);
+        assert_eq!(Field::parse("edit:2:cargo:water"), None);
         assert_eq!(Field::parse("plan"), None);
+        for m in [
+            Meeting { ship: 3, leg: None },
+            Meeting {
+                ship: 0,
+                leg: Some(2),
+            },
+        ] {
+            assert_eq!(parse_meet_option(&meet_option(&m)), Some(m));
+        }
+        assert_eq!(parse_meet_option("meet:x"), None);
+        assert_eq!(parse_meet_option("meet:1:y"), None);
+        assert_eq!(parse_meet_option("llo"), None);
     }
 
     /// Where `t` first differs from `s` as the planner reads them: `None`
@@ -727,14 +946,117 @@ window = ["2045-03-08", "2045-03-10"]
         assert_eq!(first_change(&s, &t), Some(Some(3)));
         let t = press(&s, Field::Aero(0), places).unwrap();
         assert!(matches!(&t.steps[0], Step::Go(g) if g.aero));
-        let t = place(&s, Field::To(0), "moon-south-pole", places).unwrap();
+        let t = place(&s, Field::To(0), "moon-south-pole", places, &[]).unwrap();
         assert_eq!(value(&t, Field::To(0)), "moon-south-pole");
         assert_eq!(first_change(&s, &t), Some(Some(0)));
         assert!(
-            place(&s, Field::To(1), "llo", places).is_err(),
+            place(&s, Field::To(1), "llo", places, &[]).is_err(),
             "a wait has no place"
         );
-        assert!(place(&s, Field::Start, "nowhere", places).is_err());
+        assert!(place(&s, Field::Start, "nowhere", places, &[]).is_err());
+    }
+
+    /// A leg's destination chosen among the plan's vessels (M1b.md, step 3
+    /// plan, part 3): the meeting, where the vessel is then, as the plan
+    /// writes it and as the editor names it; a vessel the plan has not, a
+    /// wait of its, or a start, refused.
+    #[test]
+    fn a_leg_meets_a_vessel() {
+        let places = Places::standard();
+        let mut depot = ship();
+        depot.id = 7;
+        depot.name = "Depot".into();
+        let s = ship();
+        let ships = [depot.clone(), s.clone()];
+        let t = place(&s, Field::To(0), "meet:7:2", places, &ships).unwrap();
+        let Step::Go(go) = &t.steps[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            go.to.meeting,
+            Some(Meeting {
+                ship: 7,
+                leg: Some(2)
+            })
+        );
+        assert_eq!(go.to.label, "ship 7, leg 2");
+        let Step::Go(met) = &depot.steps[2] else {
+            unreachable!()
+        };
+        assert_eq!(format!("{:?}", go.to.kind), format!("{:?}", met.to.kind));
+        assert_eq!(go.to.source.to_string(), "{ leg = 2, ship = 7 }");
+        assert_eq!(destination(&t, &ships, 0), "Depot, leg 2");
+        assert_eq!(destination(&t, &[], 0), "ship 7, leg 2");
+        assert_eq!(first_change(&s, &t), Some(Some(0)));
+        let t = place(&s, Field::To(0), "meet:7", places, &ships).unwrap();
+        assert_eq!(destination(&t, &ships, 0), "Depot, start");
+        assert_eq!(destination(&t, &ships, 1), "", "a wait goes nowhere");
+        assert_eq!(destination(&s, &ships, 0), "llo");
+        let refused = |id: &str| place(&s, Field::To(0), id, places, &ships).unwrap_err();
+        assert!(
+            refused("meet:9").contains("no ship"),
+            "{}",
+            refused("meet:9")
+        );
+        assert!(
+            refused("meet:7:1").contains("wait"),
+            "{}",
+            refused("meet:7:1")
+        );
+        assert!(
+            refused("meet:7:5").contains("no leg 5"),
+            "{}",
+            refused("meet:7:5")
+        );
+        assert_eq!(
+            place(&s, Field::Start, "meet:7", places, &ships).unwrap_err(),
+            "a start is a place"
+        );
+    }
+
+    /// A leg's manifest typed as the engine reads it (M1b.md, step 3 plan,
+    /// part 4): a class first; empty leaves a commodity as it is, 0 gives
+    /// it all; a negative amount refused; a wait has none.
+    #[test]
+    fn a_manifest_is_set_and_read() {
+        let s = ship();
+        assert_eq!(
+            set(&s, Field::LegPropellant(0), "20").unwrap_err(),
+            "a manifest needs a class: choose one first"
+        );
+        let mut s = s;
+        s.class = Some("lander".into());
+        assert_eq!(value(&s, Field::LegPropellant(0)), "");
+        let t = set(&s, Field::LegPropellant(0), "20.5").unwrap();
+        let t = set(&t, Field::LegCargo(0, Commodity::Equipment), "0").unwrap();
+        let t = set(&t, Field::LegCargo(2, Commodity::Lh2), "1.25").unwrap();
+        assert_eq!(value(&t, Field::LegPropellant(0)), "20.5");
+        assert_eq!(value(&t, Field::LegCargo(0, Commodity::Equipment)), "0");
+        assert_eq!(value(&t, Field::LegCargo(2, Commodity::Lh2)), "1.25");
+        assert_eq!(value(&t, Field::LegCargo(0, Commodity::Lh2)), "");
+        let Step::Go(go) = &t.steps[0] else {
+            unreachable!()
+        };
+        assert_eq!(go.manifest.propellant_t, Some(20.5));
+        assert_eq!(go.manifest.cargo.get("equipment"), Some(&0.0));
+        assert_eq!(
+            first_change(&s, &t),
+            Some(Some(0)),
+            "a manifest is the leg's (the game designs nothing for it)"
+        );
+        let u = set(&t, Field::LegCargo(0, Commodity::Equipment), "").unwrap();
+        let Step::Go(go) = &u.steps[0] else {
+            unreachable!()
+        };
+        assert!(go.manifest.cargo.is_empty());
+        let u = set(&t, Field::LegPropellant(0), "").unwrap();
+        assert_eq!(value(&u, Field::LegPropellant(0)), "");
+        assert!(set(&t, Field::LegPropellant(0), "-1").is_err());
+        assert!(set(&t, Field::LegCargo(0, Commodity::Lox), "NaN").is_err());
+        assert_eq!(
+            set(&t, Field::LegPropellant(1), "1").unwrap_err(),
+            "not a leg"
+        );
     }
 
     /// A class from its menu ("none" carries nothing), and a load typed as
@@ -756,7 +1078,7 @@ window = ["2045-03-08", "2045-03-10"]
             set(&s, Field::Propellant, "100").is_err(),
             "a load needs a class"
         );
-        let t = choose(&s, Field::Class, "tug-h", places, &classes).unwrap();
+        let t = choose(&s, Field::Class, "tug-h", places, &[], &classes).unwrap();
         assert_eq!(value(&t, Field::Class), "tug-h");
         let t = set(&t, Field::Propellant, "120.5").unwrap();
         let t = set(&t, Field::Cargo(Commodity::Equipment), "20").unwrap();
@@ -769,13 +1091,14 @@ window = ["2045-03-08", "2045-03-10"]
         assert_eq!(u.propellant_t, None);
         assert!(set(&t, Field::Propellant, "-1").is_err());
         assert!(set(&t, Field::Cargo(Commodity::Lh2), "NaN").is_err());
-        assert!(choose(&s, Field::Class, "barge", places, &classes).is_err());
-        let none = choose(&t, Field::Class, "none", places, &classes).unwrap();
+        assert!(choose(&s, Field::Class, "barge", places, &[], &classes).is_err());
+        let none = choose(&t, Field::Class, "none", places, &[], &classes).unwrap();
         assert_eq!(none.class, None);
         assert_eq!(none.propellant_t, None);
         assert!(none.cargo.is_empty());
         assert_eq!(
-            choose(&s, Field::To(0), "nrho", places, &classes).map(|t| value(&t, Field::To(0))),
+            choose(&s, Field::To(0), "nrho", places, &[], &classes)
+                .map(|t| value(&t, Field::To(0))),
             Ok("nrho".into())
         );
     }
