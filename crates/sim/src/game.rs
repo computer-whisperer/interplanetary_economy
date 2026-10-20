@@ -13,8 +13,8 @@ use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, here_without_a_stop, minute};
 use crate::params::{Draw, Economy, EconomyFile};
 use crate::report;
-use crate::ships::{self, Breach};
-use crate::state::{self, Course, Dry, ShipState, State};
+use crate::ships::{self, Breach, Commodity};
+use crate::state::{self, Course, Dry, ShipState, State, Stop, With};
 use orbit::mission::{
     Checkpoint, Item, ItemKind, Manifest, MarkerKind, Meeting, Plan, Ship, Step, World,
     resume_point, when,
@@ -246,23 +246,48 @@ fn standing(ship: &Ship, replans: &[&Replan], refused: &[(usize, String)]) -> Sh
     ship
 }
 
-/// Writes the manifests of ship `k`'s legs, its steps as they stand
-/// (`standing`, as [`standing`] has them), to the log's steps they stand
-/// on: the ship's first steps, the legs of the re-plan that made each, or
-/// the `here` of the re-plan that set it last (its re-plans applied in
-/// turn, but those `refused`).
-fn remanifest(log: &mut Log, k: usize, refused: &[(usize, String)], standing: &[Step]) {
-    /// Where a standing step's manifest is written: the plan's step, a
-    /// re-plan's leg (by its place in the log and among the legs), or a
-    /// re-plan's `here`.
-    enum Owner {
-        Plan(usize),
-        Leg(usize, usize),
-        Here(usize),
+/// Where a standing step's manifest is written in the log: the plan's
+/// step, a re-plan's leg (by its place in the log and among the legs), or
+/// a re-plan's `here`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Plan(usize),
+    Leg(usize, usize),
+    Here(usize),
+}
+
+impl Owner {
+    /// The manifest written there, for ship `k`.
+    fn manifest<'a>(&self, log: &'a Log, k: usize) -> &'a Manifest {
+        let leg = |step: &'a Step| match step {
+            Step::Go(go) => &go.manifest,
+            Step::Wait(_) => unreachable!("a manifest's owner is a leg"),
+        };
+        match *self {
+            Owner::Plan(i) => leg(&log.plan.ships[k].steps[i]),
+            Owner::Leg(j, n) => leg(&log.replans[j].steps[n]),
+            Owner::Here(j) => log.replans[j].here.as_ref().expect("a `here` set"),
+        }
     }
+
+    /// When it was set: a re-plan's `here` at the re-plan's time; a leg's
+    /// manifest with the leg.
+    fn at(&self, log: &Log) -> Option<Epoch> {
+        match *self {
+            Owner::Here(j) => Some(log.replans[j].at),
+            _ => None,
+        }
+    }
+}
+
+/// For each of ship `k`'s steps as they stand (its re-plans applied in
+/// turn, but those `refused`), where its manifest was written, in order:
+/// the plan's step or the re-plan's leg that made it, then each re-plan's
+/// `here` that set it anew. The last is the manifest standing.
+fn owners(log: &Log, k: usize, refused: &[(usize, String)]) -> Vec<Vec<Owner>> {
     let id = log.plan.ships[k].id;
     let mut steps = log.plan.ships[k].steps.clone();
-    let mut owners: Vec<Owner> = (0..steps.len()).map(Owner::Plan).collect();
+    let mut owners: Vec<Vec<Owner>> = (0..steps.len()).map(|i| vec![Owner::Plan(i)]).collect();
     let mine = log.replans.iter().enumerate().filter(|(_, r)| r.ship == id);
     for (i, (j, r)) in mine.enumerate() {
         if refused.iter().any(|(n, _)| *n == i) {
@@ -273,16 +298,24 @@ fn remanifest(log: &mut Log, k: usize, refused: &[(usize, String)], standing: &[
         if r.here.is_some()
             && let Some(g) = steps.iter().rposition(|s| matches!(s, Step::Go(_)))
         {
-            owners[g] = Owner::Here(j);
+            owners[g].push(Owner::Here(j));
         }
         steps.extend(r.steps.iter().cloned());
-        owners.extend((0..r.steps.len()).map(|n| Owner::Leg(j, n)));
+        owners.extend((0..r.steps.len()).map(|n| vec![Owner::Leg(j, n)]));
     }
-    debug_assert_eq!(steps.len(), standing.len());
-    for (owner, step) in owners.iter().zip(standing) {
+    owners
+}
+
+/// Writes the manifests of ship `k`'s legs, its steps as they stand
+/// (`standing`, as [`standing`] has them), to where each stands in the
+/// log ([`owners`], the last of each).
+fn remanifest(log: &mut Log, k: usize, refused: &[(usize, String)], standing: &[Step]) {
+    let owners = owners(log, k, refused);
+    debug_assert_eq!(owners.len(), standing.len());
+    for (chain, step) in owners.iter().zip(standing) {
         let Step::Go(go) = step else { continue };
         let manifest = go.manifest.clone();
-        match *owner {
+        match *chain.last().expect("a step has an owner") {
             Owner::Plan(i) => {
                 if let Step::Go(mine) = &mut log.plan.ships[k].steps[i] {
                     mine.manifest = manifest;
@@ -315,6 +348,15 @@ fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
                 "a ship starts at LEO, where it is bought, not {}",
                 ship.start.label
             )));
+        }
+        if ship
+            .cargo
+            .get(Commodity::Metal.id())
+            .is_some_and(|&t| t > 0.0)
+        {
+            return Err(fail(
+                "a ship is bought at LEO, where metal is not sold".into(),
+            ));
         }
         let Some(fitted) = fitted else {
             continue;
@@ -470,20 +512,74 @@ impl Game {
 
     /// Runs the loop again from the start, over the designs as they stand.
     fn rerun(&mut self) {
-        let courses: Vec<Course> = self
-            .ships
-            .iter()
-            .zip(&self.plan.ships)
-            .map(|(d, ship)| Course {
-                id: d.id,
-                fitted: ships::read(ship, &self.economy).expect("a game's ships read (`allowed`)"),
-                epoch: ship.epoch,
-                items: d.items().collect(),
-                done: d.done,
+        let courses: Vec<Course> = (0..self.ships.len())
+            .map(|k| {
+                let (d, ship) = (&self.ships[k], &self.plan.ships[k]);
+                let items: Vec<&Item> = d.items().collect();
+                let stops = self.stops(k, &items);
+                Course {
+                    id: d.id,
+                    fitted: ships::read(ship, &self.economy)
+                        .expect("a game's ships read (`allowed`)"),
+                    epoch: ship.epoch,
+                    items,
+                    done: d.done,
+                    stops,
+                    bought: ship.start.source.as_str() == Some("leo"),
+                }
             })
             .collect();
         let state = state::run(&courses, &self.economy);
         self.state = state;
+    }
+
+    /// Ship `k`'s stops for the loop, by step (M1b.md, step 3 plan, parts
+    /// 4 and 5): with whom its leg's manifest transfers, the manifest
+    /// standing when it arrives (`items` say when: a re-plan's `here` made
+    /// after that does not change what was given) and the manifest as it
+    /// stands when it leaves.
+    fn stops(&self, k: usize, items: &[&Item]) -> Vec<Option<Stop>> {
+        let ship = &self.plan.ships[k];
+        let owners = owners(&self.log, k, &self.ships[k].refused);
+        ship.steps
+            .iter()
+            .zip(&owners)
+            .enumerate()
+            .map(|(i, (step, chain))| {
+                let Step::Go(go) = step else {
+                    return None;
+                };
+                let read =
+                    |m: &Manifest| ships::manifest(m).expect("a game's manifests read (`allowed`)");
+                let arrived = items.iter().rev().find(|it| it.step == i).map(|it| it.end);
+                let standing = chain
+                    .iter()
+                    .rev()
+                    .find(|o| {
+                        o.at(&self.log)
+                            .is_none_or(|at| arrived.is_some_and(|t| at.0 <= t.0))
+                    })
+                    .unwrap_or(&chain[0]);
+                let arrive = read(standing.manifest(&self.log, k));
+                let leave = read(&go.manifest);
+                if arrive.is_empty() && leave.is_empty() {
+                    return None;
+                }
+                let with = match go.to.meeting {
+                    Some(m) => With::Vessel {
+                        id: m.ship,
+                        leg: m.leg,
+                    },
+                    None if go.to.source.as_str() == Some("leo") => With::Earth,
+                    None => With::NoOne,
+                };
+                Some(Stop {
+                    with,
+                    arrive,
+                    leave,
+                })
+            })
+            .collect()
     }
 
     /// The plan as it stands: each ship with its re-plans.
@@ -1360,6 +1456,19 @@ fn tanks(h: &mut Fixed, state: &State, s: &ShipState, t: Epoch) {
     }
     if let Some(dry) = s.dry_by(t) {
         h.str("dry").f64(dry.short);
+    }
+    for x in s.transfers.iter().filter(|x| x.t.0 <= t.0) {
+        h.str("transfer")
+            .u64(x.step as u64)
+            .debug(&x.kind)
+            .debug(&x.commodity)
+            .f64(x.asked)
+            .f64(x.got)
+            .debug(&x.short)
+            .debug(&x.cost_musd);
+    }
+    for p in s.purchases.iter().filter(|p| p.t.0 <= t.0) {
+        h.str("bought").debug(&p.what).f64(p.tonnes).f64(p.musd);
     }
 }
 

@@ -1,13 +1,14 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–4 done (the
+Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–5 done (the
 extended station orbits pass their kill-test, the planner designs on
-them, a leg meets a vessel on its orbit, and legs carry manifests the
-log keeps and checks), part 5 next (the plans below). Decided: one
-engine for both modes, with economy components landing in the sandbox
-first (Modes, below); the four decisions below, each as recommended;
-and stations as vessels, flown to where they stay, with docking a step
-of its own (Design, Vessels, stations and stocks).
+them, a leg meets a vessel on its orbit, legs carry manifests the log
+keeps and checks, and the loop makes their transfers and purchases),
+part 6 next (the plans below). Decided: one engine for both modes,
+with economy components landing in the sandbox first (Modes, below);
+the four decisions below, each as recommended; and stations as
+vessels, flown to where they stay, with docking a step of its own
+(Design, Vessels, stations and stocks).
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
   going on from a checkpoint gives a fresh design's bits
@@ -1724,6 +1725,86 @@ follows from it:
      (step 8).
    - The state hash adds purchases and shortfalls.
    - Measured: the loop's re-run on the published plan.
+   - Settled before building it (2026-10-20):
+     - A manifest's `propellant_t` is two targets, LOX and the ship's
+       fuel at its class's mixture ratio; each cargo entry is the hold's
+       target for that commodity. Above a target the ship gives, below
+       it takes, by commodity: the tanks drift off the ratio as hydrogen
+       boils off, and a transfer brings them back to it. Rejected: giving
+       the surplus of the total at the ratio (a ship short of hydrogen
+       would give LOX it should keep, and stay off the ratio).
+     - Events at one time: the tick; burns at the end of their item (an
+       arrival's: a leg's insertion, a capture's circularizing); gives;
+       takes; the other burns (a departure's: a landing's and an ascent's
+       single marker is at its item's start); each by ship id. Gives are
+       at the end of the step's last item, takes at the start of the
+       next leg, landing or ascent (or its first burn, a moment earlier
+       by the planner's slack); a ship with no later leg takes nothing.
+     - The vessel is there when its leg named has arrived (its start,
+       without one), its next leg, landing or ascent has not begun, and
+       it has not run dry; else the transfer is short with why (`NotYet`,
+       `Gone`, `Dry`). A give puts LOX and the fuel the vessel burns into
+       its tanks and the rest into its hold, to their capacity
+       (`Capacity`); a take drains its hold first, then its tanks, into
+       the taker's tanks or hold to their capacity (`Stock`, `Capacity`).
+       No vessel met away from LEO, a vessel without a class, or a give
+       at LEO: `NoOne`. Metal from Earth: `NotSold`. A ship that ran dry
+       is stranded and transfers nothing.
+     - At LEO a take is bought: launch at the day's price (geometric
+       between the economy's start and end prices, held outside them,
+       `Economy::launch_usd_per_kg_at`) plus the goods (propellant's and
+       equipment's prices; payload pays launch only). A ship starting at
+       LEO is bought there, the class's price and its load the same way
+       (`ShipState::purchases`), in either mode, so that a career log
+       opened in the sandbox hashes the same (found by that test: bought
+       in career alone, it did not); a ship starting elsewhere is simply
+       there, and career refuses a start load with metal. Transfers are
+       recorded on the
+       ship whose manifest asked (`ShipState::transfers`: asked, got,
+       why, cost), and the vessel's load at the time.
+     - A re-plan's `here` is dated: what the ship gives on arrival is by
+       the manifest standing then (the leg's, with the `here`s made by
+       that time), what it takes on leaving by the manifest as it stands
+       (`Game::stops`, from `owners`, the replay `remanifest` shares).
+     - The day's hash adds each ship's transfers and purchases by then.
+   - Built (2026-10-20): `Stop`, `With`, `Transfer`, `Kind`, `Short`,
+     `Purchase`, `Bought`, `Course::{stops, bought}`,
+     `ShipState::{transfers, purchases}`, the event phases and
+     `Loop::transfer` (`sim::state`); `launch_usd_per_kg_at`
+     (`sim::params`); `Game::stops`, `owners`, the hash, the metal
+     refusal (`sim::game`). Tests: five in `sim::state` by hand (a give
+     fills the tanks then the hold and a take drains them back; the
+     event order at one time; each short reason; a take at LEO at the
+     day's launch price and a career ship bought at its start; a drained
+     depot runs dry keeping station), and
+     `a_tug_refuels_a_depot_and_buys_at_leo` in `crates/sim/tests/state.rs`
+     (a hauler depot at the NRHO and a tug that gives it all but 20 t,
+     tops up what three days of station-keeping burned, buys a full tank
+     at LEO, both bought at LEO; the same hashes on 1 and 24 threads
+     from the log written, and in career).
+   - Measured (2026-10-20, release): the loop's re-run on the published
+     plan, every ship a hauler, 5.5 ms alone and 5.6–5.7 with a new load
+     (against 3.3–3.5 and 3.3–3.4 at the commit before, run alternately
+     on the same machine; part 2 measured 2.7–3.3); 50 ships of 2,000
+     items 92–115 ms (65–83 before). A plan with no manifests makes no
+     transfers, so the difference is not the transfers' work: `perf`
+     puts it in `Running::pay`, whose source did not change (its
+     generated code did, and `ShipState` and `Running` grew); not
+     chased further against the gate's 1 s. The depot test designs its
+     plan three times (24 threads, 1 from the log, 24 in career) in
+     127 s; the five by-hand tests run in 0.1 s. The full workspace
+     suite: 334 passed, 13 ignored (as before), none failed, in 10.7
+     min. Two earlier runs found: the manifest-edit test's hashes now
+     change (the stop's shortfall is state; the test says so), and a
+     career log opened in the sandbox hashed differently while only
+     career's ships were bought (fixed above). One run had
+     `plan::model::tests::hydrogen_boils_off_in_storage` fail inside
+     HiGHS ("HiGHS error: invalid problem", `Highs_run` returning an
+     error) under the suite's load; it passed in the two runs after,
+     and nothing of the plan crate changed.
+   - Open: the sandbox's panel shows no transfers or purchases and `sim
+     run` prints none (parts 7 and 8); career does not yet refuse a plan
+     that runs a vessel dry or short (part 6); the loop's 2 ms.
 6. **Career against the projection.**
    - An action is pending until its ship is designed to its end. It is
      refused then if, with it, a vessel runs dry or a transfer falls

@@ -492,6 +492,14 @@ impl Economy {
     pub fn propellant(&self, p: Propellant) -> &PropellantSpec {
         &self.propellants[p as usize]
     }
+
+    /// $/kg to LEO at `t`: geometric between the start's and the end's
+    /// prices, held outside them.
+    pub fn launch_usd_per_kg_at(&self, t: Epoch) -> f64 {
+        let [l0, l1] = self.launch_usd_per_kg;
+        let x = ((t.0 - self.start.0) / (self.end.0 - self.start.0)).clamp(0.0, 1.0);
+        l0 * (l1 / l0).powf(x)
+    }
 }
 
 impl EconomyFile {

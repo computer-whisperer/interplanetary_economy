@@ -1,20 +1,25 @@
 //! The game's state and the loop that advances it (M1b.md, step 2 plan,
-//! part 3): each ship's tanks and hold, emptied by its burns and by its
-//! station stays' upkeep, its hydrogen boiling off; and where it ran dry.
+//! part 3; step 3 plan, part 5): each ship's tanks and hold, emptied by
+//! its burns and by its station stays' upkeep, its hydrogen boiling off;
+//! what it gives to and takes from the vessels it meets, and buys from
+//! Earth at LEO, as its legs' manifests say; and where it ran dry.
 //!
 //! The loop takes events in time order: each burn of a leg, landing or
-//! ascent flown, and a tick at each midnight; at one time, the tick comes
-//! first, then burns by ship id. At each, a ship first pays what it owes
-//! since the last: its station stays' upkeep (each stay's Δv spread evenly
-//! over it) and its hydrogen's boil-off. The loop runs from the first
-//! fitted ship's start to the earliest time an unfinished ship's design
-//! has reached, where every ship pays up and from which the state is
-//! pending; with every ship designed, to the last item's end, beyond which
-//! nothing but boil-off happens. Any change runs it again from the start.
-//! Ships share nothing yet (depots are step 3).
+//! ascent flown; each stop's gives, at the end of the step's last item,
+//! and takes, at the start of the next leg, landing or ascent; and a tick
+//! at each midnight. At one time: the tick, then the burns that end an
+//! item (an arrival's), then gives, then takes, then the other burns (a
+//! departure's), each by ship id. At each, a ship first pays what it owes
+//! since the last: its station stays' upkeep (each stay's Δv spread
+//! evenly over it) and its hydrogen's boil-off; so does the vessel it
+//! transfers with. The loop runs from the first fitted ship's start to
+//! the earliest time an unfinished ship's design has reached, where every
+//! ship pays up and from which the state is pending; with every ship
+//! designed, to the last item's end, beyond which nothing but boil-off
+//! happens. Any change runs it again from the start.
 
 use crate::params::{Economy, PROPELLANTS, PropellantSpec};
-use crate::ships::{COMMODITIES, Commodity, Fitted, Load};
+use crate::ships::{COMMODITIES, Commodity, Fitted, GRAM, Load, Manifest};
 use orbit::mission::{Item, ItemKind, MarkerKind};
 use orbit::time::Epoch;
 
@@ -28,6 +33,100 @@ pub struct Course<'a> {
     pub items: Vec<&'a Item>,
     /// Designed to its end.
     pub done: bool,
+    /// Its stops, by step: what its legs' manifests say to have after
+    /// each, and with whom; `None` for a wait, or a leg without one.
+    pub stops: Vec<Option<Stop>>,
+    /// Starts at LEO, where it is bought with its load (in either mode,
+    /// so that a career log opened in the sandbox is the same game); a
+    /// ship starting elsewhere is simply there.
+    pub bought: bool,
+}
+
+/// A stop a leg's manifest speaks of (M1b.md, step 3 plan, parts 4 and
+/// 5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stop {
+    pub with: With,
+    /// The manifest standing when the ship arrives: what it carries above
+    /// it is given.
+    pub arrive: Manifest,
+    /// The manifest as it stands when the ship leaves (a re-plan's `here`
+    /// made while it stays changes it): what it carries below it is
+    /// taken.
+    pub leave: Manifest,
+}
+
+/// Whom a ship transfers with at a stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum With {
+    /// The vessel met, there after its leg `leg` (from its start, without
+    /// one).
+    Vessel { id: u64, leg: Option<usize> },
+    /// Earth, at LEO: a take is bought.
+    Earth,
+    /// No vessel is met, and Earth does not sell here.
+    NoOne,
+}
+
+/// What a ship gave or took at a stop, or tried to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transfer {
+    pub t: Epoch,
+    /// The step whose manifest asked for it.
+    pub step: usize,
+    pub with: With,
+    pub kind: Kind,
+    pub commodity: Commodity,
+    /// Asked for and got, t.
+    pub asked: f64,
+    pub got: f64,
+    /// Why it fell short, if it did.
+    pub short: Option<Short>,
+    /// What a take at LEO cost, $M: launch at the time, and the goods.
+    pub cost_musd: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Give,
+    Take,
+}
+
+/// Why a transfer fell short.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Short {
+    /// The vessel had less.
+    Stock,
+    /// The tanks or hold receiving it were full.
+    Capacity,
+    /// The vessel is not there yet.
+    NotYet,
+    /// The vessel has left.
+    Gone,
+    /// The vessel ran dry and drifts.
+    Dry,
+    /// No one to transfer with: no vessel met away from LEO, a vessel
+    /// without a class, or a give at LEO, where Earth sells and does not
+    /// buy.
+    NoOne,
+    /// Earth does not sell it (metal).
+    NotSold,
+}
+
+/// What a ship starting at LEO cost there: the ship, and each part of its
+/// load (launch at the time, and the goods).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Purchase {
+    pub t: Epoch,
+    pub what: Bought,
+    pub tonnes: f64,
+    pub musd: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bought {
+    Ship,
+    Commodity(Commodity),
 }
 
 /// A burn a ship's tanks could not make: the ship is stranded there, and
@@ -59,8 +158,8 @@ impl Dry {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShipState {
     pub id: u64,
-    /// Its load at its start, and after each burn made and each payment
-    /// of upkeep, in time order; none for a massless ship.
+    /// Its load at its start, and after each burn made, each payment of
+    /// upkeep and each transfer, in time order; none for a massless ship.
     loads: Vec<(Epoch, Load)>,
     /// What of each part of its load a day leaves (boil-off).
     keep: Load,
@@ -72,6 +171,10 @@ pub struct ShipState {
     /// none for an item that burned nothing.
     pub after: Vec<Option<Load>>,
     pub dry: Option<Dry>,
+    /// What its manifests had it give and take, in time order.
+    pub transfers: Vec<Transfer>,
+    /// What it was bought for at its start, if it was.
+    pub purchases: Vec<Purchase>,
 }
 
 impl ShipState {
@@ -186,10 +289,32 @@ fn burned(item: &Item) -> bool {
     )
 }
 
+/// $/kg of `c` bought from Earth, launch apart: propellant's and
+/// equipment's prices; payload pays launch only; metal is not sold.
+fn goods_usd_per_kg(economy: &Economy, c: Commodity) -> Option<f64> {
+    match c {
+        Commodity::Lox | Commodity::Ch4 | Commodity::Lh2 => Some(economy.propellant_usd_per_kg),
+        Commodity::Equipment => Some(economy.equipment_usd_per_kg),
+        Commodity::Payload => Some(0.0),
+        Commodity::Metal => None,
+    }
+}
+
+/// What `tonnes` of `c` bought at LEO at `t` cost, $M: launch at the time
+/// and the goods; `None` for what Earth does not sell.
+fn bought_musd(economy: &Economy, c: Commodity, tonnes: f64, t: Epoch) -> Option<f64> {
+    let usd_per_kg = economy.launch_usd_per_kg_at(t) + goods_usd_per_kg(economy, c)?;
+    Some(tonnes * 1e3 * usd_per_kg / 1e6)
+}
+
 /// A fitted ship as the loop runs it.
 struct Running<'a> {
     dry: f64,
     spec: &'a PropellantSpec,
+    /// The fuel it burns, and its tanks' and hold's capacity, t.
+    fuel: Commodity,
+    tank: f64,
+    hold: f64,
     /// Its station stays with upkeep, in time order: their places in its
     /// items, start, end and Δv; and the first not yet paid in full.
     stays: Vec<(usize, f64, f64, f64)>,
@@ -241,6 +366,299 @@ impl Running<'_> {
         self.paid = t;
         upkept
     }
+
+    /// Room left in its tanks, or its hold, t.
+    fn room(&self, place: Place) -> f64 {
+        match place {
+            Place::Tanks => (self.tank - self.load.propellant()).max(0.0),
+            Place::Hold => (self.hold - self.load.cargo()).max(0.0),
+        }
+    }
+
+    /// Where `c` goes aboard: LOX and the fuel it burns into its tanks,
+    /// the rest into its hold.
+    fn stows(&self, c: Commodity) -> Place {
+        match c == Commodity::Lox || c == self.fuel {
+            true => Place::Tanks,
+            false => Place::Hold,
+        }
+    }
+
+    /// What it carries of `c` in `place`.
+    fn carried(&mut self, c: Commodity, place: Place) -> &mut f64 {
+        match (place, c) {
+            (Place::Tanks, Commodity::Lox) => &mut self.load.lox,
+            (Place::Tanks, _) => &mut self.load.fuel,
+            (Place::Hold, c) => &mut self.load.cargo[c as usize],
+        }
+    }
+}
+
+/// A ship's tanks or its hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    Tanks,
+    Hold,
+}
+
+/// Where a manifest's targets are measured: a propellant target against
+/// the tanks, LOX and fuel at the mixture ratio; a cargo target against
+/// the hold. The amounts `kind` moves: what the ship carries above a
+/// target (a give) or below one (a take), by commodity and place.
+fn asks(r: &Running, m: &Manifest, kind: Kind) -> Vec<(Commodity, Place, f64)> {
+    let mut out = Vec::new();
+    let mut ask = |c: Commodity, place: Place, have: f64, target: f64| {
+        let amount = match kind {
+            Kind::Give => have - target,
+            Kind::Take => target - have,
+        };
+        if amount > GRAM {
+            out.push((c, place, amount));
+        }
+    };
+    if let Some(p) = m.propellant {
+        let s = r.spec.lox_share;
+        ask(Commodity::Lox, Place::Tanks, r.load.lox, p * s);
+        ask(r.fuel, Place::Tanks, r.load.fuel, p * (1.0 - s));
+    }
+    for (i, target) in m.cargo.iter().enumerate() {
+        if let Some(target) = target {
+            ask(COMMODITIES[i], Place::Hold, r.load.cargo[i], *target);
+        }
+    }
+    out
+}
+
+/// When ship `c` arrives at the stop of its step `step`: the end of the
+/// step's last item, if its leg was designed.
+fn arrival(c: &Course, step: usize) -> Option<f64> {
+    let last = c.items.iter().rev().find(|i| i.step == step)?;
+    match last.kind {
+        ItemKind::Failed(_) | ItemKind::Stay => None,
+        _ => Some(last.end.0),
+    }
+}
+
+/// When ship `c` leaves the stop of its step `step`: the start of its next
+/// leg, landing or ascent (or its first burn, a moment earlier); `None` if
+/// it has none.
+fn departure(c: &Course, step: usize) -> Option<f64> {
+    let next = c.items.iter().find(|i| i.step > step && burned(i))?;
+    let first = next
+        .markers
+        .iter()
+        .find(|m| !matches!(m.kind, MarkerKind::Jump { .. }))
+        .map_or(f64::INFINITY, |m| m.t.0);
+    Some(next.start.0.min(first))
+}
+
+/// Whether vessel `v` is at its stop after its leg `leg` (its start,
+/// without one) at `t`, to transfer with: arrived, not yet left, and not
+/// run dry; else why not.
+fn there(v: &Course, s: &ShipState, leg: Option<usize>, t: f64) -> Result<(), Short> {
+    let from = match leg {
+        None => Some(v.epoch.0),
+        Some(l) => arrival(v, l),
+    };
+    if from.is_none_or(|from| t < from) {
+        return Err(Short::NotYet);
+    }
+    let to = leg.map_or(0, |l| l + 1);
+    let gone = v
+        .items
+        .iter()
+        .find(|i| i.step >= to && burned(i))
+        .is_some_and(|next| {
+            let first = next
+                .markers
+                .iter()
+                .find(|m| !matches!(m.kind, MarkerKind::Jump { .. }))
+                .map_or(f64::INFINITY, |m| m.t.0);
+            next.start.0.min(first) < t
+        });
+    if gone {
+        return Err(Short::Gone);
+    }
+    if s.dry_by(Epoch(t)).is_some() {
+        return Err(Short::Dry);
+    }
+    Ok(())
+}
+
+/// Two of `v`, to change together.
+fn two<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
+    assert_ne!(a, b, "a ship does not transfer with itself");
+    if a < b {
+        let (x, y) = v.split_at_mut(b);
+        (&mut x[a], &mut y[0])
+    } else {
+        let (x, y) = v.split_at_mut(a);
+        (&mut y[0], &mut x[b])
+    }
+}
+
+/// Whom a transfer is made with.
+enum Partner {
+    Vessel(usize),
+    Earth,
+    NoOne(Short),
+}
+
+/// The loop's ships as it runs them.
+struct Loop<'a> {
+    ships: &'a [Course<'a>],
+    economy: &'a Economy,
+    /// By ship, what the loop found; and each fitted ship as it runs.
+    out: Vec<ShipState>,
+    runs: Vec<Option<Running<'a>>>,
+}
+
+impl Loop<'_> {
+    /// The gives or takes (`kind`) of ship `k`'s stop at `step`, at `t`:
+    /// both vessels paid up to `t`, then each amount the manifest asks
+    /// moved as far as it can be, and recorded (M1b.md, step 3 plan, part
+    /// 5). A ship that ran dry is stranded and transfers nothing.
+    fn transfer(&mut self, t: f64, k: usize, step: usize, kind: Kind) {
+        let (ships, economy) = (self.ships, self.economy);
+        let (out, runs) = (self.out.as_mut_slice(), self.runs.as_mut_slice());
+        if out[k].dry.is_some() {
+            return;
+        }
+        let c = &ships[k];
+        let stop = c.stops[step].as_ref().expect("a stop's event");
+        let manifest = match kind {
+            Kind::Give => &stop.arrive,
+            Kind::Take => &stop.leave,
+        };
+        let mut changed = runs[k]
+            .as_mut()
+            .expect("a fitted ship's stop")
+            .pay(&mut out[k], t);
+        let wanted = asks(runs[k].as_ref().unwrap(), manifest, kind);
+        let partner = match stop.with {
+            With::Vessel { id, leg } => match ships.iter().position(|v| v.id == id) {
+                Some(v) if runs[v].is_some() => match there(&ships[v], &out[v], leg, t) {
+                    Ok(()) => Partner::Vessel(v),
+                    Err(why) => Partner::NoOne(why),
+                },
+                _ => Partner::NoOne(Short::NoOne),
+            },
+            With::Earth => Partner::Earth,
+            With::NoOne => Partner::NoOne(Short::NoOne),
+        };
+        let mut vessel_changed = false;
+        if let Partner::Vessel(v) = partner {
+            let (vs, vr) = (&mut out[v], runs[v].as_mut().unwrap());
+            vessel_changed = vr.pay(vs, t);
+        }
+        for (commodity, place, asked) in wanted {
+            let mut got = 0.0;
+            let mut short = None;
+            let mut cost_musd = None;
+            match (&partner, kind) {
+                (Partner::Vessel(v), Kind::Give) => {
+                    let (r, vr) = two(runs, k, *v);
+                    let (r, vr) = (r.as_mut().unwrap(), vr.as_mut().unwrap());
+                    let into = vr.stows(commodity);
+                    got = asked.min(vr.room(into));
+                    *r.carried(commodity, place) -= got;
+                    *vr.carried(commodity, into) += got;
+                    if got < asked - GRAM {
+                        short = Some(Short::Capacity);
+                    }
+                }
+                (Partner::Vessel(v), Kind::Take) => {
+                    let (r, vr) = two(runs, k, *v);
+                    let (r, vr) = (r.as_mut().unwrap(), vr.as_mut().unwrap());
+                    // From the vessel's hold first, then its tanks.
+                    let in_hold = vr.load.cargo[commodity as usize];
+                    let in_tanks = match vr.stows(commodity) {
+                        Place::Tanks => *vr.carried(commodity, Place::Tanks),
+                        Place::Hold => 0.0,
+                    };
+                    let room = r.room(place);
+                    got = asked.min(in_hold + in_tanks).min(room);
+                    let from_hold = got.min(in_hold);
+                    vr.load.cargo[commodity as usize] -= from_hold;
+                    if got > from_hold {
+                        *vr.carried(commodity, Place::Tanks) -= got - from_hold;
+                    }
+                    *r.carried(commodity, place) += got;
+                    if in_hold + in_tanks < asked - GRAM {
+                        short = Some(Short::Stock);
+                    } else if room < asked - GRAM {
+                        short = Some(Short::Capacity);
+                    }
+                }
+                (Partner::Earth, Kind::Take) => {
+                    let r = runs[k].as_mut().unwrap();
+                    match bought_musd(economy, commodity, 1.0, Epoch(t)) {
+                        None => short = Some(Short::NotSold),
+                        Some(per_tonne) => {
+                            got = asked.min(r.room(place));
+                            *r.carried(commodity, place) += got;
+                            cost_musd = Some(got * per_tonne);
+                            if got < asked - GRAM {
+                                short = Some(Short::Capacity);
+                            }
+                        }
+                    }
+                }
+                (Partner::Earth, Kind::Give) => short = Some(Short::NoOne),
+                (Partner::NoOne(why), _) => short = Some(*why),
+            }
+            if got > 0.0 {
+                changed = true;
+                vessel_changed |= matches!(partner, Partner::Vessel(_));
+            }
+            out[k].transfers.push(Transfer {
+                t: Epoch(t),
+                step,
+                with: stop.with,
+                kind,
+                commodity,
+                asked,
+                got,
+                short,
+                cost_musd,
+            });
+        }
+        if changed {
+            let load = runs[k].as_ref().unwrap().load;
+            out[k].record(Epoch(t), load);
+        }
+        if let Partner::Vessel(v) = partner
+            && vessel_changed
+        {
+            let load = runs[v].as_ref().unwrap().load;
+            out[v].record(Epoch(t), load);
+        }
+    }
+}
+
+/// An event of the loop but the tick, in the order events at one time are
+/// taken.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Phase {
+    /// A burn at the end of its item: an arrival's.
+    Arrival,
+    Gives,
+    Takes,
+    /// Any other burn: a departure's, or one in flight.
+    Burn,
+}
+
+/// A burn's marker is at its item's end within this, days (0.1 ms): the
+/// planner's rounding.
+const AT_THE_END_DAYS: f64 = 1e-9;
+
+/// What an event does.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum What {
+    /// Item and marker.
+    Burn(usize, usize),
+    /// A stop's gives or takes: the step.
+    Transfer(usize),
 }
 
 /// The loop, over `ships` in `economy`.
@@ -268,9 +686,36 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
             let class = &economy.ships[f.class];
             s.keep = keep(economy, Commodity::fuel(class.propellant));
             s.loads.push((c.epoch, f.load));
+            if c.bought {
+                s.purchases.push(Purchase {
+                    t: c.epoch,
+                    what: Bought::Ship,
+                    tonnes: 0.0,
+                    musd: class.price_musd,
+                });
+                let fuel = Commodity::fuel(class.propellant);
+                let parts = [(Commodity::Lox, f.load.lox), (fuel, f.load.fuel)]
+                    .into_iter()
+                    .chain(COMMODITIES.iter().map(|&c| (c, f.load.cargo[c as usize])));
+                for (commodity, tonnes) in parts.filter(|(_, t)| *t > 0.0) {
+                    // Metal is not sold: career refuses a load of it
+                    // (`game`); the sandbox's pays its launch.
+                    let goods = goods_usd_per_kg(economy, commodity).unwrap_or(0.0);
+                    let musd = tonnes * 1e3 * (economy.launch_usd_per_kg_at(c.epoch) + goods) / 1e6;
+                    s.purchases.push(Purchase {
+                        t: c.epoch,
+                        what: Bought::Commodity(commodity),
+                        tonnes,
+                        musd,
+                    });
+                }
+            }
             Running {
                 dry: class.dry,
                 spec: economy.propellant(class.propellant),
+                fuel: Commodity::fuel(class.propellant),
+                tank: class.tank,
+                hold: class.cargo,
                 stays: c
                     .items
                     .iter()
@@ -286,26 +731,53 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         }));
         out.push(s);
     }
+    let mut l = Loop {
+        ships,
+        economy,
+        out,
+        runs,
+    };
 
-    // Burns, in time order, then by ship id; one ship's in its order.
-    let mut burns: Vec<(Epoch, u64, usize, usize, usize)> = Vec::new();
+    // Events in time order, then by phase and ship id; one ship's burns
+    // in its order.
+    let mut events: Vec<(f64, Phase, u64, usize, What)> = Vec::new();
     for (k, c) in ships.iter().enumerate() {
         if c.fitted.is_none() {
             continue;
         }
         for (i, item) in c.items.iter().enumerate().filter(|(_, i)| burned(i)) {
             for (j, m) in item.markers.iter().enumerate() {
-                if !matches!(m.kind, MarkerKind::Jump { .. }) && m.t.0 <= until {
-                    burns.push((m.t, c.id, k, i, j));
+                if matches!(m.kind, MarkerKind::Jump { .. }) || m.t.0 > until {
+                    continue;
                 }
+                let phase = match m.t.0 >= item.end.0 - AT_THE_END_DAYS {
+                    true => Phase::Arrival,
+                    false => Phase::Burn,
+                };
+                events.push((m.t.0, phase, c.id, k, What::Burn(i, j)));
+            }
+        }
+        for (step, stop) in c.stops.iter().enumerate() {
+            let Some(stop) = stop else { continue };
+            if !stop.arrive.is_empty()
+                && let Some(t) = arrival(c, step)
+                && t <= until
+            {
+                events.push((t, Phase::Gives, c.id, k, What::Transfer(step)));
+            }
+            if !stop.leave.is_empty()
+                && let Some(t) = departure(c, step)
+                && t <= until
+            {
+                events.push((t, Phase::Takes, c.id, k, What::Transfer(step)));
             }
         }
     }
-    burns.sort_by(|a, b| {
-        a.0.0
-            .total_cmp(&b.0.0)
+    events.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
             .then(a.1.cmp(&b.1))
-            .then((a.3, a.4).cmp(&(b.3, b.4)))
+            .then(a.2.cmp(&b.2))
+            .then(a.4.cmp(&b.4))
     });
 
     let first = ships
@@ -318,9 +790,9 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
     let mut midnight = (first - 0.5).floor() + 1.5;
     let mut next = 0;
     loop {
-        let tick = midnight <= until && burns.get(next).is_none_or(|b| midnight <= b.0.0);
+        let tick = midnight <= until && events.get(next).is_none_or(|e| midnight <= e.0);
         if tick {
-            for ((c, s), r) in ships.iter().zip(&mut out).zip(&mut runs) {
+            for ((c, s), r) in ships.iter().zip(&mut l.out).zip(&mut l.runs) {
                 if let Some(r) = r
                     && c.epoch.0 < midnight
                     && r.pay(s, midnight)
@@ -329,38 +801,52 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
                 }
             }
             midnight += 1.0;
-        } else if let Some(&(t, _, k, i, j)) = burns.get(next) {
+        } else if let Some(&(t, phase, _, k, what)) = events.get(next) {
             next += 1;
-            let (s, r) = (&mut out[k], runs[k].as_mut().expect("a fitted ship's burn"));
-            let mut changed = r.pay(s, t.0);
-            if s.dry.is_none() {
-                let dv = ships[k].items[i].markers[j].dv;
-                match burn(&mut r.load, r.dry, r.spec, dv) {
-                    Ok(used) => {
-                        s.used[i] += used;
-                        s.after[i] = Some(r.load);
-                        changed = true;
+            match what {
+                What::Burn(i, j) => {
+                    let (s, r) = (
+                        &mut l.out[k],
+                        l.runs[k].as_mut().expect("a fitted ship's burn"),
+                    );
+                    let mut changed = r.pay(s, t);
+                    if s.dry.is_none() {
+                        let dv = ships[k].items[i].markers[j].dv;
+                        match burn(&mut r.load, r.dry, r.spec, dv) {
+                            Ok(used) => {
+                                s.used[i] += used;
+                                s.after[i] = Some(r.load);
+                                changed = true;
+                            }
+                            Err(could) => {
+                                s.dry = Some(Dry {
+                                    t: Epoch(t),
+                                    item: i,
+                                    marker: Some(j),
+                                    dv,
+                                    short: dv - could,
+                                })
+                            }
+                        }
                     }
-                    Err(could) => {
-                        s.dry = Some(Dry {
-                            t,
-                            item: i,
-                            marker: Some(j),
-                            dv,
-                            short: dv - could,
-                        })
+                    if changed {
+                        s.record(Epoch(t), r.load);
                     }
                 }
-            }
-            if changed {
-                s.record(t, r.load);
+                What::Transfer(step) => {
+                    let kind = match phase {
+                        Phase::Gives => Kind::Give,
+                        _ => Kind::Take,
+                    };
+                    l.transfer(t, k, step, kind);
+                }
             }
         } else {
             break;
         }
     }
     // Every ship pays up to where the loop stops.
-    for ((c, s), r) in ships.iter().zip(&mut out).zip(&mut runs) {
+    for ((c, s), r) in ships.iter().zip(&mut l.out).zip(&mut l.runs) {
         if let Some(r) = r
             && c.epoch.0 < until
             && r.pay(s, until)
@@ -369,7 +855,7 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         }
     }
     State {
-        ships: out,
+        ships: l.out,
         until: Epoch(until),
         done,
     }
@@ -447,6 +933,8 @@ mod tests {
             epoch: Epoch(day0() + start),
             items,
             done: true,
+            stops: Vec::new(),
+            bought: false,
         }
     }
 
@@ -599,5 +1087,438 @@ mod tests {
         let s = &state.ships[0];
         assert!(s.load(Epoch(day0() - 5e-10)).is_none());
         assert!(s.load(Epoch(day0())).unwrap().propellant() < 300.0);
+    }
+    /// A manifest of `propellant` t and `cargo` by commodity.
+    fn manifest(propellant: Option<f64>, cargo: &[(Commodity, f64)]) -> Manifest {
+        let mut m = Manifest {
+            propellant,
+            ..Manifest::default()
+        };
+        for &(c, t) in cargo {
+            m.cargo[c as usize] = Some(t);
+        }
+        m
+    }
+
+    /// A stop with vessel 1 from its start, giving to `arrive` and taking
+    /// to `leave`.
+    fn stop(arrive: Manifest, leave: Manifest) -> Option<Stop> {
+        Some(Stop {
+            with: With::Vessel { id: 1, leg: None },
+            arrive,
+            leave,
+        })
+    }
+
+    /// A tug (id 0) that arrives at the depot's stop on day 2 (a leg of
+    /// two burns, `arrival_dv` km/s at the end), stays, and leaves on day 5
+    /// (a leg of two burns, `departure_dv` at its start).
+    fn visit(arrival_dv: f64, departure_dv: f64) -> [Item; 3] {
+        [
+            item(
+                ItemKind::Leg,
+                1.0,
+                2.0,
+                arrival_dv,
+                &[(1.0, 0.0), (2.0, arrival_dv)],
+            ),
+            {
+                let mut stay = item(ItemKind::Stay, 2.0, 5.0, 0.0, &[]);
+                stay.step = 1;
+                stay
+            },
+            {
+                let mut leg = item(
+                    ItemKind::Leg,
+                    5.0,
+                    6.0,
+                    departure_dv,
+                    &[(5.0, departure_dv), (6.0, 0.0)],
+                );
+                leg.step = 1;
+                leg
+            },
+        ]
+    }
+
+    /// The transfers of `s` as (commodity, kind, asked, got, short).
+    fn moved(s: &ShipState) -> Vec<(Commodity, Kind, f64, f64, Option<Short>)> {
+        s.transfers
+            .iter()
+            .map(|x| (x.commodity, x.kind, x.asked, x.got, x.short))
+            .collect()
+    }
+
+    /// A give fills the vessel's tanks with what it burns and its hold with
+    /// the rest, to the manifest's targets by commodity at the mixture
+    /// ratio; a take drains its hold first, then its tanks (M1b.md, step 3
+    /// plan, part 5).
+    #[test]
+    fn a_give_fills_the_tanks_then_the_hold_and_a_take_drains_them_back() {
+        let e = economy();
+        let s_h = e.propellant(Propellant::Hydrolox).lox_share;
+        let s_m = e.propellant(Propellant::Methalox).lox_share;
+        let staying = [item(ItemKind::Stay, 0.0, 30.0, 0.0, &[])];
+        let mut depot = course(&e, "hauler", 100.0, 0.0, staying.iter().collect());
+        depot.id = 1;
+        let legs = visit(0.0, 0.0);
+        let mut tug = course(&e, "tug-h", 140.0, 0.0, legs.iter().collect());
+        tug.fitted.as_mut().unwrap().load.cargo[Commodity::Equipment as usize] = 10.0;
+        tug.stops = vec![
+            stop(
+                manifest(Some(40.0), &[(Commodity::Equipment, 0.0)]),
+                manifest(Some(100.0), &[(Commodity::Equipment, 5.0)]),
+            ),
+            None,
+        ];
+        let state = run(&[tug, depot], &e);
+        let (tug, depot) = (&state.ships[0], &state.ships[1]);
+        let (day2, day5) = (Epoch(day0() + 2.0), Epoch(day0() + 5.0));
+        // Given on arrival: LOX into the depot's tanks, hydrogen (which
+        // the depot does not burn, and of which two days boiled off) and
+        // equipment into its hold.
+        let given_lox = 140.0 * s_h - 40.0 * s_h;
+        let gives = &moved(tug)[..3];
+        let given_lh2 = gives[1].3;
+        assert_eq!(
+            gives,
+            [
+                (Commodity::Lox, Kind::Give, given_lox, given_lox, None),
+                (Commodity::Lh2, Kind::Give, given_lh2, given_lh2, None),
+                (Commodity::Equipment, Kind::Give, 10.0, 10.0, None),
+            ]
+        );
+        let whole = 140.0 * (1.0 - s_h) - 40.0 * (1.0 - s_h);
+        assert!(given_lh2 < whole && given_lh2 > whole - 0.05, "{given_lh2}");
+        let after = tug.load(day2).unwrap();
+        assert!(close(after.lox, 40.0 * s_h), "{after:?}");
+        assert!(close(after.fuel, 40.0 * (1.0 - s_h)), "{after:?}");
+        assert_eq!(after.cargo(), 0.0);
+        let stock = depot.load(day2).unwrap();
+        assert!(close(stock.lox, 100.0 * s_m + given_lox), "{stock:?}");
+        assert!(close(stock.fuel, 100.0 * (1.0 - s_m)), "{stock:?}");
+        assert!(close(stock.cargo[Commodity::Lh2 as usize], given_lh2));
+        assert_eq!(stock.cargo[Commodity::Equipment as usize], 10.0);
+        // Taken on leaving, to the targets: hydrogen from the hold (what
+        // boiled off in three days too), LOX from the tanks, equipment.
+        let takes = &moved(tug)[3..];
+        assert_eq!(takes.len(), 3);
+        assert_eq!(
+            takes.iter().map(|x| (x.0, x.1, x.4)).collect::<Vec<_>>(),
+            [
+                (Commodity::Lox, Kind::Take, None),
+                (Commodity::Lh2, Kind::Take, None),
+                (Commodity::Equipment, Kind::Take, None),
+            ]
+        );
+        assert!(close(takes[0].2, 60.0 * s_h), "{takes:?}");
+        assert!(takes[1].2 > 60.0 * (1.0 - s_h), "{takes:?}");
+        assert_eq!(takes[2].2, 5.0);
+        assert!(takes.iter().all(|x| x.2 == x.3));
+        let after = tug.load(day5).unwrap();
+        assert!(close(after.lox, 100.0 * s_h), "{after:?}");
+        assert!(close(after.fuel, 100.0 * (1.0 - s_h)), "{after:?}");
+        assert_eq!(after.cargo[Commodity::Equipment as usize], 5.0);
+        let stock = depot.load(day5).unwrap();
+        assert!(
+            close(stock.lox, 100.0 * s_m + given_lox - takes[0].3),
+            "{stock:?}"
+        );
+        assert!(stock.cargo[Commodity::Lh2 as usize] < given_lh2 - takes[1].3);
+        assert_eq!(stock.cargo[Commodity::Equipment as usize], 5.0);
+        assert!(tug.dry.is_none() && depot.dry.is_none());
+    }
+
+    /// At one time: the tick, an arrival's burn, then gives, then takes,
+    /// then a departure's burn. A tug arriving burns before it gives, so
+    /// it keeps its target; one leaving takes before it burns, so it can
+    /// make a burn its tanks could not have.
+    #[test]
+    fn events_at_one_time_go_tick_arrival_gives_takes_departure() {
+        let e = economy();
+        let s_h = e.propellant(Propellant::Hydrolox).lox_share;
+        let staying = [item(ItemKind::Stay, 0.0, 30.0, 0.0, &[])];
+        let mut depot = course(&e, "hauler", 0.0, 0.0, staying.iter().collect());
+        depot.id = 1;
+        // Arrives on day 2 with a 0.5 km/s burn, and gives down to 10 t.
+        let arriving = visit(0.5, 0.0);
+        let mut a = course(&e, "tug-h", 150.0, 0.0, arriving.iter().collect());
+        a.stops = vec![stop(manifest(Some(10.0), &[]), Manifest::default()), None];
+        // Arrived on day 1, leaves on day 2 with a 1 km/s burn, taking up
+        // to 100 t first: its 20 t could not make the burn.
+        let leaving = [
+            item(ItemKind::Leg, 0.0, 1.0, 0.0, &[(0.0, 0.0), (1.0, 0.0)]),
+            {
+                let mut stay = item(ItemKind::Stay, 1.0, 2.0, 0.0, &[]);
+                stay.step = 1;
+                stay
+            },
+            {
+                let mut leg = item(ItemKind::Leg, 2.0, 3.0, 1.0, &[(2.0, 1.0), (3.0, 0.0)]);
+                leg.step = 1;
+                leg
+            },
+        ];
+        let mut b = course(&e, "tug-h", 20.0, 0.0, leaving.iter().collect());
+        b.id = 2;
+        b.stops = vec![stop(Manifest::default(), manifest(Some(100.0), &[])), None];
+        let state = run(&[a, b, depot], &e);
+        let (a, b, depot) = (&state.ships[0], &state.ships[1], &state.ships[2]);
+        let day2 = Epoch(day0() + 2.0);
+        assert!(a.dry.is_none() && b.dry.is_none() && depot.dry.is_none());
+        let after = a.load(day2).unwrap();
+        assert!(close(after.propellant(), 10.0), "{after:?}");
+        let burned = a.used[0];
+        assert!(burned > 15.0 && burned < 20.0, "{burned}");
+        // What it had before the burn (its hydrogen boiled off two days),
+        // less the burn, less its target.
+        let before = a.load(Epoch(day2.0 - 1e-9)).unwrap().propellant();
+        let given: f64 = a.transfers.iter().map(|x| x.got).sum();
+        assert!((given - (before - burned - 10.0)).abs() < 1e-9, "{given}");
+        // 80 t and the two days' boil-off of its hydrogen.
+        let taken: f64 = b.transfers.iter().map(|x| x.got).sum();
+        assert!(taken > 80.0 && taken < 80.05, "{:?}", b.transfers);
+        assert!(b.transfers.iter().all(|x| x.short.is_none()));
+        let after = b.load(day2).unwrap();
+        assert!(close(after.propellant(), 100.0 - b.used[2]), "{after:?}");
+        assert!(b.used[2] > 20.0, "{}", b.used[2]);
+        let lox_given = a
+            .transfers
+            .iter()
+            .find(|x| x.commodity == Commodity::Lox)
+            .unwrap()
+            .got;
+        let stock = depot.load(day2).unwrap();
+        assert!(close(stock.lox, lox_given - 80.0 * s_h), "{stock:?}");
+    }
+
+    /// A transfer that cannot be made in full is made as far as it can be
+    /// and says why: the vessel not there yet, gone, or run dry; its stock;
+    /// the capacity receiving it; no one to transfer with; what Earth does
+    /// not sell.
+    #[test]
+    fn a_transfer_short_says_why() {
+        let e = economy();
+        let staying = [item(ItemKind::Stay, 0.0, 30.0, 0.0, &[])];
+        let legs = visit(0.0, 0.0);
+        let shorts = |depot: Course, stops: Vec<Option<Stop>>| {
+            let mut tug = course(&e, "tug-h", 140.0, 0.0, legs.iter().collect());
+            tug.fitted.as_mut().unwrap().load.cargo[Commodity::Equipment as usize] = 10.0;
+            tug.stops = stops;
+            let state = run(&[tug, depot], &e);
+            moved(&state.ships[0])
+        };
+        fn depot<'a>(e: &Economy, propellant: f64, start: f64, items: Vec<&'a Item>) -> Course<'a> {
+            let mut d = course(e, "hauler", propellant, start, items);
+            d.id = 1;
+            d
+        }
+        let give_40 = stop(manifest(Some(40.0), &[]), Manifest::default());
+        let lox = |m: &Vec<(Commodity, Kind, f64, f64, Option<Short>)>| {
+            m.iter().find(|x| x.0 == Commodity::Lox).copied().unwrap()
+        };
+        // Not there yet: the depot starts on day 3.
+        let m = shorts(
+            depot(&e, 100.0, 3.0, staying.iter().collect()),
+            vec![give_40.clone(), None],
+        );
+        assert_eq!(lox(&m).3, 0.0);
+        assert_eq!(lox(&m).4, Some(Short::NotYet));
+        // Gone: the depot leaves on day 1.5.
+        let left = [
+            item(ItemKind::Stay, 0.0, 1.5, 0.0, &[]),
+            item(ItemKind::Leg, 1.5, 3.0, 0.0, &[(1.5, 0.0), (3.0, 0.0)]),
+        ];
+        let m = shorts(
+            depot(&e, 100.0, 0.0, left.iter().collect()),
+            vec![give_40.clone(), None],
+        );
+        assert_eq!(lox(&m).4, Some(Short::Gone));
+        // Run dry: the depot's upkeep is more than its tanks hold.
+        let keeping = [item(ItemKind::Stay, 0.0, 30.0, 1.0, &[])];
+        let m = shorts(
+            depot(&e, 0.001, 0.0, keeping.iter().collect()),
+            vec![give_40.clone(), None],
+        );
+        assert_eq!(lox(&m).4, Some(Short::Dry));
+        // Stock: a take of more than the depot has.
+        let m = shorts(
+            depot(&e, 10.0, 0.0, staying.iter().collect()),
+            vec![stop(Manifest::default(), manifest(Some(150.0), &[])), None],
+        );
+        let s_m = e.propellant(Propellant::Methalox).lox_share;
+        assert!(close(lox(&m).3, 10.0 * s_m), "{m:?}");
+        assert_eq!(lox(&m).4, Some(Short::Stock));
+        // Capacity: a give to full tanks, and a take beyond the hold (the
+        // tug's 50 t, 10 of equipment aboard).
+        let mut full = depot(&e, 1200.0, 0.0, staying.iter().collect());
+        full.fitted.as_mut().unwrap().load.cargo[Commodity::Equipment as usize] = 100.0;
+        let m = shorts(
+            full,
+            vec![
+                stop(
+                    manifest(Some(40.0), &[]),
+                    manifest(None, &[(Commodity::Equipment, 60.0)]),
+                ),
+                None,
+            ],
+        );
+        assert_eq!(lox(&m).3, 0.0);
+        assert_eq!(lox(&m).4, Some(Short::Capacity));
+        let equipment = m.iter().find(|x| x.1 == Kind::Take).unwrap();
+        assert_eq!(
+            *equipment,
+            (
+                Commodity::Equipment,
+                Kind::Take,
+                50.0,
+                40.0,
+                Some(Short::Capacity)
+            )
+        );
+        // No one: a stop without a vessel, a vessel without a class, and
+        // a give at LEO.
+        let no_one = |with: With| {
+            Some(Stop {
+                with,
+                arrive: manifest(Some(40.0), &[]),
+                leave: Manifest::default(),
+            })
+        };
+        let m = shorts(
+            depot(&e, 100.0, 0.0, staying.iter().collect()),
+            vec![no_one(With::NoOne), None],
+        );
+        assert_eq!(lox(&m).4, Some(Short::NoOne));
+        let mut massless = depot(&e, 100.0, 0.0, staying.iter().collect());
+        massless.fitted = None;
+        let m = shorts(massless, vec![give_40.clone(), None]);
+        assert_eq!(lox(&m).4, Some(Short::NoOne));
+        let m = shorts(
+            depot(&e, 100.0, 0.0, staying.iter().collect()),
+            vec![no_one(With::Earth), None],
+        );
+        assert_eq!(lox(&m).4, Some(Short::NoOne));
+        // Not sold: metal from Earth.
+        let m = shorts(
+            depot(&e, 100.0, 0.0, staying.iter().collect()),
+            vec![
+                Some(Stop {
+                    with: With::Earth,
+                    arrive: Manifest::default(),
+                    leave: manifest(None, &[(Commodity::Metal, 1.0)]),
+                }),
+                None,
+            ],
+        );
+        assert_eq!(
+            m,
+            [(Commodity::Metal, Kind::Take, 1.0, 0.0, Some(Short::NotSold))]
+        );
+    }
+
+    /// A take at LEO is bought: launch at the day's price, geometric
+    /// between the start's and the end's, plus the goods; payload pays
+    /// launch only. A career ship is bought at its start with its load.
+    #[test]
+    fn a_take_at_leo_is_bought_at_the_days_launch_price() {
+        let e = economy();
+        let [l0, l1] = e.launch_usd_per_kg;
+        assert_eq!(e.launch_usd_per_kg_at(e.start), l0);
+        assert_eq!(e.launch_usd_per_kg_at(Epoch(e.start.0 - 100.0)), l0);
+        assert!(close(e.launch_usd_per_kg_at(e.end), l1));
+        assert!(close(e.launch_usd_per_kg_at(Epoch(e.end.0 + 100.0)), l1));
+        let mid = Epoch((e.start.0 + e.end.0) / 2.0);
+        assert!(close(e.launch_usd_per_kg_at(mid), (l0 * l1).sqrt()));
+        assert!(l0 > l1 && e.launch_usd_per_kg_at(Epoch(day0())) < l0);
+
+        let s_h = e.propellant(Propellant::Hydrolox).lox_share;
+        let legs = visit(0.0, 0.0);
+        let mut tug = course(&e, "tug-h", 100.0, 0.0, legs.iter().collect());
+        tug.stops = vec![
+            Some(Stop {
+                with: With::Earth,
+                arrive: Manifest::default(),
+                leave: manifest(
+                    Some(150.0),
+                    &[(Commodity::Equipment, 10.0), (Commodity::Payload, 5.0)],
+                ),
+            }),
+            None,
+        ];
+        tug.bought = true;
+        let state = run(&[tug], &e);
+        let tug = &state.ships[0];
+        let day5 = Epoch(day0() + 5.0);
+        let launch = e.launch_usd_per_kg_at(day5);
+        let musd = |tonnes: f64, goods: f64| tonnes * 1e3 * (launch + goods) / 1e6;
+        let bought: Vec<(Commodity, f64, f64)> = tug
+            .transfers
+            .iter()
+            .map(|x| (x.commodity, x.got, x.cost_musd.unwrap()))
+            .collect();
+        assert_eq!(bought.len(), 4);
+        assert_eq!(bought[0].0, Commodity::Lox);
+        assert!(close(bought[0].1, 50.0 * s_h));
+        assert!(close(
+            bought[0].2,
+            musd(50.0 * s_h, e.propellant_usd_per_kg)
+        ));
+        assert_eq!(bought[1].0, Commodity::Lh2);
+        assert!(
+            bought[1].1 > 50.0 * (1.0 - s_h),
+            "boiled off: {:?}",
+            bought[1]
+        );
+        assert!(close(
+            bought[1].2,
+            musd(bought[1].1, e.propellant_usd_per_kg)
+        ));
+        assert_eq!(bought[2].0, Commodity::Equipment);
+        assert!(close(bought[2].2, musd(10.0, e.equipment_usd_per_kg)));
+        assert_eq!(bought[3].0, Commodity::Payload);
+        assert!(close(bought[3].2, musd(5.0, 0.0)));
+        let after = tug.load(day5).unwrap();
+        assert!(close(after.propellant(), 150.0));
+        assert_eq!(after.cargo(), 15.0);
+        // Bought at its start: the ship, its LOX and its hydrogen.
+        let launch = e.launch_usd_per_kg_at(Epoch(day0()));
+        let tug_h = e.ships.iter().find(|c| c.id == "tug-h").unwrap();
+        assert_eq!(tug.purchases.len(), 3);
+        assert_eq!(
+            (tug.purchases[0].what, tug.purchases[0].musd),
+            (Bought::Ship, tug_h.price_musd)
+        );
+        assert_eq!(tug.purchases[1].what, Bought::Commodity(Commodity::Lox));
+        assert!(close(tug.purchases[1].tonnes, 100.0 * s_h));
+        assert!(close(
+            tug.purchases[1].musd,
+            100.0 * s_h * 1e3 * (launch + e.propellant_usd_per_kg) / 1e6
+        ));
+        assert_eq!(tug.purchases[2].what, Bought::Commodity(Commodity::Lh2));
+        assert!(tug.purchases.iter().all(|p| p.t == Epoch(day0())));
+    }
+
+    /// A station keeps no reserve: drained by a visitor, it runs dry
+    /// keeping station.
+    #[test]
+    fn a_drained_depot_runs_dry_keeping_station() {
+        let e = economy();
+        let keeping = [item(ItemKind::Stay, 0.0, 30.0, 0.01, &[])];
+        let mut depot = course(&e, "hauler", 50.0, 0.0, keeping.iter().collect());
+        depot.id = 1;
+        let legs = visit(0.0, 0.0);
+        let mut tug = course(&e, "tug-h", 10.0, 0.0, legs.iter().collect());
+        tug.stops = vec![stop(Manifest::default(), manifest(Some(150.0), &[])), None];
+        let state = run(&[tug, depot], &e);
+        let (tug, depot) = (&state.ships[0], &state.ships[1]);
+        let taken: Vec<_> = moved(tug);
+        assert_eq!(taken.len(), 2);
+        assert_eq!(taken[0].4, Some(Short::Stock));
+        assert!(taken[0].3 > 35.0 && taken[0].3 < 40.0, "{taken:?}");
+        let dry = depot.dry.unwrap();
+        assert_eq!(dry.marker, None);
+        assert!(dry.t.0 > day0() + 5.0 && dry.t.0 <= day0() + 6.0, "{dry:?}");
+        assert!(tug.dry.is_none());
     }
 }

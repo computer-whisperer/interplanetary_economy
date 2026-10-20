@@ -1,16 +1,17 @@
-//! The state and the loop (M1b.md, step 2 plan, parts 3, 5 and 7): burns
-//! empty the tanks by the rocket equation, a station stay burns its
-//! upkeep, hydrogen boils off and methane keeps, a ship loaded short runs
-//! dry at the burn it cannot make, and the day's hash covers the tanks;
-//! the checks of the tanks, and where a ship that ran dry is.
+//! The state and the loop (M1b.md, step 2 plan, parts 3, 5 and 7; step 3
+//! plan, part 5): burns empty the tanks by the rocket equation, a station
+//! stay burns its upkeep, hydrogen boils off and methane keeps, a ship
+//! loaded short runs dry at the burn it cannot make, and the day's hash
+//! covers the tanks; the checks of the tanks, and where a ship that ran
+//! dry is; a tug refuels a depot it meets and buys at LEO.
 
 use orbit::mission::{Item, ItemKind, MarkerKind};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::game::{Game, world};
-use sim::log::{Check, Log};
+use sim::log::{Check, Log, Mode};
 use sim::ships::Commodity;
-use sim::state::Course;
+use sim::state::{Bought, Course, Kind, With};
 use std::sync::Arc;
 
 fn pool(threads: usize) -> Arc<rayon::ThreadPool> {
@@ -512,6 +513,171 @@ days = [0.5]
     );
 }
 
+/// A depot flown full to the NRHO, and a tug that meets it, gives it all
+/// but 20 t of propellant, flies home and buys a full tank at LEO before
+/// leaving again (M1b.md, step 3 plan, part 5): the loads change hands at
+/// the arrival, the purchase costs the day's launch price and the goods,
+/// the day's hashes cover both and are the same on 1 and 24 threads, and
+/// the log reads back; in career the ships are bought at their starts.
+#[test]
+fn a_tug_refuels_a_depot_and_buys_at_leo() {
+    let src = r#"
+name = "depot"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 60
+
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 20.0
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+propellant_t = 150.0
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+"#;
+    let many = game(src, 24);
+    let e = many.economy();
+    let s_h = e.propellant(sim::params::Propellant::Hydrolox).lox_share;
+    let (depot, tug) = (&many.state().ships[0], &many.state().ships[1]);
+    let items: Vec<&Item> = many.ships()[1].items().collect();
+    let arrived = items.iter().rev().find(|i| i.step == 0).unwrap().end;
+    // Given on arrival: LOX into the depot's tanks, hydrogen into its hold.
+    let gives: Vec<_> = tug
+        .transfers
+        .iter()
+        .filter(|x| x.kind == Kind::Give)
+        .collect();
+    assert_eq!(gives.len(), 2, "{:?}", tug.transfers);
+    for x in &gives {
+        assert_eq!(x.t, arrived);
+        assert_eq!(x.step, 0);
+        assert_eq!(
+            x.with,
+            With::Vessel {
+                id: 0,
+                leg: Some(0)
+            }
+        );
+        assert_eq!(x.short, None);
+        assert!(x.got == x.asked && x.got > 0.0, "{x:?}");
+    }
+    assert_eq!(gives[0].commodity, Commodity::Lox);
+    assert_eq!(gives[1].commodity, Commodity::Lh2);
+    // Before: before the arrival burn too, so more than the give went.
+    let before = tug.load(Epoch(arrived.0 - 1e-6)).unwrap();
+    let after = tug.load(arrived).unwrap();
+    assert!(close(after.propellant(), 20.0, 1e-9), "{after:?}");
+    assert!(close(after.lox, 20.0 * s_h, 1e-9), "{after:?}");
+    assert!(
+        before.lox - after.lox > gives[0].got,
+        "{before:?} {after:?}"
+    );
+    let stock_before = depot.load(Epoch(arrived.0 - 1e-6)).unwrap();
+    let stock = depot.load(arrived).unwrap();
+    assert!(close(stock.lox - stock_before.lox, gives[0].got, 1e-9));
+    assert!(close(
+        stock.cargo[Commodity::Lh2 as usize],
+        gives[1].got,
+        1e-9
+    ));
+    // Taken on leaving, back up to 20 t: what three days of keeping the
+    // depot's station burned (LOX from its tanks, hydrogen from its hold),
+    // and the hydrogen that boiled off.
+    let takes: Vec<_> = tug
+        .transfers
+        .iter()
+        .filter(|x| x.kind == Kind::Take && x.step == 0)
+        .collect();
+    assert_eq!(takes.len(), 2, "{takes:?}");
+    assert_eq!(takes[0].commodity, Commodity::Lox);
+    assert_eq!(takes[1].commodity, Commodity::Lh2);
+    for x in &takes {
+        assert!(x.got == x.asked && x.got > 0.0 && x.got < 0.1, "{x:?}");
+    }
+    let left_depot = items
+        .iter()
+        .find(|i| i.step == 2 && i.kind == ItemKind::Leg)
+        .unwrap();
+    assert_eq!(takes[0].t, left_depot.start);
+    // Bought at LEO before leaving again: launch at the day's price and
+    // the propellant's.
+    let bought: Vec<_> = tug.transfers.iter().filter(|x| x.step == 2).collect();
+    assert_eq!(bought.len(), 2, "{bought:?}");
+    let left = items
+        .iter()
+        .find(|i| i.step == 4 && i.kind == ItemKind::Leg)
+        .unwrap();
+    let launch = e.launch_usd_per_kg_at(left.start);
+    for x in &bought {
+        assert_eq!(x.with, With::Earth);
+        assert_eq!(x.kind, Kind::Take);
+        assert_eq!(x.t, left.start);
+        assert!(close(
+            x.cost_musd.unwrap(),
+            x.got * 1e3 * (launch + e.propellant_usd_per_kg) / 1e6,
+            1e-12
+        ));
+    }
+    // What it had, and what it bought, fill its tanks (the departure burn
+    // at the same time empties them again).
+    let had = tug.load(Epoch(left.start.0 - 1e-6)).unwrap().propellant();
+    let got: f64 = bought.iter().map(|x| x.got).sum();
+    assert!((had + got - 150.0).abs() < 1e-6, "{had} + {got}");
+    assert!(tug.dry.is_none() && depot.dry.is_none());
+    // Both start at LEO, where they are bought: the ship, then its LOX
+    // and fuel (a full tank).
+    for s in [tug, depot] {
+        assert_eq!(s.purchases.len(), 3, "{:?}", s.purchases);
+        assert_eq!(s.purchases[0].what, Bought::Ship);
+        assert!(s.purchases.iter().all(|p| p.musd > 0.0));
+    }
+    assert!(
+        tug.purchases
+            .iter()
+            .all(|p| p.t == "2045-03-06".parse().unwrap())
+    );
+
+    // The same on one thread, from the log written; and the same in
+    // career.
+    let text = many.log().to_toml();
+    assert_eq!(hashes(&game(&text, 1)), hashes(&many));
+    let mut log = Log::parse(&text, world().eph, Places::standard()).unwrap();
+    log.setup.mode = Mode::Career;
+    log.setup.now = Some("2045-03-01".parse().unwrap());
+    let mut career = Game::new(log, pool(24)).unwrap();
+    career.wait();
+    assert_eq!(hashes(&career), hashes(&many));
+}
+
 /// A measurement (M1b.md, step 2 plan, parts 3 and 8): the published plan,
 /// every ship a hauler, designed; the loop alone, and a new load (which
 /// designs nothing and runs the loop again from the start). Each leg's,
@@ -562,6 +728,8 @@ fn the_published_plan_runs_again_quickly() {
                 epoch: ship.epoch,
                 items: d.items().collect(),
                 done: d.done,
+                stops: Vec::new(),
+                bought: false,
             })
             .collect();
         let clock = std::time::Instant::now();
@@ -628,6 +796,8 @@ fn the_published_plan_runs_again_quickly() {
             epoch: start,
             items: items.iter().collect(),
             done: true,
+            stops: Vec::new(),
+            bought: false,
         })
         .collect();
     let times: Vec<f64> = (0..3)

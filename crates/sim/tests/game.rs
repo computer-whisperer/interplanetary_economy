@@ -659,7 +659,9 @@ fn a_manifest_edit_designs_nothing() {
     game.wait();
     assert_eq!(game.designs_made(), made);
     assert_eq!(game.ships()[0].revision, revision);
-    assert_eq!(hashes(&game), before);
+    // The manifest's transfers are state (here, short: no one at LLO),
+    // so the day's hashes change, though nothing was designed.
+    assert_ne!(hashes(&game), before);
     let warned: Vec<String> = game.ships()[0]
         .breaches
         .iter()
@@ -679,6 +681,7 @@ fn a_manifest_edit_designs_nothing() {
     assert!(game.undo());
     assert!(game.ships()[0].breaches.is_empty());
     assert_eq!(game.designs_made(), made);
+    assert_eq!(hashes(&game), before);
 
     // A career log in the sandbox: the re-plan is kept, and the manifest
     // goes to its leg, the log's first steps untouched.

@@ -112,6 +112,11 @@ impl Manifest {
     pub fn cargo(&self) -> f64 {
         self.cargo.iter().flatten().sum()
     }
+
+    /// Whether it names nothing.
+    pub fn is_empty(&self) -> bool {
+        self.propellant.is_none() && self.cargo.iter().all(Option::is_none)
+    }
 }
 
 /// `m`'s amounts by commodity, or what is wrong with it.
@@ -220,8 +225,9 @@ impl fmt::Display for Breach {
 }
 
 /// Loads are held to their tanks and holds to the gram, t: amounts
-/// written in decimal add up only to within rounding.
-const GRAM: f64 = 1e-6;
+/// written in decimal add up only to within rounding; and transfers move
+/// nothing smaller.
+pub(crate) const GRAM: f64 = 1e-6;
 
 /// Tonnes, to the gram.
 fn t(x: f64) -> String {
