@@ -10,6 +10,7 @@ use damascene_core::prelude::*;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Item, ItemKind, MarkerKind, when};
 use orbit::time::Epoch;
+use sim::report::musd;
 use sim::ships::{COMMODITIES, Commodity, Load};
 use sim::state::{Bought, Kind, Purchase, Transfer, With};
 use std::sync::Arc;
@@ -303,17 +304,6 @@ fn bought(purchases: &[Purchase]) -> String {
     format!("Bought at LEO for {}: {}", musd(total), parts.join(", "))
 }
 
-/// Millions of dollars, to three figures: "$1,234M", "$12.3M", "$1.23M".
-fn musd(x: f64) -> String {
-    if x >= 100.0 {
-        format!("${}M", grouped(x))
-    } else if x >= 10.0 {
-        format!("${x:.1}M")
-    } else {
-        format!("${x:.2}M")
-    }
-}
-
 /// A shortfall, km/s: in m/s, to a tenth under 100; under a tenth, in
 /// mm/s (a day's upkeep).
 fn short(dv: f64) -> String {
@@ -576,12 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn money_and_mass_read() {
-        assert_eq!(musd(1234.4), "$1,234M");
-        assert_eq!(musd(99.96), "$100.0M");
-        assert_eq!(musd(12.345), "$12.3M");
-        assert_eq!(musd(1.2345), "$1.23M");
-        assert_eq!(musd(0.0), "$0.00M");
+    fn mass_reads() {
         assert_eq!(mass(85.66), "85.7 t");
         assert_eq!(mass(1.234), "1.23 t");
         assert_eq!(mass(0.308), "308.0 kg");

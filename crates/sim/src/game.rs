@@ -1572,6 +1572,63 @@ impl Game {
                     None => Err(format!("{line}; expected: did not run dry")),
                 }
             }
+            Check::Cargo { at, cargo, .. } => {
+                let on = format!("{} on {}", d.name, at.stamp());
+                if !self.state.known(*at) {
+                    return pending(on);
+                }
+                let Some(load) = state.load(*at) else {
+                    return Err(format!("{on}: no load (no class, or not yet started)"));
+                };
+                let held: Vec<String> = cargo
+                    .iter()
+                    .map(|(c, _)| format!("{} {:.3} t", c.name(), load.cargo[*c as usize]))
+                    .collect();
+                let line = format!("{on}: {}", held.join(", "));
+                let out: Vec<String> = cargo
+                    .iter()
+                    .filter(|(c, t)| !(t[0]..=t[1]).contains(&load.cargo[*c as usize]))
+                    .map(|(c, t)| format!("{} not {:.3}–{:.3}", c.name(), t[0], t[1]))
+                    .collect();
+                match out.is_empty() {
+                    true => Ok(line),
+                    false => Err(format!("{line}, {}", out.join(", "))),
+                }
+            }
+            Check::Transfer {
+                step,
+                kind,
+                commodity,
+                short,
+                ..
+            } => {
+                let what = match kind {
+                    Kind::Give => "give",
+                    Kind::Take => "take",
+                };
+                let Some(x) = state
+                    .transfers
+                    .iter()
+                    .find(|x| x.step == *step && x.kind == *kind && x.commodity == *commodity)
+                else {
+                    let none =
+                        format!("{}, step {step}: no {what} of {}", d.name, commodity.name());
+                    return match self.state.done {
+                        true => Err(none),
+                        false => pending(none),
+                    };
+                };
+                let line = format!(
+                    "{}, step {step}: {}",
+                    d.name,
+                    report::transfer(self.plan(), x)
+                );
+                match x.short.is_some() == *short {
+                    true => Ok(line),
+                    false if *short => Err(format!("{line}; expected: short")),
+                    false => Err(format!("{line}; expected: in full")),
+                }
+            }
         }
     }
 

@@ -1378,7 +1378,41 @@ impl<'w> Planner<'w> {
             self.next += 1;
             self.at = i;
             match self.ship.steps.get(i)?.clone() {
-                Step::Wait(days) => self.ready = self.ready.plus_days(days),
+                Step::Wait(days) => {
+                    self.ready = self.ready.plus_days(days);
+                    // A wait that ends the plan is a stay to its end, the
+                    // ship keeping station there (M1b.md, step 3 plan,
+                    // part 8: a depot); one of no days is nothing.
+                    if i + 1 == self.ship.steps.len() {
+                        let clock = Instant::now();
+                        return Some(match self.stay(self.ready, None) {
+                            Ok((items, _)) if items.is_empty() => return None,
+                            Ok((mut items, _)) => {
+                                if let Some(last) = items.last_mut() {
+                                    last.seconds = clock.elapsed().as_secs_f64();
+                                }
+                                items
+                            }
+                            Err(why) => {
+                                self.stopped = true;
+                                vec![Item {
+                                    step: self.at,
+                                    kind: ItemKind::Failed(why),
+                                    label: format!("at {}", self.label),
+                                    start: self.since,
+                                    end: self.since,
+                                    dv: 0.0,
+                                    track: None,
+                                    markers: Vec::new(),
+                                    options: Vec::new(),
+                                    window: None,
+                                    seconds: clock.elapsed().as_secs_f64(),
+                                    note: None,
+                                }]
+                            }
+                        });
+                    }
+                }
                 Step::Go(go) => {
                     let clock = Instant::now();
                     self.ready = Epoch(self.ready.0.max(self.not_before.0));

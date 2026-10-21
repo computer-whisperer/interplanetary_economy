@@ -1,11 +1,12 @@
 //! Items as text and as CSV, for `sim run` (M1b.md, step 1 plan, part 8;
 //! M1c.md's `orbit mission`, which it replaces); a ship's propellant and
-//! tanks (step 2 plan, part 5).
+//! tanks (step 2 plan, part 5); its transfers and purchases (step 3
+//! plan, part 8).
 
-use crate::ships::{Commodity, Load};
-use crate::state::ShipState;
+use crate::ships::{COMMODITIES, Commodity, Load};
+use crate::state::{Bought, Kind, ShipState, Transfer, With};
 use orbit::ephem::Ephemeris;
-use orbit::mission::{Item, ItemKind, MarkerKind, when};
+use orbit::mission::{Item, ItemKind, MarkerKind, Plan, when};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use std::fmt::Write as _;
 
@@ -124,7 +125,7 @@ pub fn burned(state: &ShipState, fuel: Commodity, item: &Item, k: usize) -> Stri
 }
 
 /// What a ship carries, to the kilogram: its tanks' LOX and fuel, and its
-/// hold, if it holds anything.
+/// hold by commodity, if it holds anything.
 pub fn carried(load: &Load, fuel: Commodity) -> String {
     let mut s = format!(
         "{} {:.3} t, {} {:.3} t",
@@ -133,10 +134,124 @@ pub fn carried(load: &Load, fuel: Commodity) -> String {
         fuel.name(),
         load.fuel
     );
-    if load.cargo() > 0.0 {
-        write!(s, ", hold {:.3} t", load.cargo()).unwrap();
+    let held: Vec<String> = COMMODITIES
+        .iter()
+        .filter(|&&c| load.cargo[c as usize] > 0.0)
+        .map(|&c| format!("{} {:.3} t", c.name(), load.cargo[c as usize]))
+        .collect();
+    if !held.is_empty() {
+        write!(s, ", hold {}", held.join(", ")).unwrap();
     }
     s
+}
+
+/// Millions of dollars, to three figures: "$1,234M", "$12.3M", "$1.23M".
+pub fn musd(x: f64) -> String {
+    if x >= 100.0 {
+        let n = x.round() as i64;
+        let digits = n.to_string();
+        let mut grouped = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                grouped.push(',');
+            }
+            grouped.push(c);
+        }
+        format!("${grouped}M")
+    } else if x >= 10.0 {
+        format!("${x:.1}M")
+    } else {
+        format!("${x:.2}M")
+    }
+}
+
+/// Whom a transfer was with: a vessel by its name in `plan` and the
+/// engine's label ("Depot (ship 0, leg 2)"), Earth, or no one.
+pub fn with(plan: &Plan, with: With) -> String {
+    match with {
+        With::Vessel { id, leg } => {
+            let label = match leg {
+                Some(leg) => format!("ship {id}, leg {leg}"),
+                None => format!("ship {id}"),
+            };
+            match plan.ships.iter().find(|s| s.id == id) {
+                Some(s) => format!("{} ({label})", s.name),
+                None => label,
+            }
+        }
+        With::Earth => "Earth".into(),
+        With::NoOne => "no one".into(),
+    }
+}
+
+/// A transfer: "gave 45.230 t of LOX to Depot (ship 0, leg 0) 2045-03-11
+/// 13:55"; bought from Earth, with its cost; short, with why.
+pub fn transfer(plan: &Plan, x: &Transfer) -> String {
+    let whom = with(plan, x.with);
+    let what = format!("{} of {}", tonnes(x.asked), x.commodity.name());
+    match (x.kind, &x.short) {
+        (Kind::Give, None) => format!("gave {what} to {whom} {}", when(x.t)),
+        (Kind::Take, None) => {
+            let cost = x
+                .cost_musd
+                .map_or(String::new(), |c| format!(", {}", musd(c)));
+            let verb = match x.with {
+                With::Earth => "bought",
+                _ => "took",
+            };
+            format!("{verb} {what} from {whom} {}{cost}", when(x.t))
+        }
+        (kind, Some(why)) => {
+            let (verb, to) = match kind {
+                Kind::Give => ("give", "to"),
+                Kind::Take => ("take", "from"),
+            };
+            format!(
+                "{verb} of {what} {to} {whom} {} fell short: {} ({why})",
+                when(x.t),
+                tonnes(x.got)
+            )
+        }
+    }
+}
+
+/// A ship's transfers in time order, a short one marked; `None` without
+/// any.
+pub fn transfers(plan: &Plan, state: &ShipState) -> Option<String> {
+    if state.transfers.is_empty() {
+        return None;
+    }
+    let mut s = String::from("  transfers:\n");
+    for x in &state.transfers {
+        let mark = match x.short {
+            Some(_) => "SHORT  ",
+            None => "",
+        };
+        writeln!(s, "    {mark}{}  (step {})", transfer(plan, x), x.step).unwrap();
+    }
+    Some(s)
+}
+
+/// What a ship was bought for at LEO: the ship and each part of its load,
+/// and the sum; `None` if it was not.
+pub fn purchases(state: &ShipState) -> Option<String> {
+    if state.purchases.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = state
+        .purchases
+        .iter()
+        .map(|p| match p.what {
+            Bought::Ship => format!("the ship {}", musd(p.musd)),
+            Bought::Commodity(c) => format!("{} {} {}", c.name(), tonnes(p.tonnes), musd(p.musd)),
+        })
+        .collect();
+    let total: f64 = state.purchases.iter().map(|p| p.musd).sum();
+    Some(format!(
+        "  bought at LEO: {} ({} in all)\n",
+        parts.join(", "),
+        musd(total)
+    ))
 }
 
 /// Tonnes to the kilogram; under half a kilogram, grams (a stay's upkeep).
@@ -255,4 +370,20 @@ pub fn csv(eph: &Ephemeris, items: &[Item]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn money_reads() {
+        assert_eq!(musd(1234.4), "$1,234M");
+        assert_eq!(musd(99.96), "$100.0M");
+        assert_eq!(musd(12.345), "$12.3M");
+        assert_eq!(musd(1.2345), "$1.23M");
+        assert_eq!(musd(0.0), "$0.00M");
+        assert_eq!(tonnes(0.308), "0.308 t");
+        assert_eq!(tonnes(0.0), "0 g");
+    }
 }

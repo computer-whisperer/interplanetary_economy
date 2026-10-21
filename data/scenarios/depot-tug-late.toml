@@ -1,0 +1,143 @@
+# The depot scenario (depot-tug-lander.toml) with the tanker two weeks
+# late (M1b.md, step 3 plan, part 8), in the sandbox. The lander leaves
+# the depot before the tanker comes and takes what there is, 10 t and no
+# equipment: it runs dry at its ascent, stranded on the surface. The
+# depot, drained to the last gram and keeping no reserve (step 3 plan,
+# part 5), runs dry keeping station at the next tick, so the tanker's
+# gives fall short when it comes. Career would refuse the lander; the
+# sandbox shows it all.
+
+name = "A depot at the NRHO, its tanker late, stranding the lander"
+
+[game]
+mode = "sandbox"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01", propellant_t = 215.0 }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 60
+
+[[ship]]
+id = 1
+name = "Tanker"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-20", cargo = { equipment = 50.0 } }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 25.0
+cargo = { equipment = 0.0 }
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 2
+name = "Lander"
+class = "lander"
+start = { at = "leo", epoch = "2045-03-10", propellant_t = 300.0 }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 400.0
+cargo = { equipment = 10.0 }
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+to = "llo"
+days = [1.0]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+
+# The lander leaves the depot 2045-03-19 20:29, eight days before the
+# tanker arrives, and takes what there is: 7.716 t of LOX and 2.143 t of
+# methane of the 252.315 and 70.088 asked, and no equipment.
+[[check]]
+ship = 2
+step = 0
+take = "lox"
+short = true
+
+[[check]]
+ship = 2
+step = 0
+take = "ch4"
+short = true
+
+[[check]]
+ship = 2
+step = 0
+take = "equipment"
+short = true
+
+# On the surface with 19.444 t: 22.228 t burned for the leg down, 45.784 t
+# for the descent, as designed (2026-10-20). ±20 m/s in all is ±0.32 t.
+[[check]]
+ship = 2
+at = "2045-03-22"
+propellant_t = [19.12, 19.77]
+
+# The ascent, its sixth step, needs 1,885.2 m/s and gets 1,456.9: it runs
+# dry 2045-03-23 22:53 and stays on the surface.
+[[check]]
+ship = 2
+step = 5
+dry = true
+
+[[check]]
+ship = 2
+at = "2045-03-26"
+place = "moon-south-pole"
+
+# The depot, drained, misses its station-keeping at the next tick and
+# runs dry (2.6 mm/s short); the tanker, arriving 2045-03-28 01:55, has no
+# one to give to.
+[[check]]
+ship = 0
+step = 1
+dry = true
+
+[[check]]
+ship = 1
+step = 0
+give = "lox"
+short = true
+
+[[check]]
+ship = 1
+step = 0
+give = "equipment"
+short = true
+
+[[check]]
+ship = 0
+at = "2045-04-02"
+cargo = { equipment = [0.0, 0.0] }
+
+[[check]]
+ship = 1
+dry = false

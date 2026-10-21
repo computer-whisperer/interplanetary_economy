@@ -5,6 +5,8 @@
 //! `data/missions/` read as they are.
 
 use crate::designs::apply;
+use crate::ships::{Commodity, commodity};
+use crate::state::Kind;
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Manifest, Meeting, Meetings, Plan, Step, legs_value, parse_legs};
 use orbit::places::Places;
@@ -67,6 +69,22 @@ pub enum Check {
     Propellant { ship: u64, at: Epoch, t: [f64; 2] },
     /// Ship `ship` runs dry at step `step`; with none, it does not.
     Dry { ship: u64, step: Option<usize> },
+    /// Ship `ship`'s hold at `at` has, of each commodity, from the first
+    /// bound to the second, t (M1b.md, step 3 plan, part 8).
+    Cargo {
+        ship: u64,
+        at: Epoch,
+        cargo: Vec<(Commodity, [f64; 2])>,
+    },
+    /// The give or take of `commodity` that step `step`'s manifest asked
+    /// of ship `ship` fell short, or was made in full.
+    Transfer {
+        ship: u64,
+        step: usize,
+        kind: Kind,
+        commodity: Commodity,
+        short: bool,
+    },
 }
 
 impl Check {
@@ -76,7 +94,9 @@ impl Check {
             Check::At { ship, .. }
             | Check::Dv { ship, .. }
             | Check::Propellant { ship, .. }
-            | Check::Dry { ship, .. } => *ship,
+            | Check::Dry { ship, .. }
+            | Check::Cargo { ship, .. }
+            | Check::Transfer { ship, .. } => *ship,
         }
     }
 }
@@ -124,6 +144,17 @@ struct CheckFile {
     /// True, with the step it runs dry at; false, it does not.
     #[serde(skip_serializing_if = "Option::is_none")]
     dry: Option<bool>,
+    /// The hold's bounds by commodity, t.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cargo: Option<BTreeMap<String, [f64; 2]>>,
+    /// A transfer at `step`: the commodity given or taken, and whether it
+    /// fell short.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    give: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    take: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    short: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -243,6 +274,10 @@ impl Log {
                         dv: None,
                         propellant_t: None,
                         dry: None,
+                        cargo: None,
+                        give: None,
+                        take: None,
+                        short: None,
                     } => Ok(Check::At {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -256,6 +291,10 @@ impl Log {
                         dv: Some(dv),
                         propellant_t: None,
                         dry: None,
+                        cargo: None,
+                        give: None,
+                        take: None,
+                        short: None,
                     } => Ok(Check::Dv { ship, step, dv }),
                     CheckFile {
                         ship,
@@ -265,6 +304,10 @@ impl Log {
                         dv: None,
                         propellant_t: Some(t),
                         dry: None,
+                        cargo: None,
+                        give: None,
+                        take: None,
+                        short: None,
                     } => Ok(Check::Propellant {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -278,10 +321,62 @@ impl Log {
                         dv: None,
                         propellant_t: None,
                         dry: Some(dry),
+                        cargo: None,
+                        give: None,
+                        take: None,
+                        short: None,
                     } if dry == step.is_some() => Ok(Check::Dry { ship, step }),
+                    CheckFile {
+                        ship,
+                        at: Some(at),
+                        place: None,
+                        step: None,
+                        dv: None,
+                        propellant_t: None,
+                        dry: None,
+                        cargo: Some(cargo),
+                        give: None,
+                        take: None,
+                        short: None,
+                    } => Ok(Check::Cargo {
+                        ship,
+                        at: date(&at).map_err(fail)?,
+                        cargo: cargo
+                            .iter()
+                            .map(|(k, &t)| Ok((commodity(k)?, t)))
+                            .collect::<Result<_, String>>()
+                            .map_err(fail)?,
+                    }),
+                    CheckFile {
+                        ship,
+                        at: None,
+                        place: None,
+                        step: Some(step),
+                        dv: None,
+                        propellant_t: None,
+                        dry: None,
+                        cargo: None,
+                        give,
+                        take,
+                        short: Some(short),
+                    } if give.is_some() != take.is_some() => {
+                        let (kind, c) = match (give, take) {
+                            (Some(c), None) => (Kind::Give, c),
+                            (None, Some(c)) => (Kind::Take, c),
+                            _ => unreachable!("one of the two"),
+                        };
+                        Ok(Check::Transfer {
+                            ship,
+                            step,
+                            kind,
+                            commodity: commodity(&c).map_err(fail)?,
+                            short,
+                        })
+                    }
                     _ => Err(fail(
                         "a check has `at` and `place`; `step` and `dv`; `at` and \
-                         `propellant_t`; `step` and `dry = true`; or `dry = false`"
+                         `propellant_t`; `step` and `dry = true`; `dry = false`; `at` and \
+                         `cargo`; or `step`, `give` or `take`, and `short`"
                             .into(),
                     )),
                 }
@@ -463,6 +558,31 @@ impl Log {
                             dry: Some(step.is_some()),
                             ..CheckFile::default()
                         },
+                        Check::Cargo { ship, at, cargo } => CheckFile {
+                            ship: *ship,
+                            at: Some(at.stamp()),
+                            cargo: Some(
+                                cargo
+                                    .iter()
+                                    .map(|(c, t)| (c.id().to_string(), *t))
+                                    .collect(),
+                            ),
+                            ..CheckFile::default()
+                        },
+                        Check::Transfer {
+                            ship,
+                            step,
+                            kind,
+                            commodity,
+                            short,
+                        } => CheckFile {
+                            ship: *ship,
+                            step: Some(*step),
+                            give: (*kind == Kind::Give).then(|| commodity.id().to_string()),
+                            take: (*kind == Kind::Take).then(|| commodity.id().to_string()),
+                            short: Some(*short),
+                            ..CheckFile::default()
+                        },
                     })
                     .expect("a check serializes"),
                 )
@@ -535,6 +655,23 @@ dry = true
 [[check]]
 ship = 2
 dry = false
+
+[[check]]
+ship = 2
+at = "2045-03-03"
+cargo = { equipment = [19.0, 20.0], lh2 = [0.0, 0.0] }
+
+[[check]]
+ship = 2
+step = 0
+give = "equipment"
+short = false
+
+[[check]]
+ship = 2
+step = 1
+take = "lox"
+short = true
 "#;
 
     fn parse(src: &str) -> Result<Log, String> {
@@ -593,6 +730,28 @@ dry = false
                     ship: 2,
                     step: None
                 },
+                Check::Cargo {
+                    ship: 2,
+                    at: Epoch::from_ymd(2045, 3, 3),
+                    cargo: vec![
+                        (Commodity::Equipment, [19.0, 20.0]),
+                        (Commodity::Lh2, [0.0, 0.0])
+                    ]
+                },
+                Check::Transfer {
+                    ship: 2,
+                    step: 0,
+                    kind: Kind::Give,
+                    commodity: Commodity::Equipment,
+                    short: false
+                },
+                Check::Transfer {
+                    ship: 2,
+                    step: 1,
+                    kind: Kind::Take,
+                    commodity: Commodity::Lox,
+                    short: true
+                },
             ]
         );
     }
@@ -625,7 +784,8 @@ dry = false
         assert_eq!(parse(&no_ship).unwrap_err(), "replan 1: no ship has id 5");
         let half = CAREER.replace("step = 2\ndv", "dv");
         let neither = "check 2: a check has `at` and `place`; `step` and `dv`; `at` and \
-                       `propellant_t`; `step` and `dry = true`; or `dry = false`";
+                       `propellant_t`; `step` and `dry = true`; `dry = false`; `at` and \
+                       `cargo`; or `step`, `give` or `take`, and `short`";
         assert_eq!(parse(&half).unwrap_err(), neither);
         let dry_without_step = CAREER.replace("step = 2\ndry = true", "dry = true");
         assert_eq!(
@@ -636,6 +796,20 @@ dry = false
         assert_eq!(
             parse(&not_dry_at_a_step).unwrap_err(),
             neither.replace("check 2", "check 5")
+        );
+        let both = CAREER.replace(
+            "give = \"equipment\"",
+            "give = \"equipment\"\ntake = \"lox\"",
+        );
+        assert_eq!(
+            parse(&both).unwrap_err(),
+            neither.replace("check 2", "check 7")
+        );
+        let unsold = CAREER.replace("take = \"lox\"", "take = \"water\"");
+        assert!(
+            parse(&unsold).unwrap_err().starts_with("check 8: "),
+            "{}",
+            parse(&unsold).unwrap_err()
         );
         let past_the_end = CAREER.replace("from = 1", "from = 2");
         assert_eq!(

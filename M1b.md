@@ -1,12 +1,13 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–7 done (the
+Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–8 done (the
 extended station orbits pass their kill-test, the planner designs on
 them, a leg meets a vessel on its orbit, legs carry manifests the log
 keeps and checks, the loop makes their transfers and purchases, career
-refuses an action that runs a vessel dry or short, and the sandbox's
-editor sets meetings and manifests while its panel shows transfers and
-purchases), part 8 next
+refuses an action that runs a vessel dry or short, the sandbox's editor
+sets meetings and manifests while its panel shows transfers and
+purchases, and `sim run` prints them with the depot scenarios' checks
+holding), part 9 next
 (the plans below). Decided: one engine for both modes, with economy
 components landing in the sandbox first (Modes, below); the four
 decisions below, each as recommended; and stations as vessels, flown
@@ -1967,6 +1968,77 @@ follows from it:
      gives; a lander meets it, refuels, lands at the south pole and
      comes back up. In the sandbox, the same with the tug late: the
      lander's take falls short, and it runs dry.
+   - Settled before building it (2026-10-20):
+     - `sim run` prints, after a ship's tanks, what it was bought for
+       ("bought at LEO: the ship $80.0M, LOX 939.130 t $206M, CH4
+       260.870 t $57.3M ($344M in all)") and its transfers in time
+       order, each with the step that asked ("gave 17.468 t of LOX to
+       Depot (ship 0, leg 0) 2045-03-15 06:06  (step 0)"; "bought … from
+       Earth, $12.3M"; a short one marked SHORT with what got through
+       and why). The vessel is named with the engine's label. The hold
+       reads by commodity. `report::musd` is the one money format (the
+       panel's moved here).
+     - Two checks (`Check::Cargo`, `Check::Transfer`): `at` and `cargo =
+       { lh2 = [8.0, 9.0] }`, each commodity within its bounds ("Depot on
+       2045-03-12: LH2 8.600 t", failing "…, LH2 not 8.000–9.000"); and
+       `step`, `give = "lox"` or `take = "lox"`, and `short = true` or
+       `false` ("Tug, step 0: gave 17.468 t of LOX to Depot (ship 0, leg
+       0) 2045-03-15 06:06", failing "; expected: short"; none found,
+       "Tug, step 0: no take of LH2", pending while the state is).
+     - The tug of the plan is a second hauler, the tanker: a hydrolox
+       tug's LOX surplus (17 t, the rest flies it home) and 50 t of hold
+       could not make the difference between the lander refuelled and
+       the lander stranded, and its hydrogen into a methalox depot's hold
+       served nothing (the tests cover that case). The depot is flown
+       with 215 t to arrive with 10 t (the rocket equation on the
+       hauler's 120 t dry and the leg's 3,485 m/s), the tanker keeps 25
+       t to aerocapture home and carries 50 t of equipment, of which the
+       lander takes 10 t down to the surface, so the cargo check has
+       something to check. Late, the tanker starts 2045-03-20, after the
+       lander has left the depot: its takes fall short (10 t, no
+       equipment) and it runs dry at its ascent.
+     - Found by the depot's `at` check: a wait that ends a plan made no
+       item, so a depot "staying 60 days" was nowhere, kept no station
+       and paid no upkeep. Now a wait as a ship's last step is a stay to
+       its end, the wait's own step (`Planner::advance`; a wait of no
+       days is still nothing): the depot keeps station for 60 days at
+       1.1 m/s. Found by the late scenario: the lander drains the depot
+       to the gram, and at the next tick the depot runs dry keeping
+       station (2.6 mm/s short) as part 5 settled a drained station does,
+       so the tanker's gives then fall short against it. The scenario
+       says so and checks it, rather than reserve the depot something
+       (a station's reserve is left out of step 3).
+   - Built (2026-10-20): `Check::{Cargo, Transfer}`, parsed, written and
+     checked (`sim::log`, `sim::game`); `report::{with, transfer,
+     transfers, purchases, musd}`, the hold by commodity, and `sim run`
+     printing them (`sim::report`, `sim::main`); the trailing stay
+     (`orbit::mission`); `ships::commodity` public; the two scenarios.
+     Tests: the log's round trip and refusals with both checks; the
+     depot test's checks held and failed with their messages
+     (`crates/sim/tests/state.rs`); `a_wait_at_the_end_is_a_stay`
+     (`crates/orbit/tests/missions.rs`: a depot's 30 days, a stay after
+     a leg, a wait of no days); `every_scenario_holds` over the two
+     scenarios (17 and 15 checks).
+   - Measured (2026-10-20, release): `sim run` designs each depot
+     scenario in 22 s; the career scenario's depot arrives with 9.859 t
+     of its 215, the tanker gives 259.927 t of LOX, 72.202 t of methane
+     and the 50 t of equipment, the lander takes 252.315, 70.088 and 10
+     and comes up with 75.697 t; late, the lander takes 7.711 and 2.142,
+     runs dry at its ascent 428.5 m/s short, the depot runs dry keeping
+     station 2.6 mm/s short, and the tanker's gives fall short against
+     it. The depot's 60-day stay keeps station at 1.1 m/s. The scenario
+     test runs both in 40 s; the depot test with its checks in 114 s; the
+     orbit's mission tests, the trailing stay among them, in 76 s. Found
+     running the tests: the depot's station-keeping, paid first at a
+     transfer and since its arrival, takes a few kilograms off what its
+     tanks gain and makes a few kilograms of room in full tanks, which
+     two tests had asserted to the gram (allowed for now). The full
+     workspace suite: 344 passed, 13 ignored (as before), none failed,
+     in 10.5 min.
+   - Open: the equipment the tanker carries costs $511M of its $855M at
+     the economy's central draw ($10,000/kg plus launch), which dwarfs
+     the ships; no scenario yet sells anything (step 7); `sim run`
+     prints transfers by ship, not by stop.
 9. **Tests and measurements.**
    - Transfers and purchases by hand; the event order at one time; a
      short transfer for each reason; a meeting cycle refused.

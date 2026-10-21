@@ -1,0 +1,180 @@
+# A depot at the NRHO, a tanker that fills it and a lander that refuels
+# there (M1b.md, step 3 plan, part 8), in career. A methalox hauler bought
+# at LEO with 215 t flies to the NRHO, arriving with 10 t, and stays as a
+# depot. A second hauler, the tanker, bought at LEO full and with 50 t of
+# equipment in its hold, meets it, gives all but 25 t of its propellant
+# into the depot's tanks and the equipment into its hold, and flies home by
+# aerocapture. A methalox lander bought at LEO with 300 t meets the depot,
+# fills its tanks from it and takes 10 t of the equipment, goes down to
+# low lunar orbit, lands at the south pole for three days and comes back
+# up. Nothing falls short and no one runs dry, so career lets it all
+# happen; depot-tug-late.toml is the same with the tanker late.
+
+name = "A depot at the NRHO, filled by a tanker, refuelling a lander"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01", propellant_t = 215.0 }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 60
+
+[[ship]]
+id = 1
+name = "Tanker"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-06", cargo = { equipment = 50.0 } }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 25.0
+cargo = { equipment = 0.0 }
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 2
+name = "Lander"
+class = "lander"
+start = { at = "leo", epoch = "2045-03-10", propellant_t = 300.0 }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 400.0
+cargo = { equipment = 10.0 }
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+to = "llo"
+days = [1.0]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+
+# The depot arrives 2045-03-08 19:10 with 9.859 t: 215 t less 205.141 t
+# burned for its 3,485.1 m/s, as designed (2026-10-20). The bounds are
+# what 20 m/s more or less would burn, ±0.70 t.
+[[check]]
+ship = 0
+at = "2045-03-10"
+place = "nrho"
+
+[[check]]
+ship = 0
+at = "2045-03-10"
+propellant_t = [9.15, 10.56]
+
+# The tanker, arriving 2045-03-15 06:06 with 357.1 t, gives all but 25:
+# 259.927 t of LOX and 72.202 t of methane into the depot's tanks, and
+# the equipment into its hold.
+[[check]]
+ship = 1
+step = 0
+give = "lox"
+short = false
+
+[[check]]
+ship = 1
+step = 0
+give = "ch4"
+short = false
+
+[[check]]
+ship = 1
+step = 0
+give = "equipment"
+short = false
+
+[[check]]
+ship = 0
+at = "2045-03-16"
+cargo = { equipment = [49.999, 50.001] }
+
+# The lander, there since 2045-03-17 11:05, takes as it leaves on 03-19
+# 20:29: 252.315 t of LOX and 70.088 t of methane, a full tank, and 10 t
+# of the equipment.
+[[check]]
+ship = 2
+step = 0
+take = "lox"
+short = false
+
+[[check]]
+ship = 2
+step = 0
+take = "ch4"
+short = false
+
+[[check]]
+ship = 2
+step = 0
+take = "equipment"
+short = false
+
+[[check]]
+ship = 0
+at = "2045-03-20"
+cargo = { equipment = [39.999, 40.001] }
+
+# On the surface with 159.874 t and the equipment: 78.480 t burned for
+# the leg down's 704.8 m/s, 161.646 t for the descent's 2,100.2. ±20 m/s
+# in all is ±1.14 t.
+[[check]]
+ship = 2
+at = "2045-03-22"
+place = "moon-south-pole"
+
+[[check]]
+ship = 2
+at = "2045-03-22"
+propellant_t = [158.73, 161.01]
+
+[[check]]
+ship = 2
+at = "2045-03-22"
+cargo = { equipment = [9.999, 10.001] }
+
+# Back in low lunar orbit with 75.697 t: 84.177 t burned for the ascent's
+# 1,885.2 m/s. ±20 m/s in all is ±0.68 t.
+[[check]]
+ship = 2
+at = "2045-03-25"
+propellant_t = [75.01, 76.38]
+
+[[check]]
+ship = 0
+dry = false
+
+[[check]]
+ship = 1
+dry = false
+
+[[check]]
+ship = 2
+dry = false

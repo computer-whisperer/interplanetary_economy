@@ -152,7 +152,7 @@ fn tonnes(what: &str, t: f64) -> Result<f64, String> {
 }
 
 /// The commodity a plan writes as `id`.
-fn commodity(id: &str) -> Result<Commodity, String> {
+pub fn commodity(id: &str) -> Result<Commodity, String> {
     COMMODITIES
         .iter()
         .copied()

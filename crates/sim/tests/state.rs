@@ -601,9 +601,17 @@ days = [5.0]
         before.lox - after.lox > gives[0].got,
         "{before:?} {after:?}"
     );
+    // The depot's tanks gain the give, less the station-keeping it pays
+    // first to the transfer's time (part 5's order): at most a day's,
+    // under 10 kg of a hauler's.
     let stock_before = depot.load(Epoch(arrived.0 - 1e-6)).unwrap();
     let stock = depot.load(arrived).unwrap();
-    assert!(close(stock.lox - stock_before.lox, gives[0].got, 1e-9));
+    let gained = stock.lox - stock_before.lox;
+    assert!(
+        gained <= gives[0].got + 1e-9 && gained > gives[0].got - 0.01,
+        "{gained} of {}",
+        gives[0].got
+    );
     assert!(close(
         stock.cargo[Commodity::Lh2 as usize],
         gives[1].got,
@@ -664,6 +672,66 @@ days = [5.0]
         tug.purchases
             .iter()
             .all(|p| p.t == "2045-03-06".parse().unwrap())
+    );
+
+    // The checks a scenario writes of them (M1b.md, step 3 plan, part 8):
+    // a transfer in full or short, and a hold by commodity.
+    let transfer = |step, kind, commodity, short| Check::Transfer {
+        ship: 1,
+        step,
+        kind,
+        commodity,
+        short,
+    };
+    let held = many
+        .check(&transfer(0, Kind::Give, Commodity::Lox, false))
+        .unwrap();
+    assert!(
+        held.starts_with("Tug, step 0: gave ")
+            && held.contains(" of LOX to Depot (ship 0, leg 0) "),
+        "{held}"
+    );
+    assert_eq!(
+        many.check(&transfer(0, Kind::Give, Commodity::Lox, true)),
+        Err(format!("{held}; expected: short"))
+    );
+    let bought = many
+        .check(&transfer(2, Kind::Take, Commodity::Lh2, false))
+        .unwrap();
+    assert!(
+        bought.starts_with("Tug, step 2: bought ")
+            && bought.contains(" of LH2 from Earth ")
+            && bought.contains(", $"),
+        "{bought}"
+    );
+    assert_eq!(
+        many.check(&transfer(1, Kind::Take, Commodity::Lh2, false)),
+        Err("Tug, step 1: no take of LH2".into())
+    );
+    let day_after = Epoch(arrived.0 + 1.0);
+    let held_lh2 = depot.load(day_after).unwrap().cargo[Commodity::Lh2 as usize];
+    assert!(held_lh2 > 0.0);
+    let cargo = |cargo| Check::Cargo {
+        ship: 0,
+        at: day_after,
+        cargo,
+    };
+    let on = format!("Depot on {}", day_after.stamp());
+    assert_eq!(
+        many.check(&cargo(vec![(
+            Commodity::Lh2,
+            [held_lh2 - 0.01, held_lh2 + 0.01]
+        )])),
+        Ok(format!("{on}: LH2 {held_lh2:.3} t"))
+    );
+    assert_eq!(
+        many.check(&cargo(vec![
+            (Commodity::Lh2, [0.0, 0.001]),
+            (Commodity::Ch4, [0.0, 0.0])
+        ])),
+        Err(format!(
+            "{on}: LH2 {held_lh2:.3} t, CH4 0.000 t, LH2 not 0.000–0.001"
+        ))
     );
 
     // The same on one thread, from the log written; and the same in

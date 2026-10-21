@@ -824,3 +824,59 @@ fn a_stay_is_where_one_integration_puts_it() {
         assert!(worst < 1e-3, "{}: {worst} km", stay.label);
     }
 }
+
+/// A wait that ends a plan is a stay to its end (M1b.md, step 3 plan,
+/// part 8): a depot keeps station for its 30 days, paying its upkeep, the
+/// stay the wait's own step; a wait after a leg the same; a wait of no
+/// days is nothing.
+#[test]
+fn a_wait_at_the_end_is_a_stay() {
+    let src = r#"
+        name = "depots"
+        [[ship]]
+        name = "Depot"
+        start = { at = "nrho", epoch = "2045-03-01" }
+        [[ship.leg]]
+        wait = 30
+        [[ship]]
+        name = "Visitor"
+        start = { at = "nrho", epoch = "2045-03-01" }
+        [[ship.leg]]
+        to = "llo"
+        days = [0.5]
+        [[ship.leg]]
+        wait = 1
+        [[ship.leg]]
+        wait = 2
+        [[ship]]
+        name = "Idle"
+        start = { at = "nrho", epoch = "2045-03-01" }
+        [[ship.leg]]
+        wait = 0
+"#;
+    let plan = Plan::parse(src, Ephemeris::standard(), Places::standard()).unwrap();
+    let world = World::standard();
+    let depot = fly(&world, &plan, "Depot");
+    assert_eq!(depot.len(), 1, "{depot:?}");
+    let stay = &depot[0];
+    assert_eq!(stay.kind, ItemKind::Stay);
+    assert_eq!(stay.step, 0);
+    assert_eq!(stay.label, "at nrho");
+    assert_eq!(stay.start, Epoch::from_ymd(2045, 3, 1));
+    assert!((stay.end.0 - stay.start.0 - 30.0).abs() < 1e-9);
+    assert!(stay.dv > 0.0, "station-keeping over 30 days");
+    assert!(stay.track.is_some());
+
+    let visitor = fly(&world, &plan, "Visitor");
+    let last = visitor.last().unwrap();
+    assert_eq!(last.kind, ItemKind::Stay);
+    assert_eq!(last.step, 2, "the last wait's");
+    assert_eq!(last.label, "at llo");
+    assert!((last.end.0 - last.start.0 - 3.0).abs() < 1e-9, "both waits");
+    assert_eq!(
+        visitor.iter().filter(|i| i.kind == ItemKind::Leg).count(),
+        1
+    );
+
+    assert!(fly(&world, &plan, "Idle").is_empty());
+}

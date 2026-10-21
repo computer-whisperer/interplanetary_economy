@@ -85,6 +85,12 @@ fn run(file: &PathBuf, alone: bool, tracks: Option<PathBuf>) -> Result<()> {
             if let Some(tanks) = fuel.and_then(|f| report::tanks(state, f, plan.epoch, &items)) {
                 print!("{tanks}");
             }
+            if let Some(bought) = report::purchases(state) {
+                print!("{bought}");
+            }
+            if let Some(transfers) = report::transfers(game.plan(), state) {
+                print!("{transfers}");
+            }
             // A failure no item says: a refused start, a panic.
             let said = items.iter().any(|i| matches!(i.kind, ItemKind::Failed(_)));
             if let Some(why) = ship.failure.as_ref().filter(|_| !said) {

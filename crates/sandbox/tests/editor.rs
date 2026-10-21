@@ -537,10 +537,12 @@ days = [5.0]
     let gave = line("gave LH2 ");
     assert_eq!(gave.1, panel::Tone::Muted);
     assert!(gave.0.ends_with(" to Depot"), "{}", gave.0);
+    // (less the few kilograms its station-keeping since arriving made
+    // room for).
     let short = line("give of ");
     assert_eq!(short.1, panel::Tone::Warning);
     assert!(
-        short.0.contains(" of LOX fell short: 0 g (no room for it)"),
+        short.0.contains(" of LOX fell short: ") && short.0.ends_with("(no room for it)"),
         "{}",
         short.0
     );
