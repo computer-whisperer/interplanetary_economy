@@ -7,11 +7,11 @@ loop makes their transfers and purchases, career refuses an action that
 runs a vessel dry or short, the sandbox's editor sets meetings and
 manifests while its panel shows transfers and purchases, `sim run`
 prints them with the depot scenarios' checks holding, and the tests and
-measurements are in); step 4, docking, next, its plan to be written
-(Steps, below). Decided: one engine for both modes, with economy
-components landing in the sandbox first (Modes, below); the four
-decisions below, each as recommended; and stations as vessels, flown
-to where they stay, with docking a step of its own (Design, Vessels,
+measurements are in); step 4, docking, next, its plan drafted, to be
+ruled (its plan, below). Decided: one engine for both modes, with
+economy components landing in the sandbox first (Modes, below); the four
+decisions below, each as recommended; and stations as vessels, flown to
+where they stay, with docking a step of its own (Design, Vessels,
 stations and stocks).
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
@@ -2116,3 +2116,198 @@ Left out of step 3: docking and assemblies (step 4); meeting a vessel
 in a low orbit (Scope, Out); a station's reserve, kept from its
 visitors; where plants' output goes (step 5); turnaround days (step
 6); selling (steps 7 and 8).
+
+## Step 4 plan (2026-10-21): docking
+
+Vessels that move as one, so that a station can be an assembly (Design,
+Vessels, stations and stocks: an assembly, like the ISS, is modules
+flown there and docked). A first draft, to be ruled with the user; each
+part is committed on its own.
+
+What docking adds to step 3's vessels: a ship that meets a vessel today
+arrives on its orbit and stays there on its own, keeping station and
+paying for it, and is left behind when the vessel leaves. A docked
+vessel goes where its host goes, through the host's stays and legs; the
+host's burns move the assembly's mass; and a visitor's transfer with
+any vessel of an assembly reaches the whole. Modules without engines
+become possible, carried by ships and left docked.
+
+Decided in this draft (to be ruled):
+
+- **Docking is directed: a vessel docks to a host and rides it.** The
+  host's legs move the assembly, the host's stays keep station for it,
+  and the host's design knows nothing of its members. A docked vessel
+  leaves by flying a leg of its own (undocking at its departure), or
+  moves to another host it is with by a `dock` step. There is no
+  undocking to stay alone: a vessel with engines leaves by a leg, and a
+  module without them, alone on a station orbit, would run dry at its
+  first upkeep and drift (step 3 plan, part 5's rule for a drained
+  station).
+  - Rejected: an assembly as a set with no direction, the mover chosen
+    when a leg is flown. Two members' legs would contend for the whole,
+    and leaving would need its own say.
+- **Burns draw from the burner's own tanks; transfers reach the
+  assembly.** The rocket equation at a host's burn counts every
+  member's dry mass and load; the propellant comes from the host's
+  tanks; boil-off is each vessel's. A give to, or take from, a vessel
+  reaches the vessel named first and then the rest of its assembly, by
+  id, until the amount is met: a depot of several stages is one stock
+  to its visitors (DESIGN.md, Facilities: a depot stores propellant and
+  sells it).
+  - Rejected: tanks pooled for burns too (drop tanks). The manifests
+    already say what is piped between vessels, and pooling would need a
+    policy for who keeps what when they part.
+- **Whether a dock is made is decided in the design, not the loop.** A
+  leg that docks arrives while its host is at the stop named, by the
+  host's design: the leg waits for the host's arrival (as a meeting
+  waits for the orbit now) and fails if the host has left by its
+  earliest arrival ("Depot leaves nrho 2045-04-01, before the leg can
+  arrive"). The loop has one thing left to find: a host that ran dry
+  drifts, and its members are stranded with it.
+  - Rejected: a dock the loop finds not made (as a transfer with a
+    vessel not there falls short). The member's position in the design
+    (riding the host) would then disagree with the loop's (left on the
+    orbit), and nothing after it could be trusted.
+- **A ship may start docked to a vessel**: `start = { at = { ship = 1
+  }, epoch = ... }`, wherever the vessel is at the epoch (it must be
+  stopped there: a start on a vessel in flight fails, as does one
+  before the vessel's own start). This reverses step 3's "a ship starts
+  at a place, not at a vessel": a module gets onto its carrier at LEO
+  only so, since a leg meeting a vessel in a low orbit is out of M1b
+  (Scope). In career a ship starts at LEO, so its vessel must be there
+  then; it is bought with its load as a ship starting at LEO is.
+- **A class may have no tanks**: `module`, a station module (dry 20 t,
+  no propellant, a 50 t hold, $200M [guess]). It cannot burn, so a leg
+  of its own, or a start of its own away from a vessel, is a breach ("a
+  module has no engines: it starts docked to a vessel and rides it");
+  the loop would in any case run it dry at its first burn or tick.
+
+The language (`orbit::mission`):
+
+```toml
+[[ship]]
+id = 3
+name = "Hab"
+class = "module"
+start = { at = { ship = 1 }, epoch = "2045-03-06" }   # launched docked to the Tug, at LEO
+
+[[ship.leg]]
+dock = { ship = 0, leg = 0 }   # when the Tug has brought it to the Depot: move over
+
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }   # meet the Depot after its leg to the NRHO
+days = [5.0]
+dock = true                  # and dock
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"                   # leaves alone: the Hab has moved to the Depot
+days = [5.0]
+aero = true
+```
+
+- `dock = true` on a leg that meets a vessel: the ship docks on arrival
+  and stays docked until it leaves. On a leg to a place, an error. A
+  vessel at a body or on a surface is docked to by going there, as it
+  is met.
+- A `dock` step, `dock = { ship, leg }` (`{ ship }` at the vessel's
+  start), with a manifest like a leg's: the ship docks to the vessel
+  named where they both are, at the first time at or after it is ready
+  when its assembly holds the vessel or has met it at that stop (its
+  carrier's leg met it, docked or not). If its assembly never gets
+  there, the step fails ("Hab, docked to Tug, does not reach Depot
+  (ship 0, leg 0)"). Its manifest's gives are made at the dock, its
+  takes when the ship leaves.
+- A docked vessel's waits count as now, from its arrival (its start, or
+  its dock). Its next leg leaves from where its host is when it is
+  ready, if the host is stopped then, else at the host's next arrival;
+  the leg is designed from the host's checkpoint (its orbit at its
+  phase, its low orbit, its body or surface), as a meeting is designed
+  to one now.
+- The plan's checks (`Meetings`, which grows to cover docks and starts
+  at vessels): a vessel docks to no one through itself; a dock names a
+  step the vessel has, not a wait; a start at a vessel is at or after
+  the vessel's start; and the designs wait on no cycle, a start at a
+  vessel waiting on the vessel's whole plan, conservatively, since the
+  step it depends on is known only when designed.
+
+Where the work is (found drafting):
+
+- The planner designs each ship alone, and a meeting reads one
+  checkpoint of another ship (step 3 plan, part 3). Riding reads a span
+  of the host's design: its checkpoints and items from the dock until
+  the member leaves, and for a `dock = true` leg one step further (the
+  host's departure, for the dock window). The walk waits on the host as
+  it waits on a vessel met, and the step's key takes the host's key at
+  the last step read, so an edit of the host before the member's
+  departure designs the member again from its dock, and one after it
+  designs nothing of the member's. A member that never leaves is docked
+  to the end of its host's design, an item re-made as the host's design
+  grows (nothing of it is designed, so that is cheap).
+- Chains: a vessel docked to a vessel docked to a third. The design
+  follows the chain of hosts to the one with an orbit (`Here::Docked`,
+  resolved through the fleet); the loop sums an assembly's masses
+  through it; the plan check forbids cycles.
+- A docked vessel has no stay: its item is `ItemKind::Docked` (label
+  "docked to Tug"), from its dock to its departure, with no track: the
+  sandbox, `sim run`, the hashes and `Check::At` read its position from
+  its host at the time. The loop's membership comes from the dock
+  events (a start at a vessel, a dock leg's arrival, a dock step) and
+  the departures (the member's next burned item's first marker), not
+  from the items' ends.
+
+1. **The language and its checks** (`orbit::mission`): `Step::Dock`,
+   `Go::dock`, a start at a vessel; the file read and written back (a
+   round trip); `Meetings` over docks and starts; the errors above. The
+   `module` class in `data/economy.toml` and its breach (`sim::ships`,
+   `sim::params`). Nothing designed differently yet: a dock is read,
+   and refused where it cannot be designed.
+2. **Riding** (`orbit::mission`, `sim::designs`, `sim::game`):
+   `Here::Docked`, `ItemKind::Docked`; a start at a vessel; a dock
+   leg's arrival (the wait for the host's arrival, and the failure when
+   it has left) and the member's departure from its host's checkpoint;
+   `Fleet::at(vessel, t)`, the walk's wait, the keys; a member docked
+   for life. A chain of two. Tests: a lander started on a hauler at LEO
+   rides to the NRHO and leaves for low lunar orbit from the hauler's
+   orbit, its items as expected; a dock leg failing when the host has
+   left; an edit of the host before and after the member's departure.
+3. **The dock step**: its time by the assembly's co-location, its
+   failure, its manifest; a module carried by a tug and moved to a
+   depot. Tests on that plan.
+4. **The loop** (`sim::state`): membership in time; a burn against the
+   assembly's mass from the burner's tanks; no upkeep for a member;
+   members stranded with a dry host (`Dry` says so: "stranded: Depot,
+   which it is docked to, ran dry"); transfers reaching the assembly,
+   the vessel named first; `there` through the host. Tests by hand: the
+   rocket equation with a rider; a take across two stages; a stranded
+   member.
+5. **Career and headless**: a start at a vessel bought at LEO (and
+   refused elsewhere); `Check::Docked { ship, at, to }` (`docked_to =
+   0`, or `"no one"`), `Check::At` through hosts; `sim run` lines
+   ("docked to Tug 2045-03-06 — 2045-03-11 04:12"; a burn's "with Hab,
+   20 t"); the scenarios: `data/scenarios/station-assembled.toml`
+   (career: a depot stage at the NRHO; a tug carrying a module docks
+   and leaves it; a lander docks, takes propellant and the module's
+   equipment, and lands) and the carried lander (the hauler's
+   propellant on arrival against the depot scenario's 9.859 t). The
+   hashes at 1 and 24 threads.
+6. **The sandbox**: positions through hosts (`app::ship_position`;
+   labels: an assembly's vessels at one point share a label); the
+   panel's "docked to Tug" rows and an assembly's mass on the host's
+   burns; the editor: a start's menu offers vessels, a dock toggle on a
+   leg to a vessel, a "dock to" step. GPU tests as step 3's.
+7. **Tests and measurements**: the loop's time with assemblies; the
+   design waits with a chain; the full workspace suite.
+
+Left out of step 4: undocking to stay alone (above); tanks pooled for
+burns; docking's duration (instantaneous at the arrival; a setting if
+wanted); crew moving between vessels (step 8); meeting or docking in a
+low orbit (Scope).
