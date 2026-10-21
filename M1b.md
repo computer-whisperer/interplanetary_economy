@@ -1,14 +1,14 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-20: steps 1 and 2 done; step 3's parts 1–8 done (the
-extended station orbits pass their kill-test, the planner designs on
-them, a leg meets a vessel on its orbit, legs carry manifests the log
-keeps and checks, the loop makes their transfers and purchases, career
-refuses an action that runs a vessel dry or short, the sandbox's editor
-sets meetings and manifests while its panel shows transfers and
-purchases, and `sim run` prints them with the depot scenarios' checks
-holding), part 9 next
-(the plans below). Decided: one engine for both modes, with economy
+Status, 2026-10-21: steps 1, 2 and 3 done (step 3: the extended station
+orbits pass their kill-test, the planner designs on them, a leg meets a
+vessel on its orbit, legs carry manifests the log keeps and checks, the
+loop makes their transfers and purchases, career refuses an action that
+runs a vessel dry or short, the sandbox's editor sets meetings and
+manifests while its panel shows transfers and purchases, `sim run`
+prints them with the depot scenarios' checks holding, and the tests and
+measurements are in); step 4, docking, next, its plan to be written
+(Steps, below). Decided: one engine for both modes, with economy
 components landing in the sandbox first (Modes, below); the four
 decisions below, each as recommended; and stations as vessels, flown
 to where they stay, with docking a step of its own (Design, Vessels,
@@ -374,6 +374,60 @@ stations and stocks).
     designs.
   - The full workspace suite passes at the end of step 2: 313 tests, 12
     ignored (measurements), in 5 min 54 s.
+- Step 3, part 1: extended station orbits (`orbit::reference`).
+  `Reference::extend` adds revolutions to a catalog orbit a year at a
+  time; the kill-test runs each orbit 34 years with its anchors and
+  seams within the shooting's tolerance. The NRHO failed it first (its
+  extension converging only by one or two revolutions), was diagnosed
+  as the solver's extension from a short fresh base, and fixed the same
+  day (the plan, below).
+- Part 2: the planner on extended orbits. A ship arriving at a station
+  gets an orbit of its own, extended on demand by its checkpoints and
+  stays, so `reads` stops at the arriving step; stays follow the orbit
+  and pay the member's rate, the flown controller not being robust to
+  its phase (open). `visit_until`, `outstays` and career's refusal of a
+  longer visit are deleted.
+- Part 3: a leg meets a vessel where it is after one of its legs (`to =
+  { ship = 3, leg = 2 }`): the planner designs the leg onto the vessel's
+  orbit at its phase, the engine keys the step by the vessel's design
+  and walks the visitor again when the vessel changes (`Fleet`), and
+  career refuses a re-plan that replaces a leg another ship meets its
+  ship after.
+- Part 4: manifests on the arriving leg (`propellant_t`, `cargo`), kept
+  as written and left out of design keys, so a manifest edit designs
+  nothing; a re-plan's `here`; the class and partner checks.
+- Part 5: transfers and purchases in the loop: gives at arrival, takes
+  at leaving, each by commodity against the manifest's targets, short
+  with why; purchases at LEO at the day's launch price; the state hash
+  adds them.
+- Part 6: career against the projection. An action is pending until its
+  ship is designed, then refused if a vessel runs dry or a transfer
+  falls short where none did before; a log read back is replayed, and
+  `sim run` fails on a refusal.
+- Part 7: the sandbox's editor sets meetings (the plan's vessels in the
+  destination menu) and manifests; its panel shows each stop's
+  transfers and a ship's purchases.
+- Part 8: `sim run` prints transfers and purchases; the cargo and
+  transfer checks; the depot scenarios, in career and, the tanker late,
+  in the sandbox. A wait that ends a plan is now a stay to its end
+  (found by the depot's `at` check).
+- Part 9: tests and measurements (2026-10-21). Every test of the plan's
+  list was written with its part: transfers and purchases by hand, the
+  event order at one time and each short reason (`sim::state`'s unit
+  tests, part 5), the meeting cycle refused (part 3), the hashes with
+  transfers on 1 and 24 threads and a career log in the sandbox (the
+  depot test, part 5), a manifest edit designing nothing (part 4), an
+  edit of a vessel met designing its visitors from their meetings and
+  one after the leg met designing nothing of theirs (part 3), career's
+  refusals (part 6); where each lives is in the parts' Built bullets
+  below. Measured (release, load ~9 from other work): the loop's re-run
+  on the published plan, every ship a hauler, 2.6–3.1 ms alone and
+  2.7–3.3 with a new load, 50 ships of 2,000 items 57–67 ms, the plan
+  designed in 36.7 s; part 5's regression (5.5 ms, in `Running::pay`'s
+  generated code, not its source) is gone with later changes, as a
+  codegen effect would be, and was not chased. The full workspace suite
+  at the end of step 3: 344 passed, 13 ignored (measurements), none
+  failed, in 10.5 min.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
@@ -2049,6 +2103,14 @@ follows from it:
    - Career: an action that runs a vessel dry or short is refused, and
      so is one reading back that way.
    - The full workspace suite at the end.
+   - Done (2026-10-21): each item above has its test, written with the
+     part it tests (the summary at the top, and the parts' Built
+     bullets); the short reasons are all seven (`a_transfer_short_says_why`:
+     not yet there, gone, run dry, the stock, the capacity twice, no one
+     three ways, and metal from Earth). Measured: the loop's re-run as
+     at the top (`the_published_plan_runs_again_quickly`, ignored,
+     release); the full workspace suite: 344 passed, 13 ignored, none
+     failed, in 10.5 min.
 
 Left out of step 3: docking and assemblies (step 4); meeting a vessel
 in a low orbit (Scope, Out); a station's reserve, kept from its
