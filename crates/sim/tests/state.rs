@@ -878,3 +878,62 @@ fn the_published_plan_runs_again_quickly() {
         .collect();
     println!("50 ships of 2,000 items: {times:.1?} ms");
 }
+
+/// The assembled station's scenario (M1b.md, step 4 plan, part 7),
+/// measured: designed on 24 threads and on one (the module's walk waits on
+/// the tug's, which waits on the depot's), the loop alone (docks, the
+/// assembly's transfers), and a new load run again.
+/// `cargo test --release -p sim --test state -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn the_assembled_station_runs_again_quickly() {
+    let path = format!(
+        "{}/../../data/scenarios/station-assembled.toml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let src = std::fs::read_to_string(path).unwrap();
+    let parse = || Log::parse(&src, world().eph, Places::standard()).unwrap();
+    for threads in [24, 1] {
+        let clock = std::time::Instant::now();
+        let games = sim::run::run(&parse(), false, &pool(threads)).unwrap();
+        println!(
+            "designed on {threads} threads in {:.1} s, {} designs",
+            clock.elapsed().as_secs_f64(),
+            games[0].designs_made()
+        );
+    }
+    let mut game = Game::in_mode(parse(), Mode::Sandbox, pool(24)).unwrap();
+    game.wait();
+    let loop_alone = || {
+        let courses: Vec<Course> = game
+            .ships()
+            .iter()
+            .zip(&game.plan().ships)
+            .map(|(d, ship)| Course {
+                id: d.id,
+                fitted: sim::ships::read(ship, game.economy()).unwrap(),
+                epoch: ship.epoch,
+                items: d.items().collect(),
+                done: d.done,
+                stops: Vec::new(),
+                bought: false,
+            })
+            .collect();
+        let clock = std::time::Instant::now();
+        sim::state::run(&courses, game.economy());
+        clock.elapsed().as_secs_f64() * 1e3
+    };
+    let alone: Vec<f64> = (0..5).map(|_| loop_alone()).collect();
+    println!("the loop alone, without the stops: {alone:.3?} ms");
+    let (id, made) = (game.ships()[0].id, game.designs_made());
+    let mut times = Vec::new();
+    for t in [215.0, 214.0, 213.0, 212.0, 215.0] {
+        let mut ship = game.plan().ships[0].clone();
+        ship.propellant_t = Some(t);
+        let clock = std::time::Instant::now();
+        game.edit(id, ship).unwrap();
+        times.push(clock.elapsed().as_secs_f64() * 1e3);
+    }
+    assert_eq!(game.designs_made(), made);
+    println!("a new load, run again with its docks and transfers: {times:.3?} ms");
+}

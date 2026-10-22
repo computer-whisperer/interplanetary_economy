@@ -1,14 +1,14 @@
 # M1b — The sim engine, for sandbox and career
 
-Status, 2026-10-21: steps 1, 2 and 3 done (step 3: the extended station
-orbits pass their kill-test, the planner designs on them, a leg meets a
-vessel on its orbit, legs carry manifests the log keeps and checks, the
-loop makes their transfers and purchases, career refuses an action that
-runs a vessel dry or short, the sandbox's editor sets meetings and
-manifests while its panel shows transfers and purchases, `sim run`
-prints them with the depot scenarios' checks holding, and the tests and
-measurements are in); step 4, docking, under way (its plan, below), parts
-1 to 6 done. Decided: one engine for both modes, with economy components
+Status, 2026-10-22: steps 1 to 4 done (step 4: a ship starts docked to
+a vessel, or docks by a leg or a dock step, and rides it, leaving by a
+leg of its own; a host's burns and upkeep move its assembly's mass, and
+a transfer reaches the whole assembly; career buys a docked start at
+LEO and checks docks; the sandbox draws, lists and edits docking; `sim
+run` prints dock lines with the assembled station's checks holding; and
+the tests and measurements are in); step 5, plants, programs and
+surveys, next, its plan to be written. Decided: one engine for both
+modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they stay,
 with docking a step of its own (Design, Vessels, stations and stocks).
@@ -427,6 +427,46 @@ with docking a step of its own (Design, Vessels, stations and stocks).
   codegen effect would be, and was not chased. The full workspace suite
   at the end of step 3: 344 passed, 13 ignored (measurements), none
   failed, in 10.5 min.
+- Step 4, part 1: docking's language: a start docked to a vessel, a leg
+  that docks, a dock step (`orbit::mission`), the plan's checks over
+  them, and the `module` class, without tanks or engines.
+- Part 2: a docked ship rides its vessel: its items are the dock and its
+  own legs, which leave from the vessel's stop before the vessel does; a
+  leg that docks arrives while the vessel is there, by its design. The
+  walk reads the fleet through `designs::Designs`, each stop keyed by
+  the design that put the vessel there and when it leaves.
+- Part 3: the dock step, made when the ship's chain of vessels holds the
+  vessel, or one of them met it at that stop, tried at the chain's stops
+  in turn.
+- Part 4: the loop: a vessel's burns and upkeep move its riders' mass
+  from its own tanks; a transfer reaches the vessel's whole assembly; a
+  vessel that runs dry strands its riders.
+- Part 5: career buys a docked start at LEO and refuses one elsewhere;
+  the docked check and the place check through hosts; `sim run`'s dock
+  lines; the assembled station and the carried lander as scenarios; the
+  assembly is the same on 1 and 24 threads.
+- Part 6: the sandbox draws a docked ship where its vessel is, with one
+  label for the vessels at a point; the panel's dock rows; the editor's
+  start menu of vessels, dock switch and dock step; sweeps of docked
+  legs.
+- Part 7: tests and measurements (2026-10-22). Each part's tests were
+  written with it (the parts' Built bullets below): the language's
+  round trip and the plan's checks (part 1); a docked ship riding and
+  leaving from its vessel, and a dock step where the ship is (parts 2
+  and 3, `crates/orbit/tests/meeting.rs`); the walk's keys and waits
+  through a chain of vessels, an edit of the carrier designing its
+  rider again and one after the rider left designing nothing (parts 2
+  and 3, `crates/sim/tests/game.rs`); the loop's riders, station
+  keeping for them, assembly transfers and stranding (part 4); career's
+  docked start and the docked check (part 5); the editor's docking
+  (part 6). Measured (release, load 10–30 from other work): the
+  assembled station's 20 designs in 18.0 s on 24 threads and 98.9 s on
+  1; its loop alone 0.036–0.050 ms, and 0.08–0.14 ms with a new load of
+  the depot, which designs nothing; `sim run` on station-assembled
+  24.4 s wall (136 s user), hauler-carries-lander 9.2 s (33 s),
+  depot-tug-lander 20.4 s (91 s), every check holding (21, 9 and 17).
+  The full workspace suite at the end of step 4: 361 passed, 13 ignored
+  (measurements), none failed, in 12.8 min of tests.
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
@@ -2462,6 +2502,20 @@ Where the work is (found drafting):
      assembly-panel).
 7. **Tests and measurements**: the loop's time with assemblies; the
    design waits with a chain; the full workspace suite.
+   - Done (2026-10-22): each item has its test, written with the part it
+     tests (the parts' Built bullets above; the chain's waits in
+     `a_docked_ship_rides_its_vessel_in_a_game` and
+     `a_dock_step_joins_the_vessel_the_ship_is_with`, `crates/sim/tests/
+     game.rs`). Measured (`the_assembled_station_runs_again_quickly`,
+     ignored, release, load 10–30 from other work): the assembled
+     station's 20 designs in 18.0 s on 24 threads and 98.9 s on 1; the
+     loop alone 0.036–0.050 ms, and 0.075–0.136 ms with a new load of
+     the depot (215, 214, 213, 212, 215 t), which designs nothing; `sim
+     run`: station-assembled 24.4 s wall, 136 s user;
+     hauler-carries-lander 9.2 s, 33 s; depot-tug-lander 20.4 s, 91 s;
+     every check held (21, 9 and 17). The full workspace suite: 361
+     passed, 13 ignored (measurements), none failed, in 12.8 min of
+     tests (the binaries' times summed; compiling not counted).
 
 Left out of step 4: undocking to stay alone (above); tanks pooled for
 burns; docking's duration (instantaneous at the arrival; a setting if
