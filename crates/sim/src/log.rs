@@ -85,6 +85,13 @@ pub enum Check {
         commodity: Commodity,
         short: bool,
     },
+    /// Ship `ship` is docked to the ship with id `to` at `at`, or to no
+    /// one (M1b.md, step 4 plan, part 5).
+    Docked {
+        ship: u64,
+        at: Epoch,
+        to: Option<u64>,
+    },
 }
 
 impl Check {
@@ -96,7 +103,8 @@ impl Check {
             | Check::Propellant { ship, .. }
             | Check::Dry { ship, .. }
             | Check::Cargo { ship, .. }
-            | Check::Transfer { ship, .. } => *ship,
+            | Check::Transfer { ship, .. }
+            | Check::Docked { ship, .. } => *ship,
         }
     }
 }
@@ -155,6 +163,9 @@ struct CheckFile {
     take: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     short: Option<bool>,
+    /// The ship docked to at `at`, by id, or "no one".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    docked_to: Option<toml::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -278,6 +289,7 @@ impl Log {
                         give: None,
                         take: None,
                         short: None,
+                        docked_to: None,
                     } => Ok(Check::At {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -295,6 +307,7 @@ impl Log {
                         give: None,
                         take: None,
                         short: None,
+                        docked_to: None,
                     } => Ok(Check::Dv { ship, step, dv }),
                     CheckFile {
                         ship,
@@ -308,6 +321,7 @@ impl Log {
                         give: None,
                         take: None,
                         short: None,
+                        docked_to: None,
                     } => Ok(Check::Propellant {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -325,6 +339,7 @@ impl Log {
                         give: None,
                         take: None,
                         short: None,
+                        docked_to: None,
                     } if dry == step.is_some() => Ok(Check::Dry { ship, step }),
                     CheckFile {
                         ship,
@@ -338,6 +353,7 @@ impl Log {
                         give: None,
                         take: None,
                         short: None,
+                        docked_to: None,
                     } => Ok(Check::Cargo {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -359,6 +375,7 @@ impl Log {
                         give,
                         take,
                         short: Some(short),
+                        docked_to: None,
                     } if give.is_some() != take.is_some() => {
                         let (kind, c) = match (give, take) {
                             (Some(c), None) => (Kind::Give, c),
@@ -373,10 +390,37 @@ impl Log {
                             short,
                         })
                     }
+                    CheckFile {
+                        ship,
+                        at: Some(at),
+                        place: None,
+                        step: None,
+                        dv: None,
+                        propellant_t: None,
+                        dry: None,
+                        cargo: None,
+                        give: None,
+                        take: None,
+                        short: None,
+                        docked_to: Some(to),
+                    } => Ok(Check::Docked {
+                        ship,
+                        at: date(&at).map_err(fail)?,
+                        to: match to {
+                            toml::Value::Integer(id) if id >= 0 => Some(id as u64),
+                            toml::Value::String(s) if s == "no one" => None,
+                            _ => {
+                                return Err(fail(
+                                    "`docked_to` is a ship's id, or \"no one\"".into(),
+                                ));
+                            }
+                        },
+                    }),
                     _ => Err(fail(
                         "a check has `at` and `place`; `step` and `dv`; `at` and \
                          `propellant_t`; `step` and `dry = true`; `dry = false`; `at` and \
-                         `cargo`; or `step`, `give` or `take`, and `short`"
+                         `cargo`; `step`, `give` or `take`, and `short`; or `at` and \
+                         `docked_to`"
                             .into(),
                     )),
                 }
@@ -582,6 +626,15 @@ impl Log {
                             short: Some(*short),
                             ..CheckFile::default()
                         },
+                        Check::Docked { ship, at, to } => CheckFile {
+                            ship: *ship,
+                            at: Some(at.stamp()),
+                            docked_to: Some(match to {
+                                Some(id) => toml::Value::Integer(*id as i64),
+                                None => toml::Value::String("no one".into()),
+                            }),
+                            ..CheckFile::default()
+                        },
                     })
                     .expect("a check serializes"),
                 )
@@ -784,7 +837,8 @@ short = true
         let half = CAREER.replace("step = 2\ndv", "dv");
         let neither = "check 2: a check has `at` and `place`; `step` and `dv`; `at` and \
                        `propellant_t`; `step` and `dry = true`; `dry = false`; `at` and \
-                       `cargo`; or `step`, `give` or `take`, and `short`";
+                       `cargo`; `step`, `give` or `take`, and `short`; or `at` and \
+                       `docked_to`";
         assert_eq!(parse(&half).unwrap_err(), neither);
         let dry_without_step = CAREER.replace("step = 2\ndry = true", "dry = true");
         assert_eq!(
@@ -880,6 +934,45 @@ short = true
         assert_eq!(
             format!("{:?}", again.replans[0].steps),
             format!("{:?}", log.replans[0].steps)
+        );
+    }
+
+    /// A docked check (M1b.md, step 4 plan, part 5) names the ship docked
+    /// to, or no one, and reads back as written.
+    #[test]
+    fn a_docked_check_reads_back() {
+        let src = CAREER.to_string()
+            + "\n[[check]]\nship = 2\nat = \"2045-03-03\"\ndocked_to = \"no one\"\n\n[[check]]\nship = 2\nat = \"2045-03-04\"\ndocked_to = 7\n";
+        let log = parse(&src).unwrap();
+        let n = log.checks.len();
+        assert_eq!(
+            log.checks[n - 2],
+            Check::Docked {
+                ship: 2,
+                at: Epoch::from_ymd(2045, 3, 3),
+                to: None,
+            }
+        );
+        assert_eq!(
+            log.checks[n - 1],
+            Check::Docked {
+                ship: 2,
+                at: Epoch::from_ymd(2045, 3, 4),
+                to: Some(7),
+            }
+        );
+        let again = parse(&log.to_toml()).unwrap();
+        assert_eq!(again.checks[n - 2..], log.checks[n - 2..]);
+        let bad = src.replace("docked_to = 7", "docked_to = -1");
+        assert_eq!(
+            parse(&bad).unwrap_err(),
+            format!("check {n}: `docked_to` is a ship's id, or \"no one\"")
+        );
+        let both = src.replace("docked_to = 7", "docked_to = 7\nplace = \"leo\"");
+        assert!(
+            parse(&both)
+                .unwrap_err()
+                .ends_with("or `at` and `docked_to`")
         );
     }
 }

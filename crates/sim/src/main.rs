@@ -74,6 +74,10 @@ fn run(file: &PathBuf, alone: bool, tracks: Option<PathBuf>) -> Result<()> {
             }
             let items: Vec<_> = ship.items().cloned().collect();
             for (k, item) in items.iter().enumerate() {
+                if let ItemKind::Docked(_) = item.kind {
+                    print!("{}", report::docked(game.plan(), &items, k));
+                    continue;
+                }
                 print!("{}", report::line(eph, item));
                 if let Some(fuel) = fuel {
                     print!("{}", report::burned(state, fuel, item, k));

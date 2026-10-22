@@ -1,0 +1,228 @@
+# A station assembled at the NRHO (M1b.md, step 4 plan, part 5), in
+# career. A methalox hauler bought at LEO with 215 t flies to the NRHO,
+# arriving with 10 t, and stays as the depot stage; a tanker hauler fills
+# it, as in depot-tug-lander.toml. A hydrolox tug bought at LEO carries a
+# station module launched docked to it, with 10 t of equipment in its
+# hold, docks to the depot and flies home by aerocapture; the module moves
+# to the depot when the tug has docked, and stays when the tug leaves. A
+# methalox lander bought at LEO with 300 t docks to the depot, fills its
+# tanks from the assembly and takes 5 t of the module's equipment (the
+# depot's hold is empty: the assembly is one stock), leaves for low lunar
+# orbit, lands at the south pole for three days and comes back up.
+
+name = "A station assembled at the NRHO: a depot stage, a module, a lander"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01", propellant_t = 215.0 }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 90
+
+[[ship]]
+id = 1
+name = "Tanker"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+propellant_t = 25.0
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 2
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+dock = true
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 3
+name = "Hab"
+class = "module"
+start = { at = { ship = 2 }, epoch = "2045-03-06", cargo = { equipment = 10.0 } }
+
+[[ship.leg]]
+dock = { ship = 0, leg = 0 }
+
+[[ship]]
+id = 4
+name = "Lander"
+class = "lander"
+start = { at = "leo", epoch = "2045-03-12", propellant_t = 300.0 }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+dock = true
+propellant_t = 400.0
+cargo = { equipment = 5.0 }
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+to = "llo"
+days = [1.0]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+
+# The depot arrives 2045-03-08 19:10 with 9.859 t, as in
+# depot-tug-lander.toml; the tanker, arriving 03-15 06:06, gives it
+# 284.001 t of LOX and 78.889 t of methane (2026-10-21).
+[[check]]
+ship = 0
+at = "2045-03-10"
+place = "nrho"
+
+[[check]]
+ship = 1
+step = 0
+give = "lox"
+short = false
+
+# The tug carries the module (20 t dry, 10 t of equipment): 108.644 t
+# burned for its 3,512.5 m/s, against 97.4 t alone. It docks to the depot
+# 03-15 06:06 and leaves 03-19 21:46; the module moves to the depot as the
+# tug docks, and is there with the depot after the tug has left.
+[[check]]
+ship = 3
+at = "2045-03-10"
+docked_to = 2
+
+[[check]]
+ship = 3
+at = "2045-03-10"
+place = "leo"
+
+[[check]]
+ship = 2
+at = "2045-03-16"
+docked_to = 0
+
+[[check]]
+ship = 3
+at = "2045-03-16"
+docked_to = 0
+
+[[check]]
+ship = 2
+at = "2045-03-20"
+docked_to = "no one"
+
+[[check]]
+ship = 3
+at = "2045-03-20"
+docked_to = 0
+
+[[check]]
+ship = 3
+at = "2045-03-20"
+place = "nrho"
+
+# The tug arrives with 41.293 t and flies home with 6.383 t burned.
+[[check]]
+ship = 2
+at = "2045-03-16"
+propellant_t = [40.6, 42.0]
+
+# The lander docks 03-21 17:23 and, leaving 03-26 04:38, fills its tanks
+# from the depot (241.896 t of LOX, 67.193 t of methane) and takes 5 t of
+# equipment from the module, through the depot: the assembly is one stock.
+[[check]]
+ship = 4
+at = "2045-03-22"
+docked_to = 0
+
+[[check]]
+ship = 4
+step = 0
+take = "lox"
+short = false
+
+[[check]]
+ship = 4
+step = 0
+take = "equipment"
+short = false
+
+[[check]]
+ship = 4
+at = "2045-03-27"
+cargo = { equipment = [4.999, 5.001] }
+
+[[check]]
+ship = 3
+at = "2045-03-27"
+cargo = { equipment = [4.999, 5.001] }
+
+[[check]]
+ship = 4
+at = "2045-03-27"
+docked_to = "no one"
+
+# The depot keeps station for the module too: 0.110 t of upkeep over 90
+# days with 25 t docked after the lander's take (the module and its 5 t),
+# where it burned 0.077 t alone in depot-tug-lander.toml over 60 days.
+[[check]]
+ship = 0
+at = "2045-06-01"
+propellant_t = [63.4, 63.7]
+
+# On the surface and back up, as in depot-tug-lander.toml but for the
+# equipment: 80.063 t left in low lunar orbit.
+[[check]]
+ship = 4
+at = "2045-03-28"
+place = "moon-south-pole"
+
+[[check]]
+ship = 4
+at = "2045-03-31"
+propellant_t = [79.4, 80.8]
+
+[[check]]
+ship = 4
+dry = false
+
+[[check]]
+ship = 0
+dry = false

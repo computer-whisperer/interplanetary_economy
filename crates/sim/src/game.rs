@@ -560,11 +560,14 @@ struct Pending {
 }
 
 /// What the loop found wrong: the ships that ran dry, and the transfers
-/// that fell short (ship, step, a take, the commodity).
+/// that fell short (ship, step, a take, the commodity); and, by the
+/// designs, the ships started docked to a vessel away from LEO, where a
+/// career ship is bought (M1b.md, step 4 plan, part 5).
 #[derive(Clone, Default, PartialEq)]
 struct Found {
     dry: BTreeSet<u64>,
     short: BTreeSet<(u64, usize, bool, usize)>,
+    away: BTreeSet<u64>,
 }
 
 pub struct Game {
@@ -718,9 +721,9 @@ fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
         if mode == Mode::Sandbox {
             continue;
         }
-        if ship.start.source.as_str() != Some("leo") {
+        if !starts_at_leo(ship, &log.plan.ships) {
             return Err(fail(format!(
-                "a ship starts at LEO, where it is bought, not {}",
+                "a ship starts at LEO, where it is bought, or docked to a vessel there, not at {}",
                 ship.start.label
             )));
         }
@@ -763,6 +766,26 @@ fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether `ship` starts at LEO, or docked to a vessel of `ships` that
+/// does, as the plan has it (where the vessel is at the epoch is known
+/// when it is designed: `Found::away`).
+fn starts_at_leo(ship: &Ship, ships: &[Ship]) -> bool {
+    let mut at = ship;
+    for _ in 0..=ships.len() {
+        if at.start.source.as_str() == Some("leo") {
+            return true;
+        }
+        let Some(m) = at.start.meeting else {
+            return false;
+        };
+        match ships.iter().find(|v| v.id == m.ship) {
+            Some(v) => at = v,
+            None => return false,
+        }
+    }
+    false
 }
 
 impl Game {
@@ -922,7 +945,9 @@ impl Game {
                     items,
                     done: d.done,
                     stops,
-                    bought: ship.start.source.as_str() == Some("leo"),
+                    bought: ship.start.source.as_str() == Some("leo")
+                        || (ship.start.meeting.is_some()
+                            && d.checkpoints().next().is_some_and(|c| c.label() == "leo")),
                 }
             })
             .collect();
@@ -1030,7 +1055,20 @@ impl Game {
                     .insert((s.id, x.step, x.kind == Kind::Take, x.commodity as usize));
             }
         }
+        for (k, d) in self.ships.iter().enumerate() {
+            if self.started_away(k).is_some() {
+                found.away.insert(d.id);
+            }
+        }
         found
+    }
+
+    /// Where ship `k`, started docked to a vessel, found that vessel at its
+    /// epoch, if not at LEO: the vessel's place, as its design has it.
+    fn started_away(&self, k: usize) -> Option<String> {
+        self.plan.ships[k].start.meeting?;
+        let c = self.ships[k].checkpoints().next()?;
+        (c.label() != "leo").then(|| c.label().to_string())
     }
 
     /// Why the state as it stands refuses the action that led to it, if
@@ -1042,6 +1080,17 @@ impl Game {
         let mut found: Vec<(f64, u8, usize, String)> = Vec::new();
         for (k, s) in self.state.ships.iter().enumerate() {
             let name = &self.plan.ships[k].name;
+            if let Some(place) = self.started_away(k)
+                && !before.away.contains(&s.id)
+            {
+                let ship = &self.plan.ships[k];
+                let host = ship.start.meeting.map_or(0, |m| m.ship);
+                let why = format!(
+                    "ship {name:?} starts docked to ship {host} at {place}, not at LEO, where it \
+                     is bought"
+                );
+                found.push((ship.epoch.0, 0, k, why));
+            }
             if let Some(dry) = &s.dry
                 && !before.dry.contains(&s.id)
             {
@@ -1305,6 +1354,14 @@ impl Game {
     /// while the designs do not reach `t`.
     pub fn at(&self, host: u64, t: Epoch) -> Option<Host> {
         self.fleet.lock().unwrap().at(host, t, &mut None)
+    }
+
+    /// The name of the ship with id `id` ("ship 7" for none).
+    fn ship_name(&self, id: u64) -> String {
+        match self.index(id) {
+            Some(k) => self.plan.ships[k].name.clone(),
+            None => format!("ship {id}"),
+        }
     }
 
     /// Ship `k` of the plan as it stands: the log's, with its re-plans
@@ -1863,6 +1920,24 @@ impl Game {
                         ),
                         None => (format!("{on}: {}", ran_dry(&items, dry)), false),
                     },
+                    // A docked ship is where its chain of vessels is, if
+                    // they are stopped (M1b.md, step 4 plan, part 5).
+                    None if state::docked_to(items.iter().copied(), at.0).is_some() => {
+                        let host = state::docked_to(items.iter().copied(), at.0).unwrap();
+                        let host = self.ship_name(host);
+                        match self.at(ship, *at) {
+                            None => return pending(on),
+                            Some(Err(why)) => (format!("{on}: docked to {host}: {why}"), false),
+                            Some(Ok((_, c, _))) if c.since().0 > at.0 => (
+                                format!("{on}: docked to {host}, in flight to {}", c.label()),
+                                false,
+                            ),
+                            Some(Ok((_, c, _))) => (
+                                format!("{on}: docked to {host}, at {}", c.label()),
+                                c.label() == place,
+                            ),
+                        }
+                    }
                     None => {
                         let item = items.iter().rfind(|i| i.start.0 <= at.0 && at.0 <= i.end.0);
                         (
@@ -1877,6 +1952,22 @@ impl Game {
                 match held {
                     true => Ok(line),
                     false => Err(format!("{line}, not {here}")),
+                }
+            }
+            Check::Docked { at, to, .. } => {
+                let on = format!("{} on {}", d.name, at.stamp());
+                if !self.state.known(*at) {
+                    return pending(on);
+                }
+                let docked = state::docked_to(items.iter().copied(), at.0);
+                let name = |id: Option<u64>| match id {
+                    Some(id) => self.ship_name(id),
+                    None => "no one".to_string(),
+                };
+                let line = format!("{on}: docked to {}", name(docked));
+                match docked == *to {
+                    true => Ok(line),
+                    false => Err(format!("{line}, not {}", name(*to))),
                 }
             }
             Check::Dv { step, dv, .. } => {

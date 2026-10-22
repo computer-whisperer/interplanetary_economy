@@ -577,7 +577,8 @@ days = [3.5]
     let why = game.add_ship(at_nrho).unwrap_err();
     assert_eq!(
         why,
-        "ship \"Lander\": a ship starts at LEO, where it is bought, not nrho"
+        "ship \"Lander\": a ship starts at LEO, where it is bought, or docked to a vessel there, \
+         not at nrho"
     );
     assert_eq!(game.ships().len(), 1);
 
@@ -1715,4 +1716,77 @@ dock = { ship = 7, leg = 0 }
             && late.ends_with(", before the ship is with it"),
         "{late}"
     );
+}
+
+/// The assembled station's scenario (M1b.md, step 4 plan, part 5) designs
+/// the same on one thread as on 24, its docks among the designs, and its
+/// state hashes the same every day.
+#[test]
+fn an_assembly_is_the_same_on_any_threads() {
+    let path = format!(
+        "{}/../../data/scenarios/station-assembled.toml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let src = std::fs::read_to_string(path).unwrap();
+    let one = sim::run::run(&parse(&src), false, &pool(1)).unwrap();
+    let many = sim::run::run(&parse(&src), false, &pool(24)).unwrap();
+    let (one, many) = (&one[0], &many[0]);
+    for (a, b) in one.ships().iter().zip(many.ships()) {
+        assert!(a.done && a.failure.is_none(), "{}: {:?}", a.name, a.failure);
+        let items = |s: &sim::game::ShipDesign| shown(&s.items().cloned().collect::<Vec<_>>());
+        assert_eq!(items(a), items(b), "{}", a.name);
+    }
+    assert_eq!(hashes(one), hashes(many));
+    let hab = many.index(3).unwrap();
+    let kinds: Vec<ItemKind> = many.ships()[hab].items().map(|i| i.kind.clone()).collect();
+    assert_eq!(kinds, [ItemKind::Docked(2), ItemKind::Docked(0)]);
+}
+
+/// Career buys ships at LEO: a ship started docked to a vessel that is
+/// elsewhere then is refused (M1b.md, step 4 plan, part 5); one docked to
+/// a vessel at LEO is bought there, its load's launch paid.
+#[test]
+fn career_buys_a_docked_start_at_leo_only() {
+    let src = r#"
+name = "away"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Hauler"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 60
+
+[[ship]]
+id = 1
+name = "Hab"
+class = "module"
+start = { at = { ship = 0 }, epoch = "2045-03-10", cargo = { equipment = 10.0 } }
+"#;
+    let mut game = Game::new(parse(src), pool(4)).unwrap();
+    game.wait();
+    let why = game.refused().expect("refused");
+    assert!(
+        why.contains(
+            "ship \"Hab\" starts docked to ship 0 at nrho, not at LEO, where it is bought"
+        ),
+        "{why}"
+    );
+    let at_leo = src.replace("epoch = \"2045-03-10\"", "epoch = \"2045-03-02\"");
+    let mut game = Game::new(parse(&at_leo), pool(4)).unwrap();
+    game.wait();
+    assert_eq!(game.refused(), None);
+    let hab = game.index(1).unwrap();
+    let bought = &game.state().ships[hab].purchases;
+    assert_eq!(bought.len(), 2, "the module and its equipment: {bought:?}");
 }

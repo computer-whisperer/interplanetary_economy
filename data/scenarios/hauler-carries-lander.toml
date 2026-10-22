@@ -1,0 +1,96 @@
+# A hauler carrying a lander to the NRHO (M1b.md, step 4 plan, part 5), in
+# career. The methalox lander, bought at LEO with 300 t docked to the
+# hauler, rides it: the hauler's burns move both, from its own tanks, so
+# it is bought with 800 t where 215 take it alone (depot-tug-lander.toml,
+# arriving with 9.859 t). At the NRHO the lander leaves for low lunar
+# orbit from the hauler's orbit, its tanks untouched, lands at the south
+# pole for three days and comes back up.
+
+name = "A hauler carries a lander to the NRHO"
+
+[game]
+mode = "career"
+now = "2045-03-01"
+
+[[ship]]
+id = 0
+name = "Hauler"
+class = "hauler"
+start = { at = "leo", epoch = "2045-03-01", propellant_t = 800.0 }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 60
+
+[[ship]]
+id = 1
+name = "Lander"
+class = "lander"
+start = { at = { ship = 0 }, epoch = "2045-03-01", propellant_t = 300.0 }
+
+[[ship.leg]]
+wait = 6
+
+[[ship.leg]]
+to = "llo"
+days = [1.0]
+
+[[ship.leg]]
+to = "moon-south-pole"
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+
+# The hauler leaves LEO 2045-03-03 19:10 and arrives 03-08 19:10 with
+# 28.427 t: 771.573 t burned for its 3,485.1 m/s with 340 t docked, where
+# 205.141 t take it alone (2026-10-21). ±20 m/s is ±2.7 t.
+[[check]]
+ship = 1
+at = "2045-03-05"
+docked_to = 0
+
+[[check]]
+ship = 1
+at = "2045-03-10"
+place = "nrho"
+
+[[check]]
+ship = 0
+at = "2045-03-10"
+propellant_t = [25.7, 31.2]
+
+# The lander's tanks are untouched until it leaves, 03-13 09:50, from the
+# hauler's orbit.
+[[check]]
+ship = 1
+at = "2045-03-10"
+propellant_t = [300.0, 300.0]
+
+[[check]]
+ship = 1
+at = "2045-03-14"
+docked_to = "no one"
+
+[[check]]
+ship = 1
+at = "2045-03-15"
+place = "moon-south-pole"
+
+[[check]]
+ship = 1
+at = "2045-03-18"
+propellant_t = [54.9, 56.2]
+
+[[check]]
+ship = 0
+dry = false
+
+[[check]]
+ship = 1
+dry = false

@@ -203,6 +203,9 @@ pub struct ShipState {
     /// `ShipDesign::items`: a leg's, landing's or ascent's burns, a
     /// station stay's upkeep.
     pub used: Vec<f64>,
+    /// The mass docked to the ship at each item's last burn or upkeep, t,
+    /// by its place (M1b.md, step 4 plan, part 4).
+    pub riders: Vec<f64>,
     /// What it carried after each item's last burn made, by its place:
     /// none for an item that burned nothing.
     pub after: Vec<Option<Load>>,
@@ -383,7 +386,10 @@ impl Running<'_> {
                 let dv = dv * stayed / (end - start);
                 upkept = true;
                 match burn(&mut self.load, self.dry + riders, self.spec, dv) {
-                    Ok(used) => s.used[i] += used,
+                    Ok(used) => {
+                        s.used[i] += used;
+                        s.riders[i] = riders;
+                    }
                     Err(could) => {
                         s.dry = Some(Dry {
                             t: Epoch(t),
@@ -535,13 +541,14 @@ fn there(v: &Course, s: &ShipState, leg: Option<usize>, t: f64) -> Result<(), Sh
     Ok(())
 }
 
-/// Ship `c`'s docks (M1b.md, step 4 plan, part 4): the vessel it is docked
-/// to, by id, from each dock until its next flight's burns begin, or it
-/// docks to another; for the rest of the game, otherwise.
-fn docks(c: &Course) -> Vec<(u64, f64, f64)> {
+/// A ship's docks (M1b.md, step 4 plan, part 4), from its `items`: the
+/// vessel it is docked to, by id, from each dock until its next flight's
+/// burns begin, or it docks to another; for the rest of the game,
+/// otherwise.
+pub fn docks<'a>(items: impl IntoIterator<Item = &'a Item>) -> Vec<(u64, f64, f64)> {
     let mut out = Vec::new();
     let mut open: Option<(u64, f64)> = None;
-    for item in &c.items {
+    for item in items {
         match item.kind {
             ItemKind::Docked(host) => {
                 if let Some((before, from)) = open.take() {
@@ -561,6 +568,16 @@ fn docks(c: &Course) -> Vec<(u64, f64, f64)> {
         out.push((host, from, f64::INFINITY));
     }
     out
+}
+
+/// The vessel a ship with `items` is docked to at `t`, by id, if any: from
+/// its dock on, until its next flight's burns begin or it docks to another
+/// ([`docks`]).
+pub fn docked_to<'a>(items: impl IntoIterator<Item = &'a Item>, t: f64) -> Option<u64> {
+    docks(items)
+        .into_iter()
+        .find(|&(_, from, to)| from <= t && t < to)
+        .map(|(host, _, _)| host)
 }
 
 /// Two of `v`, to change together.
@@ -699,6 +716,7 @@ impl Loop<'_> {
                 Ok(used) => {
                     s.used[i] += used;
                     s.after[i] = Some(r.load);
+                    s.riders[i] = riders;
                     changed = true;
                 }
                 Err(could) => {
@@ -966,6 +984,7 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         let mut s = ShipState {
             id: c.id,
             used: vec![0.0; c.items.len()],
+            riders: vec![0.0; c.items.len()],
             after: vec![None; c.items.len()],
             ..ShipState::default()
         };
@@ -1023,7 +1042,10 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         economy,
         out,
         runs,
-        docks: ships.iter().map(docks).collect(),
+        docks: ships
+            .iter()
+            .map(|c| docks(c.items.iter().copied()))
+            .collect(),
     };
 
     // Events in time order, then by phase and ship id; one ship's burns

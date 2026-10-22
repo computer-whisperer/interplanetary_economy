@@ -8,7 +8,7 @@ runs a vessel dry or short, the sandbox's editor sets meetings and
 manifests while its panel shows transfers and purchases, `sim run`
 prints them with the depot scenarios' checks holding, and the tests and
 measurements are in); step 4, docking, under way (its plan, below), parts
-1 to 4 done. Decided: one engine for both modes, with economy components
+1 to 5 done. Decided: one engine for both modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they stay,
 with docking a step of its own (Design, Vessels, stations and stocks).
@@ -2406,6 +2406,36 @@ Where the work is (found drafting):
    equipment, and lands) and the carried lander (the hauler's
    propellant on arrival against the depot scenario's 9.859 t). The
    hashes at 1 and 24 threads.
+   - Built (2026-10-21): career buys a ship at LEO or docked to a vessel
+     that starts there (`allowed`, through chains of starts), and refuses
+     one whose vessel is elsewhere at its epoch once designed
+     (`Found::away`: "starts docked to ship 0 at nrho, not at LEO, where
+     it is bought"); a start docked at LEO is bought with its load.
+     `Check::Docked` (`docked_to = 0`, or `"no one"`: the dock in force,
+     from the dock until the ship's next flight's burns or its next
+     dock, `state::docked_to`); `Check::At` through hosts ("docked to
+     Depot, at nrho"; in flight with the host, not held). `sim run`
+     prints a dock as "docked   to Depot (ship 0)  2045-03-15 06:06,
+     until 2045-03-19 21:46" (or "docking anew", or "for the rest of the
+     plan") and a burn's ", with 30.000 t docked" (`ShipState::riders`).
+     Scenarios: `data/scenarios/station-assembled.toml` (career: the
+     depot stage and tanker of the depot scenario; a hydrolox tug
+     carrying a module with 10 t of equipment docks and leaves it; a
+     lander docks, fills its tanks from the depot and takes 5 t of
+     equipment from the module through the depot, lands and comes back
+     up; 21 checks) and `data/scenarios/hauler-carries-lander.toml`
+     (career: a hauler with 800 t carries a 340 t lander to the NRHO; 9
+     checks). Measured (2026-10-21, release): the tug burns 108.644 t
+     carrying the module against 97.4 t alone; the hauler 771.573 t with
+     the lander against 205.141 alone, arriving with 28.427 t; the depot
+     keeps station for the module at 0.110 t over 90 days. Tests:
+     `an_assembly_is_the_same_on_any_threads` (1 and 24 threads: the
+     same items and hashes), `career_buys_a_docked_start_at_leo_only`,
+     `a_docked_check_reads_back` (`sim::log`); `every_scenario_holds`
+     over four scenarios. Found: the lander's take lines name the depot
+     while the equipment came from the module (the assembly is one
+     stock; the report says whom the manifest named), and a module's
+     hold line at its own last item predates a later take from it.
 6. **The sandbox**: positions through hosts (`app::ship_position`;
    labels: an assembly's vessels at one point share a label); the
    panel's "docked to Tug" rows and an assembly's mass on the host's

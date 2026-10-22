@@ -89,6 +89,38 @@ pub fn line(eph: &Ephemeris, item: &Item) -> String {
     s
 }
 
+/// Item `k` of `items`, a dock (M1b.md, step 4 plan, part 5): to whom, by
+/// name, and until when (the ship's next flight, or its next dock).
+pub fn docked(plan: &Plan, items: &[Item], k: usize) -> String {
+    let item = &items[k];
+    let ItemKind::Docked(host) = item.kind else {
+        unreachable!("a dock's line");
+    };
+    let name = plan
+        .ships
+        .iter()
+        .find(|s| s.id == host)
+        .map_or(format!("ship {host}"), |s| s.name.clone());
+    let until = items[k + 1..]
+        .iter()
+        .find(|i| {
+            matches!(
+                i.kind,
+                ItemKind::Leg | ItemKind::Landing | ItemKind::Ascent | ItemKind::Docked(_)
+            )
+        })
+        .map_or("for the rest of the plan".to_string(), |i| match i.kind {
+            ItemKind::Docked(_) => format!("until {}, docking anew", when(i.start)),
+            _ => format!("until {}", when(i.start)),
+        });
+    format!(
+        "  {:<8} {:<34} {}, {until}\n",
+        "docked",
+        format!("to {name} (ship {host})"),
+        when(item.start)
+    )
+}
+
 /// What item `k` of a ship whose state is `state` burned, and what it left;
 /// where it ran dry, and that what follows is not flown.
 pub fn burned(state: &ShipState, fuel: Commodity, item: &Item, k: usize) -> String {
@@ -102,6 +134,9 @@ pub fn burned(state: &ShipState, fuel: Commodity, item: &Item, k: usize) -> Stri
         write!(s, "           {what} {}", tonnes(used)).unwrap();
         if let Some(load) = state.after.get(k).copied().flatten() {
             write!(s, ", leaving {}", carried(&load, fuel)).unwrap();
+        }
+        if let Some(riders) = state.riders.get(k).filter(|&&r| r > 0.0) {
+            write!(s, ", with {} docked", tonnes(*riders)).unwrap();
         }
         s.push('\n');
     }
