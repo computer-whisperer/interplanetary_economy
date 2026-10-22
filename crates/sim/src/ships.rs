@@ -137,9 +137,10 @@ pub fn manifest(m: &mission::Manifest) -> Result<Manifest, String> {
 /// The legs of `ship` that carry a manifest: each step and its manifest's
 /// amounts, or what is wrong with it, as a plan counts its steps.
 fn manifests(ship: &Ship) -> impl Iterator<Item = (usize, Result<Manifest, String>)> + '_ {
-    ship.steps.iter().enumerate().filter_map(|(i, s)| match s {
-        Step::Go(go) if !go.manifest.is_empty() => Some((i, manifest(&go.manifest))),
-        _ => None,
+    ship.steps.iter().enumerate().filter_map(|(i, s)| {
+        s.manifest()
+            .filter(|m| !m.is_empty())
+            .map(|m| (i, manifest(m)))
     })
 }
 
@@ -293,13 +294,13 @@ pub fn breaches(
         for why in [full, hold(m.cargo())].into_iter().flatten() {
             breach(Some(i), why);
         }
-        let Step::Go(go) = &ship.steps[i] else {
-            continue;
-        };
-        match go.to.meeting {
-            None if go.to.source.as_str() != Some("leo") => breach(
+        let to = ship.steps[i]
+            .to()
+            .expect("a manifest's step is a leg or a dock");
+        match to.meeting {
+            None if to.source.as_str() != Some("leo") => breach(
                 Some(i),
-                format!("no vessel to transfer with at {}", go.to.label),
+                format!("no vessel to transfer with at {}", to.label),
             ),
             None => {}
             Some(met) => {
@@ -311,6 +312,24 @@ pub fn breaches(
                         format!("ship {:?} has no class to transfer with", vessel.name),
                     );
                 }
+            }
+        }
+    }
+    // A class without tanks has no engines (M1b.md, step 4 plan, part 1):
+    // it is carried, docked to a vessel, and flies no leg of its own.
+    if c.tank <= 0.0 {
+        let rides = || {
+            format!(
+                "a {} has no engines: it starts docked to a vessel and rides it",
+                c.id
+            )
+        };
+        if ship.start.meeting.is_none() {
+            breach(None, rides());
+        }
+        for (i, step) in ship.steps.iter().enumerate() {
+            if matches!(step, Step::Go(_)) {
+                breach(Some(i), rides());
             }
         }
     }
@@ -329,7 +348,14 @@ pub fn breaches(
     }
     let mut from = &ship.start.kind;
     for (i, step) in ship.steps.iter().enumerate() {
-        let Step::Go(go) = step else { continue };
+        let go = match step {
+            Step::Go(go) => go,
+            Step::Dock(d) => {
+                from = &d.to.kind;
+                continue;
+            }
+            Step::Wait(_) => continue,
+        };
         let to = &go.to.kind;
         let system = from.system(eph);
         if system != to.system(eph) && !c.interplanetary {
@@ -763,6 +789,69 @@ start = { at = "nrho", epoch = "2045-03-01" }
 "#
             ),
             ["leg 1: ship \"Depot\" has no class to transfer with"]
+        );
+    }
+
+    /// A module has no tanks and no engines (M1b.md, step 4 plan, part 1):
+    /// it reads with nothing in its tanks; a leg of its own, or a start of
+    /// its own, is a breach; docked to a vessel, it is in order.
+    #[test]
+    fn a_module_rides() {
+        let e = economy();
+        let p = plan(
+            r#"
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship]]
+id = 0
+name = "Hab"
+class = "module"
+start = { at = { ship = 1 }, epoch = "2045-03-01", cargo = { equipment = 10.0 } }
+
+[[ship.leg]]
+dock = { ship = 1, leg = 0 }
+"#,
+        );
+        let hab = &p.ships[1];
+        let fitted = read(hab, &e).unwrap().unwrap();
+        assert_eq!(e.ships[fitted.class].id, "module");
+        assert_eq!(fitted.load.propellant(), 0.0);
+        assert_eq!(fitted.load.cargo(), 10.0);
+        assert!(breaches(hab, &fitted, &e, Ephemeris::standard(), &p.ships).is_empty());
+        let rides = "a module has no engines: it starts docked to a vessel and rides it";
+        assert_eq!(
+            breaches_of(
+                r#"
+[[ship]]
+name = "Hab"
+class = "module"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+"#
+            ),
+            [
+                rides.to_string(),
+                format!("leg 1: {rides}"),
+                format!("leg 3: {rides}")
+            ]
         );
     }
 }

@@ -465,23 +465,22 @@ impl Log {
             }
             made.retain(|(ship, step, _)| *ship != r.ship || *step < r.from);
             for (k, step) in r.steps.iter().enumerate() {
-                if let Step::Go(go) = step
-                    && let Some(m) = go.to.meeting
-                {
-                    made.push((r.ship, r.from + k, m));
+                if let Some(m) = step.meeting() {
+                    made.push((r.ship, r.from + k, *m));
                 }
             }
             let s = standing
                 .iter_mut()
                 .find(|s| s.id == r.ship)
                 .expect("a re-plan's ship is in the plan (checked above)");
-            if r.here.is_some() && !s.steps[..r.from].iter().any(|s| matches!(s, Step::Go(_))) {
+            if r.here.is_some() && !s.steps[..r.from].iter().any(Step::is_stop) {
                 return Err(format!("replan {}: {}", i + 1, here_without_a_stop(r.from)));
             }
             apply(&mut s.steps, r);
         }
         let meetings = Meetings::new(&standing)?;
         for ship in &mut self.plan.ships {
+            meetings.resolve_start(&mut ship.start);
             meetings.resolve(&mut ship.steps);
         }
         for r in &mut self.replans {
@@ -847,5 +846,40 @@ short = true
             assert_eq!(minute(m), m);
             assert_eq!(m.stamp().parse::<Epoch>().unwrap(), m);
         }
+    }
+
+    /// A re-plan may dock (M1b.md, step 4 plan, part 1): its legs read
+    /// back as written, a dock step among them, resolved to where the
+    /// vessel is.
+    #[test]
+    fn a_replan_may_dock() {
+        let src = CAREER
+            .replacen(
+                "[[replan]]\nship = 2\n",
+                "[[ship]]\nid = 5\nname = \"Depot\"\nclass = \"hauler\"\nstart = { at = \"leo\", \
+                 epoch = \"2045-02-01\" }\n\n[[ship.leg]]\nto = \"nrho\"\ndays = [5.0]\n\n\
+                 [[replan]]\nship = 2\n",
+                1,
+            )
+            .replacen(
+                "to = \"llo\"\ndays = [0.5]",
+                "dock = { ship = 5, leg = 0 }",
+                1,
+            );
+        let log = parse(&src).unwrap();
+        let Step::Dock(d) = &log.replans[0].steps[1] else {
+            panic!("a dock")
+        };
+        assert_eq!(d.to.label, "ship 5, leg 0");
+        assert!(
+            matches!(d.to.kind, orbit::places::PlaceKind::Station { .. }),
+            "{:?}",
+            d.to.kind
+        );
+        let again = parse(&log.to_toml()).unwrap();
+        assert_eq!(
+            format!("{:?}", again.replans[0].steps),
+            format!("{:?}", log.replans[0].steps)
+        );
     }
 }

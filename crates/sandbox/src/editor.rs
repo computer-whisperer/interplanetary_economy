@@ -213,11 +213,17 @@ pub fn value(ship: &Ship, field: Field) -> String {
         Field::Propellant => ship.propellant_t.map_or(String::new(), figure),
         Field::Cargo(c) => ship.cargo.get(c.id()).map_or(String::new(), |&t| figure(t)),
         Field::To(i) => go(i).map_or(String::new(), |g| g.to.label.clone()),
-        Field::LegPropellant(i) => go(i)
-            .and_then(|g| g.manifest.propellant_t)
+        Field::LegPropellant(i) => ship
+            .steps
+            .get(i)
+            .and_then(Step::manifest)
+            .and_then(|m| m.propellant_t)
             .map_or(String::new(), figure),
-        Field::LegCargo(i, c) => go(i)
-            .and_then(|g| g.manifest.cargo.get(c.id()))
+        Field::LegCargo(i, c) => ship
+            .steps
+            .get(i)
+            .and_then(Step::manifest)
+            .and_then(|m| m.cargo.get(c.id()))
             .map_or(String::new(), |&t| figure(t)),
         Field::Days(i) => go(i).map_or(String::new(), |g| {
             g.days
@@ -304,26 +310,30 @@ pub fn set(ship: &Ship, field: Field, text: &str) -> Result<Ship, String> {
             };
             *wait = d;
         }
-        Field::Days(i)
-        | Field::Open(i)
-        | Field::Close(i)
-        | Field::LegPropellant(i)
-        | Field::LegCargo(i, _) => {
-            let Some(Step::Go(go)) = ship.steps.get_mut(i) else {
-                return Err("not a leg".into());
+        Field::LegPropellant(i) | Field::LegCargo(i, _) => {
+            let Some(m) = ship.steps.get_mut(i).and_then(Step::manifest_mut) else {
+                return Err("not a leg or a dock".into());
             };
             match field {
                 // A manifest's cargo at 0 means to give it all; empty
                 // leaves it as it is.
-                Field::LegPropellant(_) => go.manifest.propellant_t = tonnes(text)?,
+                Field::LegPropellant(_) => m.propellant_t = tonnes(text)?,
                 Field::LegCargo(_, c) => match tonnes(text)? {
                     Some(t) => {
-                        go.manifest.cargo.insert(c.id().to_string(), t);
+                        m.cargo.insert(c.id().to_string(), t);
                     }
                     None => {
-                        go.manifest.cargo.remove(c.id());
+                        m.cargo.remove(c.id());
                     }
                 },
+                _ => unreachable!("matched above"),
+            }
+        }
+        Field::Days(i) | Field::Open(i) | Field::Close(i) => {
+            let Some(Step::Go(go)) = ship.steps.get_mut(i) else {
+                return Err("not a leg".into());
+            };
+            match field {
                 Field::Days(_) => {
                     go.days = text
                         .split(',')
@@ -427,14 +437,14 @@ fn place(
 /// plan's `ships` by its name ("Depot, leg 2"; "Depot, start"), a place by
 /// its label.
 pub fn destination(ship: &Ship, ships: &[Ship], i: usize) -> String {
-    let Some(Step::Go(go)) = ship.steps.get(i) else {
+    let Some(to) = ship.steps.get(i).and_then(Step::to) else {
         return String::new();
     };
-    let Some(m) = &go.to.meeting else {
-        return go.to.label.clone();
+    let Some(m) = &to.meeting else {
+        return to.label.clone();
     };
     let Some(vessel) = ships.iter().find(|s| s.id == m.ship) else {
-        return go.to.label.clone();
+        return to.label.clone();
     };
     match m.leg {
         Some(leg) => format!("{}, leg {leg}", vessel.name),
@@ -464,6 +474,7 @@ pub fn press(ship: &Ship, field: Field, places: &Places) -> Option<Ship> {
             window: None,
             pin: None,
             aero: false,
+            dock: false,
             note: None,
             manifest: Manifest::default(),
         })),
@@ -601,6 +612,41 @@ pub fn section(
             ));
         }
     }
+    // A leg's or a dock's manifest, where the ship has tanks and a hold to
+    // carry one.
+    let manifest_rows = |i: usize| -> Vec<El> {
+        if class.is_none() {
+            return Vec::new();
+        }
+        let mut rows = vec![indented(
+            vec![
+                caption("manifest").tooltip(
+                    "What to carry after the stop, t: more than this is given on arrival, less \
+                     is taken on leaving, and what is not named is left as it is. A cargo at 0 \
+                     gives it all.",
+                ),
+                caption("propellant"),
+                input(editor, ship, Field::LegPropellant(i), selection, 70.0),
+                caption("t"),
+            ],
+            16.0,
+        )];
+        for three in COMMODITIES.chunks(3) {
+            rows.push(indented(
+                three
+                    .iter()
+                    .flat_map(|&c| {
+                        [
+                            caption(c.name()),
+                            input(editor, ship, Field::LegCargo(i, c), selection, 50.0),
+                        ]
+                    })
+                    .collect(),
+                32.0,
+            ));
+        }
+        rows
+    };
     for (i, step) in ship.steps.iter().enumerate() {
         let moves = [
             small("↑", Field::Up(i)),
@@ -672,37 +718,23 @@ pub fn section(
                         days.unwrap_or_default()
                     )));
                 }
-                // Its manifest, where the ship has tanks and a hold to
-                // carry one.
-                if class.is_some() {
-                    rows.push(indented(
-                        vec![
-                            caption("manifest").tooltip(
-                                "What to carry after the stop, t: more than this is given on \
-                                 arrival, less is taken on leaving, and what is not named is \
-                                 left as it is. A cargo at 0 gives it all.",
-                            ),
-                            caption("propellant"),
-                            input(editor, ship, Field::LegPropellant(i), selection, 70.0),
-                            caption("t"),
-                        ],
-                        16.0,
-                    ));
-                    for three in COMMODITIES.chunks(3) {
-                        rows.push(indented(
-                            three
-                                .iter()
-                                .flat_map(|&c| {
-                                    [
-                                        caption(c.name()),
-                                        input(editor, ship, Field::LegCargo(i, c), selection, 50.0),
-                                    ]
-                                })
-                                .collect(),
-                            32.0,
-                        ));
-                    }
-                }
+                rows.extend(manifest_rows(i));
+            }
+            // A dock step: its vessel (the menu to choose one is step 4,
+            // part 6's) and its manifest.
+            Step::Dock(_) => {
+                rows.push(
+                    row([
+                        caption(&format!("{}. dock to", i + 1)),
+                        caption(&destination(ship, ships, i)),
+                        spacer(),
+                    ]
+                    .into_iter()
+                    .chain(moves))
+                    .gap(tokens::SPACE_1)
+                    .align(Align::Center),
+                );
+                rows.extend(manifest_rows(i));
             }
         }
         for (_, why) in problems.iter().filter(|p| p.0 == i) {
@@ -762,20 +794,19 @@ pub fn menu(
                     ship: v.id,
                     leg: None,
                 };
-                let legs = v
-                    .steps
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(k, s)| match s {
-                        Step::Go(go) => Some((
-                            Meeting {
-                                ship: v.id,
-                                leg: Some(k),
-                            },
-                            format!("{}, leg {k} — {}", v.name, go.to.label),
-                        )),
+                let legs = v.steps.iter().enumerate().filter_map(move |(k, s)| {
+                    let m = Meeting {
+                        ship: v.id,
+                        leg: Some(k),
+                    };
+                    match s {
+                        Step::Go(go) => Some((m, format!("{}, leg {k} — {}", v.name, go.to.label))),
+                        Step::Dock(d) => {
+                            Some((m, format!("{}, leg {k} — docked to {}", v.name, d.to.label)))
+                        }
                         Step::Wait(_) => None,
-                    });
+                    }
+                });
                 std::iter::once((start, format!("{}, start — {}", v.name, v.start.label)))
                     .chain(legs)
             })
@@ -1055,7 +1086,7 @@ window = ["2045-03-08", "2045-03-10"]
         assert!(set(&t, Field::LegCargo(0, Commodity::Lox), "NaN").is_err());
         assert_eq!(
             set(&t, Field::LegPropellant(1), "1").unwrap_err(),
-            "not a leg"
+            "not a leg or a dock"
         );
     }
 

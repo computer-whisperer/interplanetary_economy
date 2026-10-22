@@ -9,10 +9,10 @@ use orbit::ephem::Ephemeris;
 use orbit::gravity::Field;
 use orbit::integrate::{Dop853, Tolerance, Trajectory};
 use orbit::mission::{
-    Checkpoint, Item, ItemKind, MarkerKind, Pin, Plan, Planner, Step, World, check, legs_value,
-    parse_legs, reads, resume_point,
+    Checkpoint, Item, ItemKind, MarkerKind, Meeting, Meetings, Pin, Plan, Planner, Step, World,
+    check, legs_value, parse_legs, reads, resume_point,
 };
-use orbit::places::Places;
+use orbit::places::{PlaceKind, Places};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 
 fn plan(file: &str) -> Plan {
@@ -92,10 +92,30 @@ fn assert_round_trip(p: &Plan) {
         for (x, y) in a.steps.iter().zip(&b.steps) {
             match (x, y) {
                 (Step::Wait(x), Step::Wait(y)) => assert_eq!(x, y),
+                (Step::Dock(x), Step::Dock(y)) => {
+                    assert_eq!((&x.to.label, &x.note), (&y.to.label, &y.note));
+                    assert_eq!(x.manifest, y.manifest);
+                }
                 (Step::Go(x), Step::Go(y)) => {
                     assert_eq!(
-                        (&x.to.label, &x.days, x.window, x.pin, x.aero, &x.note),
-                        (&y.to.label, &y.days, y.window, y.pin, y.aero, &y.note)
+                        (
+                            &x.to.label,
+                            &x.days,
+                            x.window,
+                            x.pin,
+                            x.aero,
+                            x.dock,
+                            &x.note
+                        ),
+                        (
+                            &y.to.label,
+                            &y.days,
+                            y.window,
+                            y.pin,
+                            y.aero,
+                            y.dock,
+                            &y.note
+                        )
                     );
                     assert_eq!(x.manifest, y.manifest);
                 }
@@ -879,4 +899,184 @@ fn a_wait_at_the_end_is_a_stay() {
     );
 
     assert!(fly(&world, &plan, "Idle").is_empty());
+}
+
+/// Docking's language (M1b.md, step 4 plan, part 1): a start docked to a
+/// vessel, a leg that docks and a dock step read, resolve, write back and
+/// check; and what is refused, each in its words.
+#[test]
+fn docking_reads_and_writes_back() {
+    let (eph, places) = (Ephemeris::standard(), Places::standard());
+    let src = r#"
+        name = "docking"
+        [[ship]]
+        id = 0
+        name = "Depot"
+        start = { at = "leo", epoch = "2045-03-01" }
+        [[ship.leg]]
+        to = "nrho"
+        days = [5.0]
+        [[ship.leg]]
+        wait = 60
+        [[ship]]
+        id = 1
+        name = "Tug"
+        start = { at = "leo", epoch = "2045-03-06" }
+        [[ship.leg]]
+        to = { ship = 0, leg = 0 }
+        days = [5.0]
+        dock = true
+        propellant_t = 20.0
+        [[ship.leg]]
+        wait = 2
+        [[ship.leg]]
+        to = "leo"
+        days = [5.0]
+        aero = true
+        [[ship]]
+        id = 3
+        name = "Hab"
+        start = { at = { ship = 1 }, epoch = "2045-03-06" }
+        [[ship.leg]]
+        dock = { ship = 0, leg = 0 }
+        cargo = { equipment = 5.0 }
+        note = "moved over"
+    "#;
+    let plan = Plan::parse(src, eph, places).unwrap();
+    assert_round_trip(&plan);
+    let tug = &plan.ships[1];
+    let Step::Go(out) = &tug.steps[0] else {
+        panic!("a leg")
+    };
+    assert!(out.dock && out.to.meeting.is_some());
+    assert_eq!(out.manifest.propellant_t, Some(20.0));
+    let Step::Go(home) = &tug.steps[2] else {
+        panic!("a leg")
+    };
+    assert!(!home.dock);
+    let hab = &plan.ships[2];
+    assert_eq!(hab.start.label, "ship 1");
+    assert_eq!(hab.start.meeting, Some(Meeting { ship: 1, leg: None }));
+    // Where the Tug starts, until it is designed.
+    assert!(
+        matches!(hab.start.kind, PlaceKind::Low(_)),
+        "{:?}",
+        hab.start.kind
+    );
+    let Step::Dock(dock) = &hab.steps[0] else {
+        panic!("a dock")
+    };
+    assert_eq!(dock.to.label, "ship 0, leg 0");
+    assert!(
+        matches!(dock.to.kind, PlaceKind::Station { .. }),
+        "{:?}",
+        dock.to.kind
+    );
+    assert_eq!(dock.manifest.cargo.get("equipment"), Some(&5.0));
+    assert_eq!(dock.note.as_deref(), Some("moved over"));
+    assert!(hab.steps[0].is_stop() && hab.steps[0].meeting().is_some());
+    assert_eq!(check(eph, hab), []);
+    assert_eq!(reads(hab, 0), 1);
+    // Legs written as a value read back unresolved, as the log resolves
+    // them.
+    let mut again = parse_legs(legs_value(&hab.steps), eph, places).unwrap();
+    Meetings::new(&plan.ships).unwrap().resolve(&mut again);
+    assert_eq!(format!("{again:?}"), format!("{:?}", hab.steps));
+    // Written as the writer spells tables: the start's and the dock's as
+    // sub-tables, as a meeting's `to` is.
+    let text = plan.to_toml();
+    for written in [
+        "dock = true",
+        "[ship.leg.dock]\nleg = 0\nship = 0",
+        "[ship.start.at]\nship = 1",
+    ] {
+        assert!(text.contains(written), "{written}\n{text}");
+    }
+
+    let refused = |from: &str, to: &str| {
+        let edited = src.replacen(from, to, 1);
+        assert_ne!(edited, src, "{from}");
+        Plan::parse(&edited, eph, places).unwrap_err()
+    };
+    assert_eq!(
+        refused(
+            "to = \"nrho\"\n        days = [5.0]",
+            "to = \"nrho\"\n        days = [5.0]\n        dock = true"
+        ),
+        "ship \"Depot\", leg 1: `dock = true` needs a vessel to dock to: `to = { ship = 0, leg = 0 }`"
+    );
+    assert_eq!(
+        refused(
+            "dock = { ship = 0, leg = 0 }",
+            "dock = { ship = 0, leg = 0 }\n        days = [1.0]"
+        ),
+        "ship \"Hab\", leg 1: a dock takes a manifest and a note, no other keys"
+    );
+    assert_eq!(
+        refused("dock = { ship = 0, leg = 0 }", "dock = 5"),
+        "ship \"Hab\", leg 1: a dock names a vessel: `dock = { ship = 0, leg = 0 }`"
+    );
+    assert_eq!(
+        refused("dock = { ship = 0, leg = 0 }", "dock = { body = \"moon\" }"),
+        "ship \"Hab\", leg 1: a dock names a vessel: `dock = { ship = 0, leg = 0 }`"
+    );
+    assert_eq!(
+        refused("dock = true", "dock = { ship = 0 }"),
+        "ship \"Tug\", leg 1: a leg's `dock` is true or false; a dock step has `dock = { ship = \
+         0, leg = 0 }` and no `to`"
+    );
+    assert_eq!(
+        refused("at = { ship = 1 }", "at = { ship = 1, leg = 0 }"),
+        "ship \"Hab\": a ship starts docked to a vessel, `{ ship = 1 }`, where the vessel is at \
+         the epoch: no `leg`"
+    );
+    assert_eq!(
+        refused("at = { ship = 1 }", "at = { ship = 3 }"),
+        "ship \"Hab\", start: a ship does not start docked to itself"
+    );
+    assert_eq!(
+        refused("at = { ship = 1 }", "at = { ship = 9 }"),
+        "ship \"Hab\", start: no ship has id 9"
+    );
+    assert_eq!(
+        refused("dock = { ship = 0, leg = 0 }", "dock = { ship = 3 }"),
+        "ship \"Hab\", step 0: a ship does not dock to itself"
+    );
+    assert_eq!(
+        refused(
+            "dock = { ship = 0, leg = 0 }",
+            "dock = { ship = 0, leg = 1 }"
+        ),
+        "ship \"Hab\", step 0: step 1 of ship 0 is a wait, not a leg"
+    );
+    // A leg may not meet a vessel in a low orbit; a dock step may be made
+    // where one is.
+    assert_eq!(
+        refused("to = { ship = 0, leg = 0 }", "to = { ship = 0 }"),
+        "ship \"Tug\", step 0: meeting ship 0 in a low orbit is not designed: the vessel would \
+         fix the plane and the phase (M1b.md, Scope)"
+    );
+    let at_leo = src.replacen("dock = { ship = 0, leg = 0 }", "dock = { ship = 1 }", 1);
+    Plan::parse(&at_leo, eph, places).unwrap();
+    // Starts and docks that wait on each other.
+    assert_eq!(
+        refused(
+            "start = { at = \"leo\", epoch = \"2045-03-06\" }",
+            "start = { at = { ship = 3 }, epoch = \"2045-03-06\" }"
+        ),
+        "ship \"Tug\", start: meetings wait on each other"
+    );
+    // A place that resolves through itself (the Depot goes to where the
+    // Hab is, which is where the Depot is), and designs that wait on each
+    // other through a start (the Tug docks to the Hab, whose start waits
+    // on the Tug's whole plan).
+    assert_eq!(
+        refused("to = \"nrho\"", "to = { ship = 3, leg = 0 }"),
+        "ship \"Depot\", step 0: meetings wait on each other"
+    );
+    assert_eq!(
+        refused("wait = 2", "dock = { ship = 3, leg = 0 }"),
+        "ship \"Tug\", step 1: meetings wait on each other: ship 1 through step 1, which waits on \
+         ship 3 through step 0, which waits on ship 1 through step 2"
+    );
 }

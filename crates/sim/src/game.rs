@@ -175,7 +175,7 @@ impl Fleet {
             Some(Step::Wait(_)) => {
                 return Some(Err(format!("step {leg} of {label} is a wait, not a leg")));
             }
-            Some(Step::Go(_)) => {}
+            Some(Step::Go(_) | Step::Dock(_)) => {}
         }
         for (key, d) in &v.designed {
             match &**d {
@@ -289,9 +289,9 @@ enum Owner {
 impl Owner {
     /// The manifest written there, for ship `k`.
     fn manifest<'a>(&self, log: &'a Log, k: usize) -> &'a Manifest {
-        let leg = |step: &'a Step| match step {
-            Step::Go(go) => &go.manifest,
-            Step::Wait(_) => unreachable!("a manifest's owner is a leg"),
+        let leg = |step: &'a Step| {
+            step.manifest()
+                .expect("a manifest's owner is a leg or a dock")
         };
         match *self {
             Owner::Plan(i) => leg(&log.plan.ships[k].steps[i]),
@@ -326,7 +326,7 @@ fn owners(log: &Log, k: usize, refused: &[(usize, String)]) -> Vec<Vec<Owner>> {
         steps.truncate(r.from);
         owners.truncate(r.from);
         if r.here.is_some()
-            && let Some(g) = steps.iter().rposition(|s| matches!(s, Step::Go(_)))
+            && let Some(g) = steps.iter().rposition(Step::is_stop)
         {
             owners[g].push(Owner::Here(j));
         }
@@ -343,17 +343,18 @@ fn remanifest(log: &mut Log, k: usize, refused: &[(usize, String)], standing: &[
     let owners = owners(log, k, refused);
     debug_assert_eq!(owners.len(), standing.len());
     for (chain, step) in owners.iter().zip(standing) {
-        let Step::Go(go) = step else { continue };
-        let manifest = go.manifest.clone();
+        let Some(manifest) = step.manifest().cloned() else {
+            continue;
+        };
         match *chain.last().expect("a step has an owner") {
             Owner::Plan(i) => {
-                if let Step::Go(mine) = &mut log.plan.ships[k].steps[i] {
-                    mine.manifest = manifest;
+                if let Some(mine) = log.plan.ships[k].steps[i].manifest_mut() {
+                    *mine = manifest;
                 }
             }
             Owner::Leg(j, n) => {
-                if let Step::Go(mine) = &mut log.replans[j].steps[n] {
-                    mine.manifest = manifest;
+                if let Some(mine) = log.replans[j].steps[n].manifest_mut() {
+                    *mine = manifest;
                 }
             }
             Owner::Here(j) => log.replans[j].here = Some(manifest),
@@ -598,7 +599,7 @@ impl Game {
             .zip(&owners)
             .enumerate()
             .map(|(i, (step, chain))| {
-                let Step::Go(go) = step else {
+                let (Some(to), Some(manifest)) = (step.to(), step.manifest()) else {
                     return None;
                 };
                 let read =
@@ -613,16 +614,16 @@ impl Game {
                     })
                     .unwrap_or(&chain[0]);
                 let arrive = read(standing.manifest(&self.log, k));
-                let leave = read(&go.manifest);
+                let leave = read(manifest);
                 if arrive.is_empty() && leave.is_empty() {
                     return None;
                 }
-                let with = match go.to.meeting {
+                let with = match to.meeting {
                     Some(m) => With::Vessel {
                         id: m.ship,
                         leg: m.leg,
                     },
-                    None if go.to.source.as_str() == Some("leo") => With::Earth,
+                    None if to.source.as_str() == Some("leo") => With::Earth,
                     None => With::NoOne,
                 };
                 Some(Stop {
@@ -714,10 +715,11 @@ impl Game {
                 )) {
                     continue;
                 }
-                let at = match &self.plan.ships[k].steps[x.step] {
-                    Step::Go(go) => go.to.label.clone(),
-                    Step::Wait(_) => unreachable!("a manifest is a leg's"),
-                };
+                let at = self.plan.ships[k].steps[x.step]
+                    .to()
+                    .expect("a manifest is a leg's or a dock's")
+                    .label
+                    .clone();
                 let kind = match x.kind {
                     Kind::Give => "give",
                     Kind::Take => "take",
@@ -896,10 +898,9 @@ impl Game {
             .filter(|r| r.ship == ship.id)
             .collect();
         let meets = |steps: &[Step]| {
-            steps.iter().any(|s| match s {
-                Step::Go(go) => go.to.meeting.is_some_and(|m| among.contains(&m.ship)),
-                Step::Wait(_) => false,
-            })
+            steps
+                .iter()
+                .any(|s| s.meeting().is_some_and(|m| among.contains(&m.ship)))
         };
         meets(&ship.steps) || mine.iter().any(|r| meets(&r.steps))
     }
@@ -1274,8 +1275,8 @@ impl Game {
         refit.cargo.clone_from(&ship.cargo);
         if refit.steps.len() == ship.steps.len() {
             for (kept, edited) in refit.steps.iter_mut().zip(&ship.steps) {
-                if let (Step::Go(kept), Step::Go(edited)) = (kept, edited) {
-                    kept.manifest.clone_from(&edited.manifest);
+                if let (Some(kept), Some(edited)) = (kept.manifest_mut(), edited.manifest()) {
+                    kept.clone_from(edited);
                 }
             }
         }
@@ -1390,19 +1391,14 @@ impl Game {
                 standing.steps.len()
             ));
         }
-        if here.is_some()
-            && !standing.steps[..from]
-                .iter()
-                .any(|s| matches!(s, Step::Go(_)))
-        {
+        if here.is_some() && !standing.steps[..from].iter().any(Step::is_stop) {
             return Err(here_without_a_stop(from));
         }
         // A leg another ship's plan meets it after is kept (M1b.md, step 3
         // plan, part 3).
         for s in &self.plan.ships {
             for (i, step) in s.steps.iter().enumerate() {
-                if let Step::Go(go) = step
-                    && let Some(m) = go.to.meeting
+                if let Some(m) = step.meeting()
                     && m.ship == id
                     && let Some(leg) = m.leg
                     && leg >= from
@@ -1689,10 +1685,12 @@ fn stranded(ship: &Ship, items: &[&Item], dry: &Dry) -> Option<String> {
     if before.kind == ItemKind::Stay {
         return Some(before.label.clone());
     }
-    let Some(Step::Go(go)) = ship.steps.get(before.step) else {
-        unreachable!("an item's step is a leg's");
-    };
-    Some(format!("at {}", go.to.label))
+    let to = ship
+        .steps
+        .get(before.step)
+        .and_then(Step::to)
+        .expect("an item's step is a leg's or a dock's");
+    Some(format!("at {}", to.label))
 }
 
 /// The step a ship ran dry at, as its plan counts them: its item's, but
@@ -1705,10 +1703,7 @@ fn dry_step(ship: &Ship, items: &[&Item], dry: &Dry) -> usize {
         return item.step;
     }
     let steps = &ship.steps[..item.step.min(ship.steps.len())];
-    let first = steps
-        .iter()
-        .rposition(|s| matches!(s, Step::Go(_)))
-        .map_or(0, |k| k + 1);
+    let first = steps.iter().rposition(Step::is_stop).map_or(0, |k| k + 1);
     let mut end = item.start.0;
     for (k, step) in steps.iter().enumerate().skip(first) {
         if let Step::Wait(days) = step {

@@ -149,7 +149,9 @@ impl Scenario {
             budget_musd_per_year: e.budget_musd_per_year,
             metal_steps: e.metal_steps.clone(),
             surfaces: e.surfaces.clone(),
-            ships: e.ships.clone(),
+            // A class without tanks (a station module, M1b.md step 4) flies
+            // nothing: not a fleet of the LP.
+            ships: e.ships.iter().filter(|s| s.tank > 0.0).cloned().collect(),
             facilities,
             programs,
             demand,

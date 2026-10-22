@@ -218,6 +218,7 @@ fn a_step_reads_what_reads_says() {
                 go.days = vec![go.longest() + 30.0];
                 Step::Go(go)
             }
+            Step::Dock(_) => unreachable!("no plan here docks"),
         };
         let step = |ship: &Ship| Planner::resume(&world, ship, c.clone()).step().unwrap();
         let (mine, again) = (step(&ship), step(&changed));

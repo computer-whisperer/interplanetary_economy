@@ -190,3 +190,72 @@ fn a_vessel_not_there_or_in_a_low_orbit_fails_the_step() {
         items.last().unwrap().kind
     );
 }
+
+/// Docking is read but not designed yet (M1b.md, step 4 plan, part 1): a
+/// start docked to a vessel, a leg that docks and a dock step each say so.
+#[test]
+fn docking_is_not_designed_yet() {
+    let world = World::standard();
+    let src = PLAN.replace(
+        "to = { ship = 0, leg = 0 }\n    days = [5.0]",
+        "to = { ship = 0, leg = 0 }\n    days = [5.0]\n    dock = true",
+    ) + r#"
+    [[ship]]
+    id = 3
+    name = "Hab"
+    start = { at = { ship = 1 }, epoch = "2045-03-06" }
+    [[ship.leg]]
+    dock = { ship = 0, leg = 0 }
+
+    [[ship]]
+    id = 4
+    name = "Rider"
+    start = { at = "leo", epoch = "2045-03-06" }
+    [[ship.leg]]
+    to = "nrho"
+    days = [5.0]
+    [[ship.leg]]
+    dock = { ship = 0, leg = 0 }
+    "#;
+    let plan = Plan::parse(&src, world.eph, Places::standard()).unwrap();
+    let not_yet = "docking is not designed yet (M1b.md, step 4 plan, part 2)";
+    assert_eq!(
+        Planner::new(&world, &plan.ships[3]).err().unwrap(),
+        "a start docked to a vessel is not designed yet (M1b.md, step 4 plan, part 2)"
+    );
+    let depot = Planner::new(&world, &plan.ships[0]).unwrap().checkpoint();
+    let mut tug = Planner::new(&world, &plan.ships[1]).unwrap();
+    assert_eq!(
+        tug.meets(),
+        Some(&Meeting {
+            ship: 0,
+            leg: Some(0)
+        })
+    );
+    let items = tug.meet(Ok(&depot)).unwrap();
+    assert!(
+        matches!(&items.last().unwrap().kind, ItemKind::Failed(why) if why == not_yet),
+        "{:?}",
+        items.last().unwrap().kind
+    );
+    assert!(tug.step().is_none());
+    let mut rider = Planner::new(&world, &plan.ships[4]).unwrap();
+    assert_eq!(rider.meets(), None);
+    rider.step().expect("the leg to the NRHO");
+    assert_eq!(
+        rider.meets(),
+        Some(&Meeting {
+            ship: 0,
+            leg: Some(0)
+        })
+    );
+    let items = rider.meet(Ok(&depot)).unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(
+        matches!(&items[0].kind, ItemKind::Failed(why) if why == not_yet),
+        "{:?}",
+        items[0].kind
+    );
+    assert_eq!(items[0].label, "nrho docks to ship 0, leg 0");
+    assert!(rider.step().is_none());
+}

@@ -1314,9 +1314,11 @@ fn what_the_log_refuses_of_meetings() {
         "start = { at = \"leo\", epoch = \"2045-03-06\" }",
         "start = { at = { ship = 0, leg = 0 }, epoch = \"2045-03-06\" }",
     );
+    // A start docked to a vessel names the ship only (M1b.md, step 4
+    // plan, part 1).
     let got = refused(&start);
     assert!(
-        got.contains("a ship starts at a place, not at a vessel"),
+        got.contains("where the vessel is at the epoch: no `leg`"),
         "{got}"
     );
 

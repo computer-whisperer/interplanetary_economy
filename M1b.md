@@ -7,12 +7,11 @@ loop makes their transfers and purchases, career refuses an action that
 runs a vessel dry or short, the sandbox's editor sets meetings and
 manifests while its panel shows transfers and purchases, `sim run`
 prints them with the depot scenarios' checks holding, and the tests and
-measurements are in); step 4, docking, next, its plan drafted, to be
-ruled (its plan, below). Decided: one engine for both modes, with
-economy components landing in the sandbox first (Modes, below); the four
-decisions below, each as recommended; and stations as vessels, flown to
-where they stay, with docking a step of its own (Design, Vessels,
-stations and stocks).
+measurements are in); step 4, docking, under way (its plan, below), part
+1 done. Decided: one engine for both modes, with economy components
+landing in the sandbox first (Modes, below); the four decisions below,
+each as recommended; and stations as vessels, flown to where they stay,
+with docking a step of its own (Design, Vessels, stations and stocks).
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
   going on from a checkpoint gives a fresh design's bits
@@ -688,6 +687,16 @@ action, its orbit built from then:
   happen between two vessels that meet, as the arriving one's manifest
   says. At LEO, anything can be bought from Earth at its price plus
   launch. Earth's surface is not a place, as in M2.
+- **Docking** (decided 2026-10-21, step 4): a vessel docks to a host
+  and rides it, through the host's stays and legs; the host's burns
+  count the assembly's mass and draw from the host's tanks; a transfer
+  with a vessel reaches its whole assembly, the vessel named first. A
+  docked vessel leaves by a leg of its own, or docks to another host it
+  is with; there is no undocking to stay alone. Whether a dock is made
+  is decided in the design (the host is at the stop by its design), and
+  only a host that runs dry strands its members. A ship may start
+  docked to a vessel. A class without tanks (a station module) has no
+  engines and is carried so.
 
 ### Plants, programs and surveys
 
@@ -2121,8 +2130,8 @@ visitors; where plants' output goes (step 5); turnaround days (step
 
 Vessels that move as one, so that a station can be an assembly (Design,
 Vessels, stations and stocks: an assembly, like the ISS, is modules
-flown there and docked). A first draft, to be ruled with the user; each
-part is committed on its own.
+flown there and docked). Drafted and ruled with the user (2026-10-21),
+each decision as drafted; each part is committed on its own.
 
 What docking adds to step 3's vessels: a ship that meets a vessel today
 arrives on its orbit and stays there on its own, keeping station and
@@ -2132,7 +2141,7 @@ host's burns move the assembly's mass; and a visitor's transfer with
 any vessel of an assembly reaches the whole. Modules without engines
 become possible, carried by ships and left docked.
 
-Decided in this draft (to be ruled):
+Decided (ruled 2026-10-21):
 
 - **Docking is directed: a vessel docks to a host and rides it.** The
   host's legs move the assembly, the host's stays keep station for it,
@@ -2270,6 +2279,28 @@ Where the work is (found drafting):
    `module` class in `data/economy.toml` and its breach (`sim::ships`,
    `sim::params`). Nothing designed differently yet: a dock is read,
    and refused where it cannot be designed.
+   - Built (2026-10-21): `Step::Dock`, `Go::dock`, a start at a vessel,
+     and `Step::{manifest, manifest_mut, to, meeting, is_stop}` for the
+     readers (`orbit::mission`); the file's `dock` key read and written
+     (a start's and a dock's vessel as sub-tables, as a meeting's `to`
+     is); `Meetings` over docks and starts, its cycle check's nodes a
+     ship's start and each step (a start docked to a vessel waits on the
+     vessel's whole plan); `check` and `reads` over dock steps; the
+     planner refuses the three forms with "not designed yet". The engine
+     reads manifests and meetings through the step methods (`designs`,
+     `game`, `log`, `ships`); the `module` class ($200M fixed, so that
+     the seeds' other draws stay as they were) and its breach; the
+     kill-test's LP leaves classes without tanks out (`plan::scenario`).
+     The sandbox shows a dock step's row with its manifest; its start
+     menu still offers places only (part 6). Tests:
+     `docking_reads_and_writes_back` (`crates/orbit/tests/missions.rs`:
+     the round trip, the resolved kinds, eleven refusals, a dock step
+     where a vessel is in a low orbit allowed, two cycles),
+     `docking_is_not_designed_yet` (`meeting.rs`), `a_module_rides`
+     (`sim::ships`), `a_replan_may_dock` (`sim::log`), `a_dock_is_keyed`
+     (`sim::designs`). Run: orbit's missions, meeting and career tests;
+     sim's unit, game and state tests; the sandbox's unit, editor, plan,
+     stops, options and windows tests; the kill-test's tests.
 2. **Riding** (`orbit::mission`, `sim::designs`, `sim::game`):
    `Here::Docked`, `ItemKind::Docked`; a start at a vessel; a dock
    leg's arrival (the wait for the host's arrival, and the failure when

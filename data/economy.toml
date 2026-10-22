@@ -133,6 +133,24 @@ turnaround_days = 3.0
 life_flights = 50.0
 ops_musd_per_trip = { median = 0.5, sigma = 1.0 }
 
+[[ship]]
+# A station module (M1b.md, step 4 plan): no engines or tanks, so it is
+# carried docked to a vessel and rides it. Dry mass [guess: ISS modules run
+# 15–20 t]; the hold stands for what it stores. Its price is fixed, not
+# drawn, so that adding the class left every seed's other parameters as
+# they were; $200M [guess: commercial modules quoted at $0.1–1B].
+# `propellant` is required of a class and names what its tanks would hold;
+# it has none, and burns nothing.
+id = "module"
+dry_t = 20.0
+propellant_t = 0.0
+cargo_t = 50.0
+price_musd = 200.0
+propellant = "methalox"
+turnaround_days = 0.0
+life_flights = 1.0
+ops_musd_per_trip = 0.0
+
 # Plants: equipment t per t/yr of output = plant + ore / grade, where ore is
 # equipment per t/yr of ore handled and grade is product per ore mass.
 

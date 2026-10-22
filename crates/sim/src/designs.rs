@@ -53,9 +53,9 @@ pub type Met = Result<(Key, Checkpoint), String>;
 /// `None` while the vessel's design has not got there.
 pub type Meet<'a> = dyn Fn(&Meeting) -> Option<Met> + 'a;
 
-/// Hashes what designing `steps` reads: a wait's days, and a leg's all
-/// but its manifest, which is kept as written and designs nothing (M1b.md,
-/// step 3 plan, part 4).
+/// Hashes what designing `steps` reads: a wait's days, a dock's vessel,
+/// and a leg's all but its manifest, which is kept as written and designs
+/// nothing (M1b.md, step 3 plan, part 4).
 pub fn flight(h: &mut Fixed, steps: &[Step]) {
     for s in steps {
         match s {
@@ -69,7 +69,11 @@ pub fn flight(h: &mut Fixed, steps: &[Step]) {
                     .debug(&go.window)
                     .debug(&go.pin)
                     .debug(&go.aero)
+                    .debug(&go.dock)
                     .debug(&go.note);
+            }
+            Step::Dock(d) => {
+                h.str("dock").debug(&d.to).debug(&d.note);
             }
         }
     }
@@ -96,14 +100,12 @@ pub fn step_key(at: Key, ship: &Ship, next: usize, met: Option<&Met>) -> Key {
     h.finish()
 }
 
-/// The vessel the step from `next` of `ship` meets, if its leg meets one.
+/// The vessel the step from `next` of `ship` meets, if its leg meets one
+/// or its dock names one.
 fn meeting(ship: &Ship, next: usize) -> Option<&Meeting> {
     ship.steps[next.min(ship.steps.len())..reads(ship, next)]
         .iter()
-        .find_map(|s| match s {
-            Step::Go(go) => go.to.meeting.as_ref(),
-            Step::Wait(_) => None,
-        })
+        .find_map(Step::meeting)
 }
 
 /// The key of the checkpoint keyed `at` with the ship staying there until
@@ -333,4 +335,61 @@ fn keyed<'a>(
         }
     };
     Some((key, design))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orbit::ephem::Ephemeris;
+    use orbit::mission::{Plan, Spot};
+    use orbit::places::Places;
+
+    /// A dock is a design input (M1b.md, step 4 plan, part 1): a leg's
+    /// `dock` and a dock step's vessel change the step's key; a dock's
+    /// manifest does not.
+    #[test]
+    fn a_dock_is_keyed() {
+        let src = r#"
+            name = "keys"
+            [[ship]]
+            id = 0
+            name = "Depot"
+            start = { at = "leo", epoch = "2045-03-01" }
+            [[ship.leg]]
+            to = "nrho"
+            days = [5.0]
+            [[ship]]
+            id = 1
+            name = "Tug"
+            start = { at = "leo", epoch = "2045-03-06" }
+            [[ship.leg]]
+            to = { ship = 0, leg = 0 }
+            days = [5.0]
+            [[ship.leg]]
+            dock = { ship = 0, leg = 0 }
+        "#;
+        let plan = Plan::parse(src, Ephemeris::standard(), Places::standard()).unwrap();
+        let tug = &plan.ships[1];
+        let key = |ship: &Ship, next: usize| step_key(7, ship, next, None);
+        let mut docked = tug.clone();
+        let Step::Go(go) = &mut docked.steps[0] else {
+            panic!("a leg")
+        };
+        go.dock = true;
+        assert_ne!(key(tug, 0), key(&docked, 0));
+        assert_eq!(
+            key(tug, 1),
+            key(&docked, 1),
+            "the dock step's key is its own"
+        );
+        let mut other = tug.clone();
+        let Step::Dock(d) = &mut other.steps[1] else {
+            panic!("a dock")
+        };
+        d.to = Spot::meeting(Meeting { ship: 0, leg: None }, d.to.kind.clone());
+        assert_ne!(key(tug, 1), key(&other, 1));
+        let mut loaded = tug.clone();
+        loaded.steps[1].manifest_mut().unwrap().propellant_t = Some(10.0);
+        assert_eq!(key(tug, 1), key(&loaded, 1), "a manifest designs nothing");
+    }
 }

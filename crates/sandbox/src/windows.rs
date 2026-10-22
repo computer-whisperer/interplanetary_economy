@@ -110,11 +110,15 @@ pub fn ends(plan: &Plan, s: usize, step: usize) -> Option<(&Spot, &Spot, bool)> 
     let ship = plan.ships.get(s)?;
     let mut at = &ship.start;
     for (k, st) in ship.steps.iter().enumerate() {
-        if let Step::Go(go) = st {
-            if k == step {
-                return Some((at, &go.to, go.aero));
+        match st {
+            Step::Go(go) => {
+                if k == step {
+                    return Some((at, &go.to, go.aero));
+                }
+                at = &go.to;
             }
-            at = &go.to;
+            Step::Dock(d) => at = &d.to,
+            Step::Wait(_) => {}
         }
     }
     None

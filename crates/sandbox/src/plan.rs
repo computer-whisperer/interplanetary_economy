@@ -330,24 +330,22 @@ impl Loaded {
         };
         // A leg that meets a vessel is designed where the vessel is
         // (M1b.md, step 3 plan, part 3), as the designs stand.
-        let met = match &ship.steps[step] {
-            Step::Go(go) => match go.to.meeting.as_ref().map(|m| self.game.met(m)) {
-                None => None,
-                Some(Some(met)) => Some(met.map(|(_, c)| c)),
-                Some(None) => {
-                    self.sweeps.insert(
-                        (s, step),
-                        Sweep {
-                            options: Some(
-                                Err("the vessel met is not designed that far yet".into()),
-                            ),
-                            ..sweep
-                        },
-                    );
-                    return;
-                }
-            },
-            Step::Wait(_) => unreachable!("checked above"),
+        let Step::Go(go) = &ship.steps[step] else {
+            unreachable!("checked above")
+        };
+        let met = match go.to.meeting.as_ref().map(|m| self.game.met(m)) {
+            None => None,
+            Some(Some(met)) => Some(met.map(|(_, c)| c)),
+            Some(None) => {
+                self.sweeps.insert(
+                    (s, step),
+                    Sweep {
+                        options: Some(Err("the vessel met is not designed that far yet".into())),
+                        ..sweep
+                    },
+                );
+                return;
+            }
         };
         self.sweeps.insert((s, step), sweep);
         let sender = self.sender.clone();
