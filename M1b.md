@@ -8,7 +8,7 @@ runs a vessel dry or short, the sandbox's editor sets meetings and
 manifests while its panel shows transfers and purchases, `sim run`
 prints them with the depot scenarios' checks holding, and the tests and
 measurements are in); step 4, docking, under way (its plan, below), parts
-1 to 3 done. Decided: one engine for both modes, with economy components
+1 to 4 done. Decided: one engine for both modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they stay,
 with docking a step of its own (Design, Vessels, stations and stocks).
@@ -2374,6 +2374,28 @@ Where the work is (found drafting):
    the vessel named first; `there` through the host. Tests by hand: the
    rocket equation with a rider; a take across two stages; a stranded
    member.
+   - Built (2026-10-21): a ship's docks from its items (the vessel it is
+     docked to from each dock until its next flight's burns begin, or
+     the next dock, or for ever), the chain of vessels at a time, the
+     riders of a vessel and their mass, a vessel's assembly; a burn's
+     inert mass is the burner's dry mass and its riders' (legs and
+     upkeep alike), from its own tanks; a vessel that runs dry strands
+     its riders (`Dry::with`, "with ship 0, which ran dry": the report,
+     the panel and the game's check say "stranded"); dock events in the
+     loop (after arrivals, before gives: both pay up, and a ship docking
+     to a vessel that ran dry is stranded at once); a transfer with a
+     vessel reaches its assembly, fitted members but the ship itself,
+     the vessel first and the others by id, each paid up first (a take
+     drains each one's hold then tanks; `Short::Stock` against the
+     assembly's stock). A dock at `t` counts from the moment after, a
+     flight leaving at `t` until it (`host_of`). `sim::state`;
+     `sim::game` hashes the stranding. Tests (`sim::state`):
+     `a_vessels_burn_moves_its_riders` (the rocket equation to 1 ng),
+     `a_vessel_keeps_station_for_its_riders`,
+     `a_transfer_reaches_the_assembly` (a take of 390 t: 100 from the
+     depot, 290 from the stage; a give: 50 and 340),
+     `a_rider_is_stranded_with_a_vessel_that_runs_dry` (and a take from
+     it falls short, dry).
 5. **Career and headless**: a start at a vessel bought at LEO (and
    refused elsewhere); `Check::Docked { ship, at, to }` (`docked_to =
    0`, or `"no one"`), `Check::At` through hosts; `sim run` lines

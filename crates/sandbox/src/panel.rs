@@ -155,14 +155,15 @@ pub fn rows(
                     .items
                     .get(dry.item)
                     .map_or(String::new(), |i| dry.place(i));
-                lines.push((
-                    format!(
+                let line = match dry.stranded() {
+                    true => format!("Stranded {} {at}, not flown after", when(dry.t)),
+                    false => format!(
                         "Ran dry {} {at}: {} short, not flown after",
                         when(dry.t),
                         short(dry.short)
                     ),
-                    Tone::Failure,
-                ));
+                };
+                lines.push((line, Tone::Failure));
             }
         }
         let dv: f64 = ship.items.iter().map(|i| i.dv).sum();
@@ -378,15 +379,20 @@ fn burned(tanks: &Tanks, item: &Item, k: usize) -> Vec<(String, Tone)> {
     }
     match tanks.dry() {
         Some(dry) if dry.item == k => lines.push((
-            match dry.marker {
-                Some(_) => format!("Ran dry: the burn is {} short", short(dry.short)),
-                None => format!("Ran dry keeping station: {} short", short(dry.short)),
+            match (dry.with, dry.marker) {
+                (Some(host), _) => format!("Stranded with ship {host}, which ran dry"),
+                (None, Some(_)) => format!("Ran dry: the burn is {} short", short(dry.short)),
+                (None, None) => format!("Ran dry keeping station: {} short", short(dry.short)),
             },
             Tone::Failure,
         )),
-        Some(dry) if k > dry.item => {
-            lines.push(("Not flown: the ship ran dry".into(), Tone::Muted))
-        }
+        Some(dry) if k > dry.item => lines.push((
+            match dry.stranded() {
+                true => "Not flown: the ship is stranded".into(),
+                false => "Not flown: the ship ran dry".into(),
+            },
+            Tone::Muted,
+        )),
         _ => {}
     }
     lines

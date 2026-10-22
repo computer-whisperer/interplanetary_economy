@@ -106,6 +106,15 @@ pub fn burned(state: &ShipState, fuel: Commodity, item: &Item, k: usize) -> Stri
         s.push('\n');
     }
     match state.dry {
+        Some(dry) if dry.item == k && dry.stranded() => {
+            writeln!(
+                s,
+                "           STRANDED {} {}, not flown after",
+                when(dry.t),
+                dry.place(item)
+            )
+            .unwrap();
+        }
         Some(dry) if dry.item == k => {
             let what = match dry.marker {
                 Some(_) => format!("the burn of {:.1} m/s", dry.dv * 1e3),
@@ -119,7 +128,13 @@ pub fn burned(state: &ShipState, fuel: Commodity, item: &Item, k: usize) -> Stri
             )
             .unwrap();
         }
-        Some(dry) if k > dry.item => writeln!(s, "           not flown: the ship ran dry").unwrap(),
+        Some(dry) if k > dry.item => {
+            let why = match dry.stranded() {
+                true => "the ship is stranded",
+                false => "the ship ran dry",
+            };
+            writeln!(s, "           not flown: {why}").unwrap()
+        }
         _ => {}
     }
     s

@@ -2010,12 +2010,15 @@ impl Game {
 /// Where a ship ran dry and how short: "ran dry 2045-03-09 14:40 at
 /// moon-south-pole → llo: 1317.2 m/s short".
 fn ran_dry(items: &[&Item], dry: &Dry) -> String {
-    format!(
-        "ran dry {} {}: {} short",
-        when(dry.t),
-        dry.place(items[dry.item]),
-        report::short(dry.short)
-    )
+    match dry.stranded() {
+        true => format!("stranded {} {}", when(dry.t), dry.place(items[dry.item])),
+        false => format!(
+            "ran dry {} {}: {} short",
+            when(dry.t),
+            dry.place(items[dry.item]),
+            report::short(dry.short)
+        ),
+    }
 }
 
 /// Where a ship that ran dry is stranded, as a stay there is labelled ("at
@@ -2094,7 +2097,7 @@ fn tanks(h: &mut Fixed, state: &State, s: &ShipState, t: Epoch) {
         }
     }
     if let Some(dry) = s.dry_by(t) {
-        h.str("dry").f64(dry.short);
+        h.str("dry").f64(dry.short).debug(&dry.with);
     }
     for x in s.transfers.iter().filter(|x| x.t.0 <= t.0) {
         h.str("transfer")

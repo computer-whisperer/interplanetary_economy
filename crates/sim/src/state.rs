@@ -5,18 +5,27 @@
 //! Earth at LEO, as its legs' manifests say; and where it ran dry.
 //!
 //! The loop takes events in time order: each burn of a leg, landing or
-//! ascent flown; each stop's gives, at the end of the step's last item,
-//! and takes, at the start of the next leg, landing or ascent; and a tick
-//! at each midnight. At one time: the tick, then the burns that end an
-//! item (an arrival's), then gives, then takes, then the other burns (a
-//! departure's), each by ship id. At each, a ship first pays what it owes
-//! since the last: its station stays' upkeep (each stay's Δv spread
-//! evenly over it) and its hydrogen's boil-off; so does the vessel it
-//! transfers with. The loop runs from the first fitted ship's start to
-//! the earliest time an unfinished ship's design has reached, where every
-//! ship pays up and from which the state is pending; with every ship
-//! designed, to the last item's end, beyond which nothing but boil-off
-//! happens. Any change runs it again from the start.
+//! ascent flown; each dock; each stop's gives, at the end of the step's
+//! last item, and takes, at the start of the next leg, landing or ascent;
+//! and a tick at each midnight. At one time: the tick, then the burns
+//! that end an item (an arrival's), then docks, then gives, then takes,
+//! then the other burns (a departure's), each by ship id. At each, a ship
+//! first pays what it owes since the last: its station stays' upkeep
+//! (each stay's Δv spread evenly over it) and its hydrogen's boil-off; so
+//! does the vessel it transfers with, and that vessel's assembly. The loop
+//! runs from the first fitted ship's start to the earliest time an
+//! unfinished ship's design has reached, where every ship pays up and
+//! from which the state is pending; with every ship designed, to the last
+//! item's end, beyond which nothing but boil-off happens. Any change runs
+//! it again from the start.
+//!
+//! Docking (M1b.md, step 4 plan, part 4): a ship docked to a vessel, from
+//! its dock until a flight of its own leaves or it docks to another, rides
+//! it. A vessel's burns, its legs' and its stays' upkeep, move the mass of
+//! everything docked to it, through any chain, from its own tanks; a
+//! vessel that runs dry strands its riders with it. A transfer with a
+//! vessel reaches its whole assembly, the vessel first and the others by
+//! id.
 
 use crate::params::{Economy, PROPELLANTS, PropellantSpec};
 use crate::ships::{COMMODITIES, Commodity, Fitted, GRAM, Load, Manifest};
@@ -144,27 +153,40 @@ pub enum Bought {
 }
 
 /// A burn a ship's tanks could not make: the ship is stranded there, and
-/// its design after it is not flown.
+/// its design after it is not flown. Or, docked to a vessel that ran dry
+/// (`with`), the ship is stranded with it (M1b.md, step 4 plan, part 4).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dry {
     pub t: Epoch,
     /// The item (its place in `ShipDesign::items`) and its marker; no
-    /// marker for a station stay's upkeep (paid at `t`).
+    /// marker for a station stay's upkeep (paid at `t`), nor for a dock.
     pub item: usize,
     pub marker: Option<usize>,
-    /// The burn, and what of it the tanks could not give, km/s.
+    /// The burn, and what of it the tanks could not give, km/s; none for
+    /// a ship stranded with its vessel.
     pub dv: f64,
     pub short: f64,
+    /// The vessel the ship was docked to (through others or not) that ran
+    /// dry, stranding it.
+    pub with: Option<u64>,
 }
 
 impl Dry {
     /// Where it ran dry, `item` being its item: "at llo → moon-south-pole"
-    /// (a burn), or "keeping station at nrho" (a stay's upkeep).
+    /// (a burn), "keeping station at nrho" (a stay's upkeep), or "with
+    /// ship 0, which ran dry" (stranded with its vessel).
     pub fn place(&self, item: &Item) -> String {
-        match self.marker {
-            Some(_) => format!("at {}", item.label),
-            None => format!("keeping station {}", item.label),
+        match (self.with, self.marker) {
+            (Some(host), _) => format!("with ship {host}, which ran dry"),
+            (None, Some(_)) => format!("at {}", item.label),
+            (None, None) => format!("keeping station {}", item.label),
         }
+    }
+
+    /// Whether the ship was stranded by the vessel it was docked to, not
+    /// by a burn of its own.
+    pub fn stranded(&self) -> bool {
+        self.with.is_some()
     }
 }
 
@@ -246,12 +268,13 @@ impl State {
     }
 }
 
-/// Burns `dv` (km/s) from `load` on a ship of `dry` t burning `spec`: LOX
-/// and fuel at its mixture ratio, m(1 − e^(−Δv/vₑ)) of the mass before it.
-/// The propellant used, t; else, the burn not made, the Δv its tanks
-/// could give, km/s (the scarcer of LOX and fuel bounds it).
-fn burn(load: &mut Load, dry: f64, spec: &PropellantSpec, dv: f64) -> Result<f64, f64> {
-    let m = dry + load.propellant() + load.cargo();
+/// Burns `dv` (km/s) from `load` on a ship burning `spec`, `inert` t of
+/// mass besides the load aboard (its dry mass, and everything docked to
+/// it): LOX and fuel at its mixture ratio, m(1 − e^(−Δv/vₑ)) of the mass
+/// before it. The propellant used, t; else, the burn not made, the Δv its
+/// tanks could give, km/s (the scarcer of LOX and fuel bounds it).
+fn burn(load: &mut Load, inert: f64, spec: &PropellantSpec, dv: f64) -> Result<f64, f64> {
+    let m = inert + load.propellant() + load.cargo();
     let used = -m * (-dv / spec.ve).exp_m1();
     let s = spec.lox_share;
     let burnable = (load.lox / s).min(load.fuel / (1.0 - s));
@@ -339,11 +362,12 @@ struct Running<'a> {
 }
 
 impl Running<'_> {
-    /// Pays upkeep and boil-off to `t`, into `s`: whether it paid upkeep
+    /// Pays upkeep and boil-off to `t`, into `s`, with `riders` t docked
+    /// to it aboard (M1b.md, step 4 plan, part 4): whether it paid upkeep
     /// (or ran dry doing so). The upkeep burns from the load as it was at
     /// `paid`, before that while's boil-off (at most a day's, a few parts
     /// in ten thousand of the hydrogen).
-    fn pay(&mut self, s: &mut ShipState, t: f64) -> bool {
+    fn pay(&mut self, s: &mut ShipState, t: f64, riders: f64) -> bool {
         if t <= self.paid {
             return false;
         }
@@ -358,7 +382,7 @@ impl Running<'_> {
             if stayed > 0.0 {
                 let dv = dv * stayed / (end - start);
                 upkept = true;
-                match burn(&mut self.load, self.dry, self.spec, dv) {
+                match burn(&mut self.load, self.dry + riders, self.spec, dv) {
                     Ok(used) => s.used[i] += used,
                     Err(could) => {
                         s.dry = Some(Dry {
@@ -367,6 +391,7 @@ impl Running<'_> {
                             marker: None,
                             dv,
                             short: dv - could,
+                            with: None,
                         })
                     }
                 }
@@ -406,6 +431,18 @@ impl Running<'_> {
             (Place::Hold, c) => &mut self.load.cargo[c as usize],
         }
     }
+
+    /// What it carries of `c`, in its hold and, where `c` is one of its
+    /// propellants, in its tanks.
+    fn stock(&self, c: Commodity) -> (f64, f64) {
+        let in_hold = self.load.cargo[c as usize];
+        let in_tanks = match (self.stows(c), c) {
+            (Place::Tanks, Commodity::Lox) => self.load.lox,
+            (Place::Tanks, _) => self.load.fuel,
+            (Place::Hold, _) => 0.0,
+        };
+        (in_hold, in_tanks)
+    }
 }
 
 /// A ship's tanks or its hold.
@@ -444,7 +481,7 @@ fn asks(r: &Running, m: &Manifest, kind: Kind) -> Vec<(Commodity, Place, f64)> {
 }
 
 /// When ship `c` arrives at the stop of its step `step`: the end of the
-/// step's last item, if its leg was designed.
+/// step's last item, if its leg was designed (a dock, at the dock).
 fn arrival(c: &Course, step: usize) -> Option<f64> {
     let last = c.items.iter().rev().find(|i| i.step == step)?;
     match last.kind {
@@ -453,22 +490,28 @@ fn arrival(c: &Course, step: usize) -> Option<f64> {
     }
 }
 
+/// When a flight's burns begin: its first burn (a jump is not one), or its
+/// start, a moment later at most.
+fn leaves(item: &Item) -> f64 {
+    let first = item
+        .markers
+        .iter()
+        .find(|m| !matches!(m.kind, MarkerKind::Jump { .. }))
+        .map_or(f64::INFINITY, |m| m.t.0);
+    item.start.0.min(first)
+}
+
 /// When ship `c` leaves the stop of its step `step`: the start of its next
 /// leg, landing or ascent (or its first burn, a moment earlier); `None` if
 /// it has none.
 fn departure(c: &Course, step: usize) -> Option<f64> {
     let next = c.items.iter().find(|i| i.step > step && burned(i))?;
-    let first = next
-        .markers
-        .iter()
-        .find(|m| !matches!(m.kind, MarkerKind::Jump { .. }))
-        .map_or(f64::INFINITY, |m| m.t.0);
-    Some(next.start.0.min(first))
+    Some(leaves(next))
 }
 
 /// Whether vessel `v` is at its stop after its leg `leg` (its start,
 /// without one) at `t`, to transfer with: arrived, not yet left, and not
-/// run dry; else why not.
+/// run dry (or stranded); else why not.
 fn there(v: &Course, s: &ShipState, leg: Option<usize>, t: f64) -> Result<(), Short> {
     let from = match leg {
         None => Some(v.epoch.0),
@@ -482,14 +525,7 @@ fn there(v: &Course, s: &ShipState, leg: Option<usize>, t: f64) -> Result<(), Sh
         .items
         .iter()
         .find(|i| i.step >= to && burned(i))
-        .is_some_and(|next| {
-            let first = next
-                .markers
-                .iter()
-                .find(|m| !matches!(m.kind, MarkerKind::Jump { .. }))
-                .map_or(f64::INFINITY, |m| m.t.0);
-            next.start.0.min(first) < t
-        });
+        .is_some_and(|next| leaves(next) < t);
     if gone {
         return Err(Short::Gone);
     }
@@ -497,6 +533,34 @@ fn there(v: &Course, s: &ShipState, leg: Option<usize>, t: f64) -> Result<(), Sh
         return Err(Short::Dry);
     }
     Ok(())
+}
+
+/// Ship `c`'s docks (M1b.md, step 4 plan, part 4): the vessel it is docked
+/// to, by id, from each dock until its next flight's burns begin, or it
+/// docks to another; for the rest of the game, otherwise.
+fn docks(c: &Course) -> Vec<(u64, f64, f64)> {
+    let mut out = Vec::new();
+    let mut open: Option<(u64, f64)> = None;
+    for item in &c.items {
+        match item.kind {
+            ItemKind::Docked(host) => {
+                if let Some((before, from)) = open.take() {
+                    out.push((before, from, item.start.0));
+                }
+                open = Some((host, item.start.0));
+            }
+            _ if burned(item) => {
+                if let Some((host, from)) = open.take() {
+                    out.push((host, from, leaves(item)));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((host, from)) = open {
+        out.push((host, from, f64::INFINITY));
+    }
+    out
 }
 
 /// Two of `v`, to change together.
@@ -513,7 +577,9 @@ fn two<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
 
 /// Whom a transfer is made with.
 enum Partner {
-    Vessel(usize),
+    /// The vessel met and the rest of its assembly, the fitted ones but
+    /// the ship itself, the vessel first.
+    Vessels(Vec<usize>),
     Earth,
     NoOne(Short),
 }
@@ -525,127 +591,330 @@ struct Loop<'a> {
     /// By ship, what the loop found; and each fitted ship as it runs.
     out: Vec<ShipState>,
     runs: Vec<Option<Running<'a>>>,
+    /// By ship, its docks ([`docks`]).
+    docks: Vec<Vec<(u64, f64, f64)>>,
 }
 
 impl Loop<'_> {
+    /// The ship that ship `k` is docked to in the moment before `t`, if
+    /// any: a dock at `t` does not count yet, and a flight leaving at `t`
+    /// has not left.
+    fn host_of(&self, k: usize, t: f64) -> Option<usize> {
+        let (host, _, _) = self.docks[k]
+            .iter()
+            .find(|&&(_, from, to)| from < t && t <= to)?;
+        self.ships.iter().position(|c| c.id == *host)
+    }
+
+    /// The last of ship `k`'s chain of vessels at `t`: the one with a place
+    /// of its own (`k` itself, undocked).
+    fn root_of(&self, k: usize, t: f64) -> usize {
+        let mut at = k;
+        for _ in 0..self.ships.len() {
+            match self.host_of(at, t) {
+                Some(h) => at = h,
+                None => break,
+            }
+        }
+        at
+    }
+
+    /// Whether ship `k` is docked to ship `x` at `t`, through other vessels
+    /// or not.
+    fn rides(&self, k: usize, x: usize, t: f64) -> bool {
+        let mut at = k;
+        for _ in 0..self.ships.len() {
+            match self.host_of(at, t) {
+                Some(h) if h == x => return true,
+                Some(h) => at = h,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// The ships docked to ship `x` at `t`, through others or not.
+    fn riders_of(&self, x: usize, t: f64) -> Vec<usize> {
+        (0..self.ships.len())
+            .filter(|&k| k != x && self.rides(k, x, t))
+            .collect()
+    }
+
+    /// The mass docked to ship `x` at `t`, t: each rider's dry mass and
+    /// load (a massless rider weighs nothing).
+    fn riders_mass(&self, x: usize, t: f64) -> f64 {
+        self.riders_of(x, t)
+            .into_iter()
+            .filter_map(|k| self.runs[k].as_ref())
+            .map(|r| r.dry + r.load.propellant() + r.load.cargo())
+            .sum()
+    }
+
+    /// The assembly ship `v` is in at `t`: `v`, then the other ships docked
+    /// with it, through any chain, by id.
+    fn assembly_of(&self, v: usize, t: f64) -> Vec<usize> {
+        let root = self.root_of(v, t);
+        let mut others: Vec<usize> = (0..self.ships.len())
+            .filter(|&k| k != v && self.root_of(k, t) == root)
+            .collect();
+        others.sort_by_key(|&k| self.ships[k].id);
+        std::iter::once(v).chain(others).collect()
+    }
+
+    /// Ship `k` pays its upkeep and boil-off to `t`, its riders' mass
+    /// aboard ([`Running::pay`]): whether it paid upkeep. Its riders are
+    /// stranded if it ran dry.
+    fn pay(&mut self, k: usize, t: f64) -> bool {
+        let riders = self.riders_mass(k, t);
+        let Some(r) = self.runs[k].as_mut() else {
+            return false;
+        };
+        let upkept = r.pay(&mut self.out[k], t, riders);
+        if self.out[k].dry.is_some() {
+            self.strand(k, t);
+        }
+        upkept
+    }
+
+    /// Ship `k` pays up to `t`, and its load is recorded if it paid upkeep.
+    fn pay_up(&mut self, k: usize, t: f64) {
+        if self.pay(k, t) {
+            let load = self.runs[k].as_ref().expect("a fitted ship paid").load;
+            self.out[k].record(Epoch(t), load);
+        }
+    }
+
+    /// Ship `k` makes the burn of its item `i`'s marker `j` at `t`, its
+    /// riders' mass aboard; or runs dry, its riders stranded with it.
+    fn burn(&mut self, t: f64, k: usize, i: usize, j: usize) {
+        let mut changed = self.pay(k, t);
+        let riders = self.riders_mass(k, t);
+        let (s, r) = (
+            &mut self.out[k],
+            self.runs[k].as_mut().expect("a fitted ship's burn"),
+        );
+        if s.dry.is_none() {
+            let dv = self.ships[k].items[i].markers[j].dv;
+            match burn(&mut r.load, r.dry + riders, r.spec, dv) {
+                Ok(used) => {
+                    s.used[i] += used;
+                    s.after[i] = Some(r.load);
+                    changed = true;
+                }
+                Err(could) => {
+                    s.dry = Some(Dry {
+                        t: Epoch(t),
+                        item: i,
+                        marker: Some(j),
+                        dv,
+                        short: dv - could,
+                        with: None,
+                    })
+                }
+            }
+        }
+        if changed {
+            let load = r.load;
+            s.record(Epoch(t), load);
+        }
+        if self.out[k].dry.is_some() {
+            self.strand(k, t);
+        }
+    }
+
+    /// The riders of ship `x`, which ran dry, are stranded with it at `t`
+    /// (M1b.md, step 4 plan, part 4): each at its dock.
+    fn strand(&mut self, x: usize, t: f64) {
+        let host = self.ships[x].id;
+        for k in self.riders_of(x, t) {
+            if self.runs[k].is_none() || self.out[k].dry.is_some() {
+                continue;
+            }
+            self.out[k].dry = Some(Dry {
+                t: Epoch(t),
+                item: self.dock_item(k, t),
+                marker: None,
+                dv: 0.0,
+                short: 0.0,
+                with: Some(host),
+            });
+        }
+    }
+
+    /// Ship `k`'s dock in force at `t`: the last dock event at or before
+    /// `t` among its items.
+    fn dock_item(&self, k: usize, t: f64) -> usize {
+        self.ships[k]
+            .items
+            .iter()
+            .rposition(|i| matches!(i.kind, ItemKind::Docked(_)) && i.start.0 <= t)
+            .unwrap_or(0)
+    }
+
+    /// Ship `k` docks to vessel `h` at `t`: both pay up to `t`. A vessel
+    /// that ran dry (or whose own vessel did) drifts: the ship is stranded
+    /// with it.
+    fn dock(&mut self, t: f64, k: usize, h: u64) {
+        self.pay_up(k, t);
+        let Some(x) = self.ships.iter().position(|c| c.id == h) else {
+            return;
+        };
+        if self.runs[x].is_some() {
+            self.pay_up(x, t);
+        }
+        let root = self.root_of(x, t);
+        let drifting = [x, root].into_iter().any(|v| self.out[v].dry.is_some());
+        if drifting && self.out[k].dry.is_none() {
+            self.out[k].dry = Some(Dry {
+                t: Epoch(t),
+                item: self.dock_item(k, t),
+                marker: None,
+                dv: 0.0,
+                short: 0.0,
+                with: Some(h),
+            });
+        }
+    }
+
     /// The gives or takes (`kind`) of ship `k`'s stop at `step`, at `t`:
-    /// both vessels paid up to `t`, then each amount the manifest asks
-    /// moved as far as it can be, and recorded (M1b.md, step 3 plan, part
-    /// 5). A ship that ran dry is stranded and transfers nothing.
+    /// the ship, the vessel met and its assembly paid up to `t`, then each
+    /// amount the manifest asks moved as far as it can be, the vessel first
+    /// and the rest of its assembly by id, and recorded (M1b.md, step 3
+    /// plan, part 5; step 4 plan, part 4). A ship that ran dry is stranded
+    /// and transfers nothing.
     fn transfer(&mut self, t: f64, k: usize, step: usize, kind: Kind) {
-        let (ships, economy) = (self.ships, self.economy);
-        let (out, runs) = (self.out.as_mut_slice(), self.runs.as_mut_slice());
-        if out[k].dry.is_some() {
+        if self.out[k].dry.is_some() {
             return;
         }
-        let c = &ships[k];
+        let c = &self.ships[k];
         let stop = c.stops[step].as_ref().expect("a stop's event");
         let manifest = match kind {
             Kind::Give => &stop.arrive,
             Kind::Take => &stop.leave,
         };
-        let mut changed = runs[k]
-            .as_mut()
-            .expect("a fitted ship's stop")
-            .pay(&mut out[k], t);
-        let wanted = asks(runs[k].as_ref().unwrap(), manifest, kind);
+        let mut changed = self.pay(k, t);
+        // Those whose loads may change: the assembly's members, paid up.
+        let mut touched: Vec<usize> = Vec::new();
         let partner = match stop.with {
-            With::Vessel { id, leg } => match ships.iter().position(|v| v.id == id) {
-                Some(v) if runs[v].is_some() => match there(&ships[v], &out[v], leg, t) {
-                    Ok(()) => Partner::Vessel(v),
-                    Err(why) => Partner::NoOne(why),
-                },
+            With::Vessel { id, leg } => match self.ships.iter().position(|v| v.id == id) {
+                Some(v) if self.runs[v].is_some() => {
+                    let members: Vec<usize> = self
+                        .assembly_of(v, t)
+                        .into_iter()
+                        .filter(|&m| m != k && self.runs[m].is_some())
+                        .collect();
+                    for &m in &members {
+                        if self.pay(m, t) {
+                            touched.push(m);
+                        }
+                    }
+                    match there(&self.ships[v], &self.out[v], leg, t) {
+                        Ok(()) => Partner::Vessels(members),
+                        Err(why) => Partner::NoOne(why),
+                    }
+                }
                 _ => Partner::NoOne(Short::NoOne),
             },
             With::Earth => Partner::Earth,
             With::NoOne => Partner::NoOne(Short::NoOne),
         };
-        let mut vessel_changed = false;
-        if let Partner::Vessel(v) = partner {
-            let (vs, vr) = (&mut out[v], runs[v].as_mut().unwrap());
-            vessel_changed = vr.pay(vs, t);
-        }
-        for (commodity, place, asked) in wanted {
-            let mut got = 0.0;
-            let mut short = None;
-            let mut cost_musd = None;
-            match (&partner, kind) {
-                (Partner::Vessel(v), Kind::Give) => {
-                    let (r, vr) = two(runs, k, *v);
-                    let (r, vr) = (r.as_mut().unwrap(), vr.as_mut().unwrap());
-                    let into = vr.stows(commodity);
-                    got = asked.min(vr.room(into));
-                    *r.carried(commodity, place) -= got;
-                    *vr.carried(commodity, into) += got;
-                    if got < asked - GRAM {
-                        short = Some(Short::Capacity);
+        if self.out[k].dry.is_none() {
+            let wanted = asks(self.runs[k].as_ref().unwrap(), manifest, kind);
+            for (commodity, place, asked) in wanted {
+                let mut got = 0.0;
+                let mut short = None;
+                let mut cost_musd = None;
+                match (&partner, kind) {
+                    (Partner::Vessels(members), Kind::Give) => {
+                        for &m in members {
+                            if got >= asked - GRAM {
+                                break;
+                            }
+                            let (r, vr) = two(&mut self.runs, k, m);
+                            let (r, vr) = (r.as_mut().unwrap(), vr.as_mut().unwrap());
+                            let into = vr.stows(commodity);
+                            let part = (asked - got).min(vr.room(into));
+                            if part > 0.0 {
+                                *r.carried(commodity, place) -= part;
+                                *vr.carried(commodity, into) += part;
+                                got += part;
+                                touched.push(m);
+                            }
+                        }
+                        if got < asked - GRAM {
+                            short = Some(Short::Capacity);
+                        }
                     }
-                }
-                (Partner::Vessel(v), Kind::Take) => {
-                    let (r, vr) = two(runs, k, *v);
-                    let (r, vr) = (r.as_mut().unwrap(), vr.as_mut().unwrap());
-                    // From the vessel's hold first, then its tanks.
-                    let in_hold = vr.load.cargo[commodity as usize];
-                    let in_tanks = match vr.stows(commodity) {
-                        Place::Tanks => *vr.carried(commodity, Place::Tanks),
-                        Place::Hold => 0.0,
-                    };
-                    let room = r.room(place);
-                    got = asked.min(in_hold + in_tanks).min(room);
-                    let from_hold = got.min(in_hold);
-                    vr.load.cargo[commodity as usize] -= from_hold;
-                    if got > from_hold {
-                        *vr.carried(commodity, Place::Tanks) -= got - from_hold;
+                    (Partner::Vessels(members), Kind::Take) => {
+                        let room = self.runs[k].as_ref().unwrap().room(place);
+                        let mut stock = 0.0;
+                        for &m in members {
+                            let (r, vr) = two(&mut self.runs, k, m);
+                            let (r, vr) = (r.as_mut().unwrap(), vr.as_mut().unwrap());
+                            // From the vessel's hold first, then its tanks.
+                            let (in_hold, in_tanks) = vr.stock(commodity);
+                            stock += in_hold + in_tanks;
+                            let part = (asked.min(room) - got).min(in_hold + in_tanks);
+                            if part <= 0.0 {
+                                continue;
+                            }
+                            let from_hold = part.min(in_hold);
+                            vr.load.cargo[commodity as usize] -= from_hold;
+                            if part > from_hold {
+                                *vr.carried(commodity, Place::Tanks) -= part - from_hold;
+                            }
+                            *r.carried(commodity, place) += part;
+                            got += part;
+                            touched.push(m);
+                        }
+                        if stock < asked - GRAM {
+                            short = Some(Short::Stock);
+                        } else if room < asked - GRAM {
+                            short = Some(Short::Capacity);
+                        }
                     }
-                    *r.carried(commodity, place) += got;
-                    if in_hold + in_tanks < asked - GRAM {
-                        short = Some(Short::Stock);
-                    } else if room < asked - GRAM {
-                        short = Some(Short::Capacity);
-                    }
-                }
-                (Partner::Earth, Kind::Take) => {
-                    let r = runs[k].as_mut().unwrap();
-                    match bought_musd(economy, commodity, 1.0, Epoch(t)) {
-                        None => short = Some(Short::NotSold),
-                        Some(per_tonne) => {
-                            got = asked.min(r.room(place));
-                            *r.carried(commodity, place) += got;
-                            cost_musd = Some(got * per_tonne);
-                            if got < asked - GRAM {
-                                short = Some(Short::Capacity);
+                    (Partner::Earth, Kind::Take) => {
+                        let r = self.runs[k].as_mut().unwrap();
+                        match bought_musd(self.economy, commodity, 1.0, Epoch(t)) {
+                            None => short = Some(Short::NotSold),
+                            Some(per_tonne) => {
+                                got = asked.min(r.room(place));
+                                *r.carried(commodity, place) += got;
+                                cost_musd = Some(got * per_tonne);
+                                if got < asked - GRAM {
+                                    short = Some(Short::Capacity);
+                                }
                             }
                         }
                     }
+                    (Partner::Earth, Kind::Give) => short = Some(Short::NoOne),
+                    (Partner::NoOne(why), _) => short = Some(*why),
                 }
-                (Partner::Earth, Kind::Give) => short = Some(Short::NoOne),
-                (Partner::NoOne(why), _) => short = Some(*why),
+                if got > 0.0 {
+                    changed = true;
+                }
+                self.out[k].transfers.push(Transfer {
+                    t: Epoch(t),
+                    step,
+                    with: stop.with,
+                    kind,
+                    commodity,
+                    asked,
+                    got,
+                    short,
+                    cost_musd,
+                });
             }
-            if got > 0.0 {
-                changed = true;
-                vessel_changed |= matches!(partner, Partner::Vessel(_));
-            }
-            out[k].transfers.push(Transfer {
-                t: Epoch(t),
-                step,
-                with: stop.with,
-                kind,
-                commodity,
-                asked,
-                got,
-                short,
-                cost_musd,
-            });
         }
         if changed {
-            let load = runs[k].as_ref().unwrap().load;
-            out[k].record(Epoch(t), load);
+            let load = self.runs[k].as_ref().unwrap().load;
+            self.out[k].record(Epoch(t), load);
         }
-        if let Partner::Vessel(v) = partner
-            && vessel_changed
-        {
-            let load = runs[v].as_ref().unwrap().load;
-            out[v].record(Epoch(t), load);
+        touched.sort_unstable();
+        touched.dedup();
+        for m in touched {
+            let load = self.runs[m].as_ref().unwrap().load;
+            self.out[m].record(Epoch(t), load);
         }
     }
 }
@@ -656,6 +925,8 @@ impl Loop<'_> {
 enum Phase {
     /// A burn at the end of its item: an arrival's.
     Arrival,
+    /// A dock (M1b.md, step 4 plan, part 4).
+    Dock,
     Gives,
     Takes,
     /// Any other burn: a departure's, or one in flight.
@@ -671,6 +942,8 @@ const AT_THE_END_DAYS: f64 = 1e-9;
 enum What {
     /// Item and marker.
     Burn(usize, usize),
+    /// A dock: the item, and the vessel docked to.
+    Dock(usize, u64),
     /// A stop's gives or takes: the step.
     Transfer(usize),
 }
@@ -750,6 +1023,7 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         economy,
         out,
         runs,
+        docks: ships.iter().map(docks).collect(),
     };
 
     // Events in time order, then by phase and ship id; one ship's burns
@@ -759,7 +1033,16 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         if c.fitted.is_none() {
             continue;
         }
-        for (i, item) in c.items.iter().enumerate().filter(|(_, i)| burned(i)) {
+        for (i, item) in c.items.iter().enumerate() {
+            if let ItemKind::Docked(host) = item.kind {
+                if item.start.0 <= until {
+                    events.push((item.start.0, Phase::Dock, c.id, k, What::Dock(i, host)));
+                }
+                continue;
+            }
+            if !burned(item) {
+                continue;
+            }
             for (j, m) in item.markers.iter().enumerate() {
                 if matches!(m.kind, MarkerKind::Jump { .. }) || m.t.0 > until {
                     continue;
@@ -806,47 +1089,17 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
     loop {
         let tick = midnight <= until && events.get(next).is_none_or(|e| midnight <= e.0);
         if tick {
-            for ((c, s), r) in ships.iter().zip(&mut l.out).zip(&mut l.runs) {
-                if let Some(r) = r
-                    && c.epoch.0 < midnight
-                    && r.pay(s, midnight)
-                {
-                    s.record(Epoch(midnight), r.load);
+            for (k, c) in ships.iter().enumerate() {
+                if l.runs[k].is_some() && c.epoch.0 < midnight {
+                    l.pay_up(k, midnight);
                 }
             }
             midnight += 1.0;
         } else if let Some(&(t, phase, _, k, what)) = events.get(next) {
             next += 1;
             match what {
-                What::Burn(i, j) => {
-                    let (s, r) = (
-                        &mut l.out[k],
-                        l.runs[k].as_mut().expect("a fitted ship's burn"),
-                    );
-                    let mut changed = r.pay(s, t);
-                    if s.dry.is_none() {
-                        let dv = ships[k].items[i].markers[j].dv;
-                        match burn(&mut r.load, r.dry, r.spec, dv) {
-                            Ok(used) => {
-                                s.used[i] += used;
-                                s.after[i] = Some(r.load);
-                                changed = true;
-                            }
-                            Err(could) => {
-                                s.dry = Some(Dry {
-                                    t: Epoch(t),
-                                    item: i,
-                                    marker: Some(j),
-                                    dv,
-                                    short: dv - could,
-                                })
-                            }
-                        }
-                    }
-                    if changed {
-                        s.record(Epoch(t), r.load);
-                    }
-                }
+                What::Burn(i, j) => l.burn(t, k, i, j),
+                What::Dock(_, host) => l.dock(t, k, host),
                 What::Transfer(step) => {
                     let kind = match phase {
                         Phase::Gives => Kind::Give,
@@ -860,12 +1113,9 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
         }
     }
     // Every ship pays up to where the loop stops.
-    for ((c, s), r) in ships.iter().zip(&mut l.out).zip(&mut l.runs) {
-        if let Some(r) = r
-            && c.epoch.0 < until
-            && r.pay(s, until)
-        {
-            s.record(Epoch(until), r.load);
+    for (k, c) in ships.iter().enumerate() {
+        if l.runs[k].is_some() && c.epoch.0 < until {
+            l.pay_up(k, until);
         }
     }
     State {
@@ -1534,5 +1784,165 @@ mod tests {
         assert_eq!(dry.marker, None);
         assert!(dry.t.0 > day0() + 5.0 && dry.t.0 <= day0() + 6.0, "{dry:?}");
         assert!(tug.dry.is_none());
+    }
+
+    /// A vessel's burn moves what is docked to it (M1b.md, step 4 plan,
+    /// part 4): the rocket equation counts the rider's mass, from the
+    /// vessel's tanks; the rider burns nothing.
+    #[test]
+    fn a_vessels_burn_moves_its_riders() {
+        let e = economy();
+        let hauler = e.ships.iter().find(|c| c.id == "hauler").unwrap();
+        let lander = e.ships.iter().find(|c| c.id == "lander").unwrap();
+        let ve = e.propellant(hauler.propellant).ve;
+        let leg = item(ItemKind::Leg, 1.0, 2.0, 1.0, &[(1.0, 1.0)]);
+        let dock = item(ItemKind::Docked(0), 0.0, 0.0, 0.0, &[]);
+        let mut rider = course(&e, "lander", 100.0, 0.0, vec![&dock]);
+        rider.id = 1;
+        let alone = run(&[course(&e, "hauler", 500.0, 0.0, vec![&leg])], &e);
+        let with = run(&[course(&e, "hauler", 500.0, 0.0, vec![&leg]), rider], &e);
+        let used = |m: f64| m * (1.0 - (-1.0 / ve).exp());
+        let m = hauler.dry + 500.0;
+        assert!((alone.ships[0].used[0] - used(m)).abs() < 1e-9);
+        let both = m + lander.dry + 100.0;
+        assert!(
+            (with.ships[0].used[0] - used(both)).abs() < 1e-9,
+            "{} for {both} t, not {}",
+            with.ships[0].used[0],
+            used(both)
+        );
+        let r = &with.ships[1];
+        assert_eq!(r.used, [0.0]);
+        assert!(r.dry.is_none());
+        assert!(close(
+            r.load(Epoch(day0() + 3.0)).unwrap().propellant(),
+            100.0
+        ));
+    }
+
+    /// A vessel keeps station for its riders: its upkeep burns against
+    /// their mass too, from the dock on.
+    #[test]
+    fn a_vessel_keeps_station_for_its_riders() {
+        let e = economy();
+        let stay = item(ItemKind::Stay, 0.0, 10.0, 0.5, &[]);
+        let dock0 = item(ItemKind::Docked(0), 0.0, 0.0, 0.0, &[]);
+        let dock5 = item(ItemKind::Docked(0), 5.0, 5.0, 0.0, &[]);
+        let host = || course(&e, "hauler", 500.0, 0.0, vec![&stay]);
+        fn rider<'a>(e: &Economy, d: &'a Item) -> Course<'a> {
+            let mut r = course(e, "lander", 100.0, 0.0, vec![d]);
+            r.id = 1;
+            r
+        }
+        let alone = run(&[host()], &e).ships[0].used[0];
+        let from_start = run(&[host(), rider(&e, &dock0)], &e);
+        let from_day_five = run(&[host(), rider(&e, &dock5)], &e);
+        let (b, c) = (from_start.ships[0].used[0], from_day_five.ships[0].used[0]);
+        assert!(alone < c && c < b, "{alone} {c} {b}");
+        assert_eq!(from_start.ships[1].used, [0.0]);
+        assert!(from_start.ships[1].dry.is_none());
+    }
+
+    /// A transfer with a vessel reaches its assembly: a take drains the
+    /// vessel named, then the stage docked to it; a give fills the vessel's
+    /// room, then the stage's.
+    #[test]
+    fn a_transfer_reaches_the_assembly() {
+        let e = economy();
+        let s = e.propellant(Propellant::Methalox).lox_share;
+        let staying = [item(ItemKind::Stay, 0.0, 30.0, 0.0, &[])];
+        let dock = [item(ItemKind::Docked(1), 0.0, 0.0, 0.0, &[])];
+        let assembly = |depot_t: f64| {
+            let mut depot = course(&e, "hauler", depot_t, 0.0, staying.iter().collect());
+            depot.id = 1;
+            let mut stage = course(&e, "hauler", 300.0, 0.0, dock.iter().collect());
+            stage.id = 2;
+            (depot, stage)
+        };
+        // A take of 390 t: 100 from the depot, 290 from the stage.
+        let legs = visit(0.0, 0.0);
+        let mut lander = course(&e, "lander", 10.0, 0.0, legs.iter().collect());
+        lander.stops = vec![stop(Manifest::default(), manifest(Some(400.0), &[])), None];
+        let (depot, stage) = assembly(100.0);
+        let state = run(&[lander, depot, stage], &e);
+        let taken = moved(&state.ships[0]);
+        assert_eq!(taken.len(), 2);
+        assert!(
+            close(taken[0].3, 390.0 * s) && taken[0].4.is_none(),
+            "{taken:?}"
+        );
+        assert!(close(taken[1].3, 390.0 * (1.0 - s)) && taken[1].4.is_none());
+        let after = Epoch(day0() + 6.0);
+        assert!(state.ships[1].load(after).unwrap().propellant().abs() < 1e-9);
+        assert!(close(
+            state.ships[2].load(after).unwrap().propellant(),
+            10.0
+        ));
+        assert!(close(
+            state.ships[0].load(after).unwrap().propellant(),
+            400.0
+        ));
+        // A give of 390 t: 50 fill the depot, 340 go to the stage.
+        let mut lander = course(&e, "lander", 400.0, 0.0, legs.iter().collect());
+        lander.stops = vec![stop(manifest(Some(10.0), &[]), Manifest::default()), None];
+        let (depot, stage) = assembly(1150.0);
+        let state = run(&[lander, depot, stage], &e);
+        let given = moved(&state.ships[0]);
+        assert_eq!(given.len(), 2);
+        assert!(
+            close(given[0].3, 390.0 * s) && given[0].4.is_none(),
+            "{given:?}"
+        );
+        assert!(close(
+            state.ships[1].load(after).unwrap().propellant(),
+            1200.0
+        ));
+        assert!(close(
+            state.ships[2].load(after).unwrap().propellant(),
+            640.0
+        ));
+        assert!(close(
+            state.ships[0].load(after).unwrap().propellant(),
+            10.0
+        ));
+    }
+
+    /// A rider is stranded with a vessel that runs dry: at its dock, with
+    /// the vessel named; and a transfer with it then falls short, dry.
+    #[test]
+    fn a_rider_is_stranded_with_a_vessel_that_runs_dry() {
+        let e = economy();
+        let leg = item(ItemKind::Leg, 1.0, 2.0, 5.0, &[(1.0, 5.0)]);
+        let dock = item(ItemKind::Docked(0), 0.0, 0.0, 0.0, &[]);
+        let host = course(&e, "hauler", 1.0, 0.0, vec![&leg]);
+        let mut rider = course(&e, "lander", 100.0, 0.0, vec![&dock]);
+        rider.id = 1;
+        let legs = visit(0.0, 0.0);
+        let mut visitor = course(&e, "lander", 10.0, 0.0, legs.iter().collect());
+        visitor.id = 2;
+        visitor.stops = vec![stop(Manifest::default(), manifest(Some(50.0), &[])), None];
+        let state = run(&[host, rider, visitor], &e);
+        let host_dry = state.ships[0].dry.unwrap();
+        assert_eq!(
+            (host_dry.item, host_dry.marker, host_dry.with),
+            (0, Some(0), None)
+        );
+        let stranded = state.ships[1].dry.unwrap();
+        assert_eq!(
+            stranded,
+            Dry {
+                t: Epoch(day0() + 1.0),
+                item: 0,
+                marker: None,
+                dv: 0.0,
+                short: 0.0,
+                with: Some(0),
+            }
+        );
+        assert!(stranded.stranded());
+        assert_eq!(stranded.place(&dock), "with ship 0, which ran dry");
+        let taken = moved(&state.ships[2]);
+        assert_eq!(taken.len(), 2);
+        assert_eq!((taken[0].3, taken[0].4), (0.0, Some(Short::Dry)));
     }
 }

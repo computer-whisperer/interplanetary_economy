@@ -195,6 +195,7 @@ aero = true
         marker: None,
         dv: 1.76e-6,
         short: 1.76e-6,
+        with: None,
     });
     let tanks = ship.tanks.as_mut().unwrap();
     tanks.state = state;
