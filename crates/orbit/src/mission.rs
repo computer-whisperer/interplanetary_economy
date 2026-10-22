@@ -1228,7 +1228,8 @@ impl Crossing<'_> {
 /// What a ship does over a span of time.
 #[derive(Clone, Debug)]
 pub struct Item {
-    /// The ship's step that made it: the stay before a leg is the leg's.
+    /// The ship's step that made it: the stay before a leg is the leg's;
+    /// a start's item has [`START`].
     pub step: usize,
     pub kind: ItemKind,
     pub label: String,
@@ -1260,9 +1261,17 @@ pub enum ItemKind {
     Capture,
     Landing,
     Ascent,
+    /// Docked to the vessel with this id, from this instant (M1b.md, step
+    /// 4 plan, part 2): the ship then rides it, wherever it goes, until a
+    /// leg of its own leaves. An event: it starts and ends at the dock.
+    Docked(u64),
     /// The plan stops here: the leg could not be designed.
     Failed(String),
 }
+
+/// The step a start's item has (its dock, for a ship started docked to a
+/// vessel): none, so no step's.
+pub const START: usize = usize::MAX;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Choice {
@@ -1322,6 +1331,35 @@ impl Checkpoint {
     /// When the ship reached where it is.
     pub fn since(&self) -> Epoch {
         self.since
+    }
+
+    /// When the ship may leave.
+    pub fn ready(&self) -> Epoch {
+        self.ready
+    }
+
+    /// The vessel the ship is docked to here, if it is (M1b.md, step 4
+    /// plan, part 2).
+    pub fn docked_to(&self) -> Option<u64> {
+        match self.here {
+            Here::Docked(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    /// When the step from here leaves, before its leg is designed: when
+    /// the ship is ready, after the waits before the leg, and no earlier
+    /// than it was re-planned. A ship docked to a vessel is where the
+    /// vessel is then.
+    pub fn departs(&self, ship: &Ship) -> Epoch {
+        let waits: f64 = ship.steps[self.next.min(ship.steps.len())..reads(ship, self.next)]
+            .iter()
+            .filter_map(|s| match s {
+                Step::Wait(d) => Some(*d),
+                _ => None,
+            })
+            .sum();
+        Epoch(self.ready.plus_days(waits).0.max(self.not_before.0))
     }
 
     /// This checkpoint, with the ship staying where it is until at least
@@ -1405,6 +1443,9 @@ enum Here {
     Station(Arc<station::Orbit>),
     Body(BodyId),
     Surface(BodyId),
+    /// Docked to the vessel with this id, wherever it is (M1b.md, step 4
+    /// plan, part 2): a step from here first takes the vessel's place.
+    Docked(u64),
 }
 
 /// The end a ship leaves from, other than a station orbit (a leg from one
@@ -1415,6 +1456,7 @@ fn end_from(here: &Here) -> End<'_> {
         Here::Body(b) => End::Body(*b),
         Here::Station(_) => unreachable!("a station orbit is left by a window of it"),
         Here::Surface(_) => unreachable!("surfaces are left by events"),
+        Here::Docked(_) => unreachable!("a docked ship takes its vessel's place before it leaves"),
     }
 }
 
@@ -1438,15 +1480,42 @@ pub struct Planner<'w> {
     /// The vessel the leg being designed meets: where it is after the leg
     /// named, its checkpoint (M1b.md, step 3 plan, part 3).
     met: Option<Checkpoint>,
+    /// The vessel the leg being designed docks to, and when it leaves the
+    /// stop met (`None`: never, as far as its plan goes): the leg arrives
+    /// before then (M1b.md, step 4 plan, part 2).
+    docking: Option<(u64, Option<Epoch>)>,
+    /// The vessel the ship was docked to as the step began, whose place it
+    /// took, and when that vessel leaves it (`None`: never): the leg
+    /// leaves before then, and no stay is made (the ship rode).
+    riding: Option<(u64, Option<Epoch>)>,
+}
+
+/// What the planner is told of the other ships for the next step (M1b.md,
+/// step 3 plan, part 3; step 4 plan, part 2), each as the designs stand,
+/// or why it is not to be had (the step then fails).
+#[derive(Clone, Default)]
+pub struct Others {
+    /// Where the vessel the step's leg meets, or its dock names, is after
+    /// the leg named: its checkpoint.
+    pub met: Option<Result<Checkpoint, String>>,
+    /// For a leg that docks: when that vessel leaves the stop met (`None`:
+    /// never, as far as its plan goes).
+    pub until: Option<Result<Option<Epoch>, String>>,
+    /// For a ship docked to a vessel: where the vessel is when the ship is
+    /// ready to leave ([`Checkpoint::departs`]), its next stop if it is in
+    /// flight then, and when it leaves that stop.
+    pub host: Option<Result<(Checkpoint, Option<Epoch>), String>>,
 }
 
 impl<'w> Planner<'w> {
+    /// At its start, a place; a ship started docked to a vessel is made by
+    /// [`Planner::docked`].
     pub fn new(world: &'w World, ship: &Ship) -> Result<Planner<'w>, String> {
-        if ship.start.meeting.is_some() {
-            return Err(
-                "a start docked to a vessel is not designed yet (M1b.md, step 4 plan, part 2)"
-                    .into(),
-            );
+        if let Some(m) = &ship.start.meeting {
+            return Err(format!(
+                "a start docked to {} is designed with `Planner::docked`",
+                m.label()
+            ));
         }
         let mut p = Planner {
             world,
@@ -1461,6 +1530,8 @@ impl<'w> Planner<'w> {
             not_before: Epoch(f64::NEG_INFINITY),
             stopped: false,
             met: None,
+            docking: None,
+            riding: None,
         };
         p.here = match &ship.start.kind {
             PlaceKind::Low(orbit) => Here::Low {
@@ -1487,6 +1558,84 @@ impl<'w> Planner<'w> {
             PlaceKind::Surface(b) => Here::Surface(*b),
         };
         Ok(p)
+    }
+
+    /// At its start docked to the vessel its start names (M1b.md, step 4
+    /// plan, part 2), `host` being where that vessel is at the epoch and
+    /// when it leaves there (as [`Others::host`] has it), or why that is
+    /// not to be had. The vessel must be stopped there: one in flight, or
+    /// one that leaves first, fails the start.
+    pub fn docked(
+        world: &'w World,
+        ship: &Ship,
+        host: Result<(Checkpoint, Option<Epoch>), String>,
+    ) -> Result<Planner<'w>, String> {
+        let m = ship.start.meeting.expect("a start docked to a vessel");
+        let (c, until) = host.map_err(|why| format!("{}: {why}", m.label()))?;
+        if c.since.0 > ship.epoch.0 + 1e-9 {
+            return Err(format!(
+                "{} is in flight at {}, arriving {} {}",
+                m.label(),
+                when(ship.epoch),
+                c.label,
+                when(c.since)
+            ));
+        }
+        if let Some(u) = until
+            && u.0 <= ship.epoch.0
+        {
+            return Err(format!(
+                "{} leaves {} {}, before {}",
+                m.label(),
+                c.label,
+                when(u),
+                when(ship.epoch)
+            ));
+        }
+        Ok(Planner {
+            world,
+            ship: ship.clone(),
+            next: 0,
+            at: 0,
+            place: c.place,
+            here: Here::Docked(m.ship),
+            label: c.label,
+            since: ship.epoch,
+            ready: ship.epoch,
+            not_before: Epoch(f64::NEG_INFINITY),
+            stopped: false,
+            met: None,
+            docking: None,
+            riding: None,
+        })
+    }
+
+    /// The items of its start: the dock, for a ship started docked to a
+    /// vessel ([`Planner::docked`]); none otherwise.
+    pub fn start_items(&self) -> Vec<Item> {
+        match self.here {
+            Here::Docked(host) => vec![docked_event(START, host, self.since)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The vessel it is docked to where it is (M1b.md, step 4 plan, part
+    /// 2): the next step is designed with where that vessel is
+    /// ([`Others::host`]).
+    pub fn docked_to(&self) -> Option<u64> {
+        match self.here {
+            Here::Docked(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    /// Whether the next step's leg docks to the vessel it meets: it is
+    /// designed with when the vessel leaves ([`Others::until`]).
+    pub fn docks(&self) -> bool {
+        self.ship.steps[self.next.min(self.ship.steps.len())..]
+            .iter()
+            .find(|s| s.is_stop())
+            .is_some_and(|s| matches!(s, Step::Go(go) if go.dock))
     }
 
     /// Where it is between steps, to go on from (with the steps from
@@ -1520,6 +1669,8 @@ impl<'w> Planner<'w> {
             not_before: checkpoint.not_before,
             stopped: checkpoint.stopped,
             met: None,
+            docking: None,
+            riding: None,
         }
     }
 
@@ -1534,14 +1685,16 @@ impl<'w> Planner<'w> {
 
     /// The next items: a stay and the leg or event after it, or a failure
     /// (after which there are none). `None` when the plan is done. A step
-    /// whose leg meets a vessel ([`Planner::meets`]) is designed by
-    /// [`Planner::meet`].
+    /// whose leg meets a vessel ([`Planner::meets`]), docks
+    /// ([`Planner::docks`]) or leaves a vessel the ship is docked to
+    /// ([`Planner::docked_to`]) is designed by [`Planner::next`], with
+    /// what it reads of the other ships.
     pub fn step(&mut self) -> Option<Vec<Item>> {
         assert!(
-            self.meets().is_none(),
-            "a leg that meets a vessel is designed with `meet`"
+            self.meets().is_none() && self.docked_to().is_none(),
+            "a step that reads another ship is designed with `next`"
         );
-        self.advance(None)
+        self.advance(Others::default())
     }
 
     /// The next items, where the next step's leg meets a vessel
@@ -1552,10 +1705,43 @@ impl<'w> Planner<'w> {
     /// is met by going there. Meeting a vessel in a low orbit is not
     /// designed (M1b.md, Scope).
     pub fn meet(&mut self, met: Result<&Checkpoint, String>) -> Option<Vec<Item>> {
-        self.advance(Some(met))
+        self.advance(Others {
+            met: Some(met.cloned()),
+            ..Others::default()
+        })
     }
 
-    fn advance(&mut self, met: Option<Result<&Checkpoint, String>>) -> Option<Vec<Item>> {
+    /// The next items, given what the step reads of the other ships
+    /// ([`Others`]; M1b.md, step 4 plan, part 2). A ship docked to a vessel
+    /// first takes the vessel's place where it is when the ship is ready,
+    /// and leaves from there before the vessel does, with no stay of its
+    /// own (it rode). A leg that docks arrives while the vessel met is at
+    /// the stop, by the vessel's design, and ends with the dock: the ship
+    /// is then docked, until a leg of its own leaves.
+    pub fn next(&mut self, others: Others) -> Option<Vec<Item>> {
+        self.advance(others)
+    }
+
+    /// The failure that stops the plan: an item saying why.
+    fn failed(&mut self, label: String, at: Epoch, why: String, note: Option<String>) -> Item {
+        self.stopped = true;
+        Item {
+            step: self.at,
+            kind: ItemKind::Failed(why),
+            label,
+            start: at,
+            end: at,
+            dv: 0.0,
+            track: None,
+            markers: Vec::new(),
+            options: Vec::new(),
+            window: None,
+            seconds: 0.0,
+            note,
+        }
+    }
+
+    fn advance(&mut self, mut others: Others) -> Option<Vec<Item>> {
         while !self.stopped {
             let i = self.next;
             self.next += 1;
@@ -1565,8 +1751,12 @@ impl<'w> Planner<'w> {
                     self.ready = self.ready.plus_days(days);
                     // A wait that ends the plan is a stay to its end, the
                     // ship keeping station there (M1b.md, step 3 plan,
-                    // part 8: a depot); one of no days is nothing.
+                    // part 8: a depot); one of no days is nothing. A ship
+                    // docked to a vessel stays docked: its dock stands.
                     if i + 1 == self.ship.steps.len() {
+                        if self.docked_to().is_some() {
+                            return None;
+                        }
                         let clock = Instant::now();
                         return Some(match self.stay(self.ready, None) {
                             Ok((items, _)) if items.is_empty() => return None,
@@ -1601,7 +1791,7 @@ impl<'w> Planner<'w> {
                     return Some(vec![Item {
                         step: self.at,
                         kind: ItemKind::Failed(
-                            "docking is not designed yet (M1b.md, step 4 plan, part 2)".into(),
+                            "a dock step is not designed yet (M1b.md, step 4 plan, part 3)".into(),
                         ),
                         label: format!("{} docks to {}", self.label, d.to.label),
                         start: self.ready,
@@ -1618,38 +1808,53 @@ impl<'w> Planner<'w> {
                 Step::Go(go) => {
                     let clock = Instant::now();
                     self.ready = Epoch(self.ready.0.max(self.not_before.0));
-                    let gone = match go.dock {
-                        true => {
-                            Err("docking is not designed yet (M1b.md, step 4 plan, part 2)".into())
+                    // Docked to a vessel: the ship is where the vessel is
+                    // when it is ready, and leaves before the vessel does.
+                    if let Here::Docked(host) = self.here {
+                        let at = others
+                            .host
+                            .take()
+                            .expect("a docked ship's step is designed with where its vessel is");
+                        match at {
+                            Err(why) => {
+                                let label = format!("docked to ship {host}");
+                                let why = format!("ship {host}: {why}");
+                                return Some(vec![self.failed(
+                                    label,
+                                    self.ready,
+                                    why,
+                                    go.note.clone(),
+                                )]);
+                            }
+                            Ok((c, until)) => {
+                                self.place = c.place;
+                                self.here = c.here;
+                                self.label = c.label;
+                                self.since = Epoch(self.since.0.max(c.since.0));
+                                self.ready = Epoch(self.ready.0.max(c.since.0));
+                                self.riding = Some((host, until));
+                            }
                         }
-                        false => self
-                            .resolve(&go, met)
-                            .and_then(|resolved| self.go(&resolved)),
-                    };
+                    }
+                    let gone = self
+                        .resolve(&go, others.met.take(), others.until.take())
+                        .and_then(|resolved| self.go(&resolved))
+                        .and_then(|items| self.docked_in_time(items));
+                    self.riding = None;
                     return Some(match gone {
                         Ok(mut items) => {
-                            if let Some(i) = items.iter_mut().rfind(|i| i.kind != ItemKind::Capture)
-                            {
+                            if let Some(i) = items.iter_mut().rfind(|i| {
+                                !matches!(i.kind, ItemKind::Capture | ItemKind::Docked(_))
+                            }) {
                                 i.seconds = clock.elapsed().as_secs_f64();
                             }
                             items
                         }
                         Err(why) => {
-                            self.stopped = true;
-                            vec![Item {
-                                step: self.at,
-                                kind: ItemKind::Failed(why),
-                                label: format!("{} → {}", self.label, go.to.label),
-                                start: self.ready,
-                                end: self.ready,
-                                dv: 0.0,
-                                track: None,
-                                markers: Vec::new(),
-                                options: Vec::new(),
-                                window: None,
-                                seconds: clock.elapsed().as_secs_f64(),
-                                note: go.note.clone(),
-                            }]
+                            let label = format!("{} → {}", self.label, go.to.label);
+                            let mut item = self.failed(label, self.ready, why, go.note.clone());
+                            item.seconds = clock.elapsed().as_secs_f64();
+                            vec![item]
                         }
                     });
                 }
@@ -1671,14 +1876,14 @@ impl<'w> Planner<'w> {
                 ));
             }
             let depart = Epoch(depart.0.max(self.ready.0));
-            return Ok((depart, depart));
+            return self.before_the_vessel_leaves((depart, depart));
         }
         self.unpinned(go, default_days)
     }
 
     /// The departure window for `go` without its pin.
     fn unpinned(&self, go: &Go, default_days: f64) -> Result<(Epoch, Epoch), String> {
-        match go.window {
+        let window = match go.window {
             Some((open, close)) => {
                 if close.0 < self.ready.0 {
                     return Err(format!(
@@ -1686,17 +1891,46 @@ impl<'w> Planner<'w> {
                         self.ready
                     ));
                 }
-                Ok((Epoch(open.0.max(self.ready.0)), close))
+                (Epoch(open.0.max(self.ready.0)), close)
             }
-            None => Ok((self.ready, self.ready.plus_days(default_days))),
+            None => (self.ready, self.ready.plus_days(default_days)),
+        };
+        self.before_the_vessel_leaves(window)
+    }
+
+    /// `window`, closed when the vessel the ship rode leaves the stop, if
+    /// it does (`riding`); one opening after that fails, as the ship would
+    /// be carried on (M1b.md, step 4 plan, part 2).
+    fn before_the_vessel_leaves(
+        &self,
+        (open, close): (Epoch, Epoch),
+    ) -> Result<(Epoch, Epoch), String> {
+        let Some((host, Some(until))) = self.riding else {
+            return Ok((open, close));
+        };
+        if open.0 >= until.0 {
+            return Err(format!(
+                "ship {host} leaves {} {}, before the leg can leave ({})",
+                self.label,
+                when(until),
+                when(open)
+            ));
         }
+        Ok((open, Epoch(close.0.min(until.0))))
     }
 
     /// `go` with its destination resolved: as it is, or, where it meets a
     /// vessel, with the vessel's place after the leg named (`met`), whose
-    /// checkpoint is kept for the leg's design.
-    fn resolve(&mut self, go: &Go, met: Option<Result<&Checkpoint, String>>) -> Result<Go, String> {
+    /// checkpoint is kept for the leg's design; for a leg that docks, with
+    /// when the vessel leaves that stop (`until`) kept too.
+    fn resolve(
+        &mut self,
+        go: &Go,
+        met: Option<Result<Checkpoint, String>>,
+        until: Option<Result<Option<Epoch>, String>>,
+    ) -> Result<Go, String> {
         self.met = None;
+        self.docking = None;
         let Some(meeting) = &go.to.meeting else {
             return Ok(go.clone());
         };
@@ -1710,10 +1944,44 @@ impl<'w> Planner<'w> {
                 c.label
             ));
         }
-        self.met = Some(c.clone());
+        if let Here::Docked(h) = c.here {
+            return Err(format!(
+                "{} is docked to ship {h} there: where that is, is what to meet",
+                meeting.label()
+            ));
+        }
+        if go.dock {
+            let until = until.expect("a leg that docks is designed with when the vessel leaves");
+            let until = until.map_err(|why| format!("{}: {why}", meeting.label()))?;
+            self.docking = Some((meeting.ship, until));
+        }
         let mut go = go.clone();
         go.to.kind = c.place.clone();
+        self.met = Some(c);
         Ok(go)
+    }
+
+    /// `items`, a leg's as flown: for a leg that docks, with the dock at
+    /// its arrival, if the vessel is still at the stop then; the ship is
+    /// then docked (M1b.md, step 4 plan, part 2).
+    fn docked_in_time(&mut self, mut items: Vec<Item>) -> Result<Vec<Item>, String> {
+        let Some((host, until)) = self.docking.take() else {
+            return Ok(items);
+        };
+        let at = items.last().map_or(self.since, |i| i.end);
+        if let Some(u) = until
+            && at.0 > u.0
+        {
+            return Err(format!(
+                "the leg arrives {}, after ship {host} leaves {} ({})",
+                when(at),
+                self.label,
+                when(u)
+            ));
+        }
+        items.push(docked_event(self.at, host, at));
+        self.here = Here::Docked(host);
+        Ok(items)
     }
 
     fn go(&mut self, go: &Go) -> Result<Vec<Item>, String> {
@@ -1843,16 +2111,33 @@ impl<'w> Planner<'w> {
         let (mut open, mut close) = self.window(go, default_days)?;
         // Meeting a vessel on its orbit, the leg arrives no earlier than
         // the orbit begins (built from the vessel's own arrival window);
-        // whether the vessel is there then is the loop's to tell.
+        // whether the vessel is there then is the loop's to tell. Docking
+        // to it, no earlier than the vessel arrives, and before it leaves
+        // (M1b.md, step 4 plan, part 2).
         let mut waited = None;
-        if let Some(Here::Station(o)) = self.met.as_ref().map(|c| &c.here) {
-            let there = o.epoch().plus_days(station::MARGIN_DAYS);
-            let shortest = offered.iter().copied().fold(f64::INFINITY, f64::min);
+        let shortest = offered.iter().copied().fold(f64::INFINITY, f64::min);
+        let met_since = self.met.as_ref().map(|c| c.since);
+        let there = match (self.met.as_ref().map(|c| &c.here), self.docking) {
+            (Some(Here::Station(o)), docking) => {
+                let orbit = o.epoch().plus_days(station::MARGIN_DAYS);
+                Some(match docking {
+                    Some(_) => Epoch(orbit.0.max(met_since.unwrap().0)),
+                    None => orbit,
+                })
+            }
+            (Some(_), Some(_)) => met_since,
+            _ => None,
+        };
+        let how = match self.docking {
+            Some(_) => "there",
+            None => "on its orbit",
+        };
+        if let Some(there) = there {
             let earliest = there.plus_days(-shortest);
             if open.0 < earliest.0 {
                 if go.window.is_some() && close.0 < earliest.0 {
                     return Err(format!(
-                        "{} is on its orbit from {}, after the window closes ({})",
+                        "{} is {how} from {}, after the window closes ({})",
                         go.to.label,
                         when(there),
                         when(close)
@@ -1864,11 +2149,23 @@ impl<'w> Planner<'w> {
                     close = open.plus_days(length);
                 }
                 waited = Some(format!(
-                    "waits for {}, on its orbit from {}",
+                    "waits for {}, {how} from {}",
                     go.to.label,
                     when(there)
                 ));
             }
+        }
+        if let Some((host, Some(until))) = self.docking {
+            let earliest = open.plus_days(shortest);
+            if earliest.0 >= until.0 {
+                return Err(format!(
+                    "ship {host} leaves {} {}, before the leg can arrive ({})",
+                    self.met.as_ref().unwrap().label,
+                    when(until),
+                    when(earliest)
+                ));
+            }
+            close = Epoch(close.0.min(until.plus_days(-shortest).0));
         }
         if close.0 <= open.0 {
             return Err("a leg within a system needs a window longer than an instant".into());
@@ -2575,6 +2872,12 @@ impl<'w> Planner<'w> {
             ));
         }
         let span = span.max(0.0);
+        // A ship docked to a vessel rode it here: the dock stands for the
+        // stay, and the vessel keeps station for both (M1b.md, step 4
+        // plan, part 2).
+        if self.riding.is_some() {
+            return Ok((Vec::new(), None));
+        }
         let mut jumped = None;
         let mut item = Item {
             step: self.at,
@@ -2650,9 +2953,29 @@ impl<'w> Planner<'w> {
             Here::Body(b) | Here::Surface(b) => {
                 item.track = Some(Track::still(*b, self.since, span))
             }
+            Here::Docked(_) => unreachable!("a docked ship takes its vessel's place first"),
         }
         let items = if span > 0.0 { vec![item] } else { Vec::new() };
         Ok((items, jumped))
+    }
+}
+
+/// The dock of `step` to vessel `host` at `at`: an event (M1b.md, step 4
+/// plan, part 2).
+fn docked_event(step: usize, host: u64, at: Epoch) -> Item {
+    Item {
+        step,
+        kind: ItemKind::Docked(host),
+        label: format!("docked to ship {host}"),
+        start: at,
+        end: at,
+        dv: 0.0,
+        track: None,
+        markers: Vec::new(),
+        options: Vec::new(),
+        window: None,
+        seconds: 0.0,
+        note: None,
     }
 }
 

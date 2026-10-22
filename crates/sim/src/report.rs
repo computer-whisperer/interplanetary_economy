@@ -19,6 +19,7 @@ pub fn line(eph: &Ephemeris, item: &Item) -> String {
         ItemKind::Capture => "capture",
         ItemKind::Landing => "landing",
         ItemKind::Ascent => "ascent",
+        ItemKind::Docked(_) => "docked",
         ItemKind::Failed(_) => "FAILED",
     };
     let mut s = format!(

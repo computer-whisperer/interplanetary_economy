@@ -328,11 +328,27 @@ impl Loaded {
             durations: durations.clone(),
             options: None,
         };
-        // A leg that meets a vessel is designed where the vessel is
-        // (M1b.md, step 3 plan, part 3), as the designs stand.
         let Step::Go(go) = &ship.steps[step] else {
             unreachable!("checked above")
         };
+        // A leg leaving a vessel the ship is docked to, or docking to one,
+        // is designed with where that vessel is (M1b.md, step 4 plan, part
+        // 2); the sweep does not read that yet (part 6).
+        if from.docked_to().is_some() || go.dock {
+            self.sweeps.insert(
+                (s, step),
+                Sweep {
+                    options: Some(Err(
+                        "a leg that leaves a vessel it is docked to, or docks, is not swept yet"
+                            .into(),
+                    )),
+                    ..sweep
+                },
+            );
+            return;
+        }
+        // A leg that meets a vessel is designed where the vessel is
+        // (M1b.md, step 3 plan, part 3), as the designs stand.
         let met = match go.to.meeting.as_ref().map(|m| self.game.met(m)) {
             None => None,
             Some(Some(met)) => Some(met.map(|(_, c)| c)),

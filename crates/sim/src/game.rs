@@ -8,7 +8,7 @@
 //! the fleet, the designs as they stand, and its walk waits for the
 //! vessel's to get there.
 
-use crate::designs::{Cache, Designed, Ended, Key, Met, apply, flight, walk};
+use crate::designs::{Cache, Designed, Designs, Ended, Host, Key, Met, apply, flight, walk};
 use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, here_without_a_stop, minute};
 use crate::params::{Draw, Economy, EconomyFile};
@@ -79,7 +79,7 @@ impl ShipDesign {
     /// What the ship does, so far as it is designed.
     pub fn items(&self) -> impl DoubleEndedIterator<Item = &Item> {
         self.steps.iter().flat_map(|(_, d)| match &**d {
-            Designed::Step { items, .. } => items.as_slice(),
+            Designed::Step { items, .. } | Designed::Start(Ok((_, items))) => items.as_slice(),
             _ => &[],
         })
     }
@@ -94,7 +94,7 @@ impl ShipDesign {
     /// step's checkpoint after it.
     fn checkpoints(&self) -> impl Iterator<Item = &Checkpoint> {
         self.steps.iter().filter_map(|(_, d)| match &**d {
-            Designed::Start(Ok(c)) | Designed::Step { after: c, .. } => Some(c),
+            Designed::Start(Ok((c, _))) | Designed::Step { after: c, .. } => Some(c),
             _ => None,
         })
     }
@@ -128,8 +128,9 @@ enum Event {
 type Seen = (usize, bool);
 
 /// The game's ships as their designs stand, for the legs that meet them
-/// (M1b.md, step 3 plan, part 3): shared with the walks in the background,
-/// which read where a vessel is after a leg from it.
+/// and the ships docked to them (M1b.md, step 3 plan, part 3; step 4 plan,
+/// part 2): shared with the walks in the background, which read where a
+/// vessel is from it.
 #[derive(Default)]
 struct Fleet {
     by_id: HashMap<u64, Vessel>,
@@ -151,16 +152,35 @@ impl Fleet {
     }
 
     /// Where the vessel `m` names is after the leg named ([`Met`]): the
-    /// design step that holds the leg, and its checkpoint; `None` while
-    /// the vessel's design has not got there.
-    fn met(&self, m: &Meeting) -> Option<Met> {
+    /// design step that holds the leg, and its checkpoint; where the
+    /// vessel is docked there, where its own vessel is then. `None` while
+    /// the designs have not got there (the vessel waited on goes to
+    /// `waited`).
+    fn met(&self, m: &Meeting, waited: &mut Option<u64>) -> Option<Met> {
+        let (key, c) = match self.met_alone(m)? {
+            Ok(found) => found,
+            Err(why) => return Some(Err(why)),
+        };
+        let Some(host) = c.docked_to() else {
+            return Some(Ok((key, c)));
+        };
+        let at = self.at(host, c.since(), waited)?;
+        Some(
+            at.map(|(k2, c2, _)| (chain(key, k2), c2))
+                .map_err(|why| format!("ship {} is docked to ship {host} there: {why}", m.ship)),
+        )
+    }
+
+    /// [`Fleet::met`], the vessel's own design: its checkpoint after the
+    /// leg named, docked or not.
+    fn met_alone(&self, m: &Meeting) -> Option<Met> {
         let label = format!("ship {}", m.ship);
         let Some(v) = self.by_id.get(&m.ship) else {
             return Some(Err(format!("no ship has id {}", m.ship)));
         };
         let Some(leg) = m.leg else {
             return v.designed.first().map(|(key, d)| match &**d {
-                Designed::Start(Ok(c)) => Ok((*key, c.clone())),
+                Designed::Start(Ok((c, _))) => Ok((*key, c.clone())),
                 Designed::Start(Err(why)) => Err(format!("{label} cannot start: {why}")),
                 _ => unreachable!("a design's first step is its start"),
             });
@@ -198,6 +218,196 @@ impl Fleet {
         }
         v.done
             .then(|| Err(format!("{label} is not designed to leg {leg}")))
+    }
+
+    /// Where vessel `host` is at `t` ([`Host`]; M1b.md, step 4 plan, part
+    /// 2), by its design: stopped, at the checkpoint before the stay that
+    /// spans `t` (or before the step `t` falls short of), until the flight
+    /// after it leaves (never, as far as its plan goes, after a trailing
+    /// stay or its plan's end); in flight at `t`, at its next stop, from
+    /// its arrival. A vessel docked there is where its own vessel is.
+    /// `None` while the designs do not reach `t` (the vessel waited on
+    /// goes to `waited`).
+    fn at(&self, host: u64, t: Epoch, waited: &mut Option<u64>) -> Option<Host> {
+        self.at_through(host, t, waited, 0)
+    }
+
+    fn at_through(
+        &self,
+        host: u64,
+        t: Epoch,
+        waited: &mut Option<u64>,
+        depth: usize,
+    ) -> Option<Host> {
+        let label = format!("ship {host}");
+        if depth > 2 * (self.by_id.len() + 1) {
+            return Some(Err(format!("{label} is docked through a cycle")));
+        }
+        let Some(v) = self.by_id.get(&host) else {
+            return Some(Err(format!("no ship has id {host}")));
+        };
+        // The stop found: the key of the design that put the vessel
+        // there, its checkpoint, and when the vessel leaves it. The key
+        // returned hashes the two things the stop is to a ship docked
+        // there: that key and the departure, so that an edit of the vessel
+        // after the departure, leaving it as it was, re-keys nothing.
+        let mut found: Option<(Key, &Checkpoint, Option<Epoch>)> = None;
+        let mut current: Option<(Key, &Checkpoint)> = None;
+        for (key, d) in &v.designed {
+            match &**d {
+                Designed::Start(Err(why)) => {
+                    return Some(Err(format!("{label} cannot start: {why}")));
+                }
+                Designed::Start(Ok((c, _))) => {
+                    if t.0 < c.since().0 - 1e-9 {
+                        return Some(Err(format!(
+                            "{label} starts {}, after {}",
+                            when(c.since()),
+                            when(t)
+                        )));
+                    }
+                    current = Some((*key, c));
+                }
+                Designed::Step { items, after } => {
+                    let (at_key, at) = current.expect("a design starts with its start");
+                    if let Some(ItemKind::Failed(_)) = items.last().map(|i| &i.kind) {
+                        // The plan stops here: the vessel stays where it was.
+                        found = Some((at_key, at, None));
+                        break;
+                    }
+                    let first = items.first().map_or(after.since(), |i| i.start);
+                    if t.0 < first.0 {
+                        // Between steps: at the stop before, until this
+                        // step's flight leaves; a dock step, until the
+                        // vessel docked to leaves.
+                        found = Some(match items.first().map(|i| (&i.kind, i.start)) {
+                            Some((ItemKind::Docked(h2), td)) => {
+                                match self.at_through(*h2, td, waited, depth + 1)? {
+                                    Ok((k2, _, until)) => (chain(at_key, k2), at, until),
+                                    Err(why) => return Some(Err(why)),
+                                }
+                            }
+                            _ => (at_key, at, items.iter().find(|i| flies(i)).map(|i| i.start)),
+                        });
+                        break;
+                    }
+                    if let Some(i) = items.iter().find(|i| i.start.0 <= t.0 && t.0 < i.end.0) {
+                        if i.kind == ItemKind::Stay {
+                            // Stopped, until the flight after the stay; a
+                            // trailing stay: for ever, once the plan's end
+                            // is designed.
+                            let leaves = items
+                                .iter()
+                                .filter(|j| flies(j))
+                                .find(|j| j.start.0 >= i.end.0 - 1e-9)
+                                .map(|j| j.start);
+                            if leaves.is_none() && !v.done {
+                                *waited = Some(host);
+                                return None;
+                            }
+                            found = Some((at_key, at, leaves));
+                            break;
+                        }
+                        // In flight: at the next stop, from its arrival.
+                        return self.at_through(host, after.since(), waited, depth + 1);
+                    }
+                    current = Some((*key, after));
+                }
+                Designed::End => {
+                    let (k, c) = current.expect("a design starts with its start");
+                    found = Some((k, c, None));
+                    break;
+                }
+            }
+        }
+        let (at_key, c, until) = match found {
+            Some(found) => found,
+            None => {
+                let Some((k, c)) = current.filter(|_| v.done) else {
+                    *waited = Some(host);
+                    return None;
+                };
+                (k, c, None)
+            }
+        };
+        match c.docked_to() {
+            None => Some(Ok((host_key(at_key, until), c.clone(), until))),
+            Some(h2) => {
+                let inner = self.at_through(h2, t, waited, depth + 1)?;
+                Some(
+                    inner
+                        .map(|(k2, c2, u2)| {
+                            let until = earliest(until, u2);
+                            (host_key(chain(at_key, k2), until), c2, until)
+                        })
+                        .map_err(|why| format!("{label} is docked to ship {h2}: {why}")),
+                )
+            }
+        }
+    }
+}
+
+/// The key of a vessel's stop to a ship docked there: the key of the
+/// design that put the vessel there, and when it leaves.
+fn host_key(at: Key, until: Option<Epoch>) -> Key {
+    let mut h = Fixed::default();
+    h.u64(at).debug(&until);
+    h.finish()
+}
+
+/// The earlier of two departures, `None` being never.
+fn earliest(a: Option<Epoch>, b: Option<Epoch>) -> Option<Epoch> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(Epoch(a.0.min(b.0))),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
+/// Whether `item` is flown: a leg, landing, ascent or capture (a stay, a
+/// dock and a failure are not).
+fn flies(item: &Item) -> bool {
+    matches!(
+        item.kind,
+        ItemKind::Leg | ItemKind::Landing | ItemKind::Ascent | ItemKind::Capture
+    )
+}
+
+/// One key of two.
+fn chain(a: Key, b: Key) -> Key {
+    let mut h = Fixed::default();
+    h.u64(a).u64(b);
+    h.finish()
+}
+
+/// The fleet as a walk reads it ([`Designs`]), noting the vessel it waited
+/// on, and how far it had seen it designed.
+struct Lookup<'a> {
+    fleet: &'a Mutex<Fleet>,
+    waited: Cell<Option<(u64, Seen)>>,
+}
+
+impl Designs for Lookup<'_> {
+    fn met(&self, m: &Meeting) -> Option<Met> {
+        let fleet = self.fleet.lock().unwrap();
+        let mut waited = Some(m.ship);
+        let met = fleet.met(m, &mut waited);
+        if met.is_none() {
+            let v = waited.unwrap_or(m.ship);
+            self.waited.set(Some((v, fleet.seen(v))));
+        }
+        met
+    }
+
+    fn at(&self, host: u64, t: Epoch) -> Option<Host> {
+        let fleet = self.fleet.lock().unwrap();
+        let mut waited = Some(host);
+        let at = fleet.at(host, t, &mut waited);
+        if at.is_none() {
+            let v = waited.unwrap_or(host);
+            self.waited.set(Some((v, fleet.seen(v))));
+        }
+        at
     }
 }
 
@@ -813,9 +1023,9 @@ impl Game {
 
     /// After the log's ships changed: the plan as it stands, and each ship
     /// whose inputs changed designed again (from the cache where its steps
-    /// did not change), and with it each ship that meets one designed
-    /// again (its meeting's key is the vessel's); the others go on as they
-    /// were.
+    /// did not change), and with it each ship that reads one (meets it,
+    /// docks to it or starts docked to it: their keys are the vessel's)
+    /// designed again; the others go on as they were.
     fn reshaped(&mut self) {
         let mut old: Vec<ShipDesign> = std::mem::take(&mut self.ships);
         let n = self.log.plan.ships.len();
@@ -888,8 +1098,9 @@ impl Game {
         self.rerun();
     }
 
-    /// Whether `ship`'s plan (the log's, with its re-plans) meets any of
-    /// the ships with ids `among`.
+    /// Whether `ship`'s plan (the log's, with its re-plans) reads any of
+    /// the ships with ids `among`: meets or docks to one, or starts docked
+    /// to one.
     fn meets_any(&self, ship: &Ship, among: &HashSet<u64>) -> bool {
         let mine: Vec<&Replan> = self
             .log
@@ -902,7 +1113,9 @@ impl Game {
                 .iter()
                 .any(|s| s.meeting().is_some_and(|m| among.contains(&m.ship)))
         };
-        meets(&ship.steps) || mine.iter().any(|r| meets(&r.steps))
+        ship.start.meeting.is_some_and(|m| among.contains(&m.ship))
+            || meets(&ship.steps)
+            || mine.iter().any(|r| meets(&r.steps))
     }
 
     /// Ship `k` of the log before it is designed: nothing of it yet.
@@ -949,7 +1162,15 @@ impl Game {
     /// Where the vessel `m` names is after the leg named, as the designs
     /// stand ([`Met`]); `None` while its design has not got there.
     pub fn met(&self, m: &Meeting) -> Option<Met> {
-        self.fleet.lock().unwrap().met(m)
+        self.fleet.lock().unwrap().met(m, &mut None)
+    }
+
+    /// Where vessel `host` is at `t`, as the designs stand ([`Host`]; M1b.md,
+    /// step 4 plan, part 2): its stop then, or its next if it is in flight,
+    /// and when it leaves it; through the vessel it is docked to. `None`
+    /// while the designs do not reach `t`.
+    pub fn at(&self, host: u64, t: Epoch) -> Option<Host> {
+        self.fleet.lock().unwrap().at(host, t, &mut None)
     }
 
     /// Ship `k` of the plan as it stands: the log's, with its re-plans
@@ -1019,7 +1240,10 @@ impl Game {
                 used.lock().unwrap().insert(key);
                 cache.get(key)
             },
-            &|m| self.met(m),
+            &Lookup {
+                fleet: &self.fleet,
+                waited: Cell::new(None),
+            },
             &mut |key, designed| {
                 ship.steps.push((key, designed.clone()));
             },
@@ -1050,7 +1274,10 @@ impl Game {
             let send = |e| {
                 let _ = sender.send((live.clone(), e));
             };
-            let waited: Cell<Option<(u64, Seen)>> = Cell::new(None);
+            let lookup = Lookup {
+                fleet: &fleet,
+                waited: Cell::new(None),
+            };
             let walked = catch_unwind(AssertUnwindSafe(|| {
                 let replans: Vec<&Replan> = replans.iter().collect();
                 let mut n = 0;
@@ -1068,14 +1295,7 @@ impl Game {
                         used.lock().unwrap().insert(key);
                         Some(cache.get(key).unwrap_or_else(|| cache.put(key, design())))
                     },
-                    &|m| {
-                        let fleet = fleet.lock().unwrap();
-                        let met = fleet.met(m);
-                        if met.is_none() {
-                            waited.set(Some((m.ship, fleet.seen(m.ship))));
-                        }
-                        met
-                    },
+                    &lookup,
                     &mut |key, designed| {
                         send(Event::Shown(n, key, designed.clone()));
                         n += 1;
@@ -1084,7 +1304,7 @@ impl Game {
                 )
             }));
             send(match walked {
-                Ok(Ended::Waiting) => match waited.get() {
+                Ok(Ended::Waiting) => match lookup.waited.get() {
                     Some((vessel, seen)) => Event::Waiting { vessel, seen },
                     None => Event::Ended(Ended::Waiting),
                 },
@@ -1439,7 +1659,10 @@ impl Game {
             &self.log.plan.ships[k],
             &mine,
             &mut |key, _| cache.get(key),
-            &|m| self.met(m),
+            &Lookup {
+                fleet: &self.fleet,
+                waited: Cell::new(None),
+            },
             &mut |_, _| {},
             &mut |i, why| {
                 if i == mine.len() - 1 {
@@ -1684,6 +1907,9 @@ fn stranded(ship: &Ship, items: &[&Item], dry: &Dry) -> Option<String> {
     }
     if before.kind == ItemKind::Stay {
         return Some(before.label.clone());
+    }
+    if let ItemKind::Docked(host) = before.kind {
+        return Some(format!("docked to ship {host}"));
     }
     let to = ship
         .steps

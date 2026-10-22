@@ -400,6 +400,7 @@ pub fn item_row(eph: &Ephemeris, item: &Item) -> Row {
         ItemKind::Capture => "capture",
         ItemKind::Landing => "landing",
         ItemKind::Ascent => "ascent",
+        ItemKind::Docked(_) => "docked",
         ItemKind::Failed(_) => "failed",
     };
     let mut lines = vec![(

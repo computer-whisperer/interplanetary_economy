@@ -7,8 +7,8 @@ loop makes their transfers and purchases, career refuses an action that
 runs a vessel dry or short, the sandbox's editor sets meetings and
 manifests while its panel shows transfers and purchases, `sim run`
 prints them with the depot scenarios' checks holding, and the tests and
-measurements are in); step 4, docking, under way (its plan, below), part
-1 done. Decided: one engine for both modes, with economy components
+measurements are in); step 4, docking, under way (its plan, below), parts
+1 and 2 done. Decided: one engine for both modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they stay,
 with docking a step of its own (Design, Vessels, stations and stocks).
@@ -2310,6 +2310,37 @@ Where the work is (found drafting):
    rides to the NRHO and leaves for low lunar orbit from the hauler's
    orbit, its items as expected; a dock leg failing when the host has
    left; an edit of the host before and after the member's departure.
+   - Built (2026-10-21): `ItemKind::Docked(host)`, an event at the dock
+     (the member's position is then its host's: no stay of its own, and
+     the host keeps station for both), `START` for a start's item;
+     `Here::Docked`, `Checkpoint::{ready, docked_to, departs}`, `Others`
+     (what a step reads of other ships: the vessel met, when it leaves
+     for a leg that docks, and where the host is for a docked ship),
+     `Planner::{next, docked, start_items, docked_to, docks}`; a docked
+     ship's leg leaves from its host's stop before the host does (the
+     window closed at its departure), a dock leg arrives after the host
+     and before it leaves (`orbit::mission`). `designs::Designs` (the
+     walk's view of the fleet: `met`, `at`), `Host`, `Designed::Start`
+     with its items, keys over what is read; `Fleet::at` finds a vessel's
+     stop at a time by its design, through the vessels it is docked to,
+     keyed by the design that put it there and when it leaves (so an
+     edit of the host after the member's departure, leaving that as it
+     was, re-keys nothing); `Fleet::met` through a docked vessel;
+     `Game::at`; a start docked to a vessel counts as reading it
+     (`meets_any`: found by the test, the lander was not re-walked after
+     the hauler's edit). The sandbox's sweep refuses a leg from a docked
+     vessel or that docks (part 6). Tests:
+     `a_docked_ship_rides_and_leaves_from_its_vessel`
+     (`crates/orbit/tests/meeting.rs`, 15 s) and
+     `a_docked_ship_rides_its_vessel_in_a_game` (`crates/sim/tests/
+     game.rs`, 55 s: a chain of two, `Game::at` before and in the
+     lander's flight, the two edits). Found: the tests' position helper
+     missed a track's first state by a tenth of a microsecond; it now
+     allows a millisecond, as the sandbox's does. Known approximation: a
+     member leaving its host at LEO before the host flies takes a free
+     plane, as the host does. Run: orbit's missions, meeting and career;
+     sim's unit, game and state; the sandbox's unit, editor, plan,
+     stops, options, windows, tanks, labels and timeline; the kill-test.
 3. **The dock step**: its time by the assembly's co-location, its
    failure, its manifest; a module carried by a tug and moved to a
    depot. Tests on that plan.

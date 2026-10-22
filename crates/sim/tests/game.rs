@@ -1075,12 +1075,20 @@ days = [5.0]
 aero = true
 "#;
 
-/// Where `item`'s track puts the ship at `t`, km.
+/// Where `item`'s track puts the ship at `t`, km: a time within a
+/// millisecond of the track's ends is at them (an item's times and its
+/// track's are computed from different epochs).
 fn position(item: &Item, t: Epoch) -> [f64; 3] {
     let track = item.track.as_ref().unwrap();
-    let s = track
-        .at((t.0 - track.epoch.0) * orbit::time::SECONDS_PER_DAY)
-        .unwrap_or_else(|| panic!("{} has no state at {}", item.label, t.stamp()));
+    let (first, last) = track.span().unwrap();
+    let s = (t.0 - track.epoch.0) * orbit::time::SECONDS_PER_DAY;
+    assert!(
+        s >= first - 1e-3 && s <= last + 1e-3,
+        "{} has no state at {}",
+        item.label,
+        t.stamp()
+    );
+    let s = track.at(s.clamp(first, last)).unwrap();
     [s[0], s[1], s[2]]
 }
 
@@ -1371,4 +1379,141 @@ fn career_keeps_a_leg_another_ship_meets() {
     );
     game.wait();
     game.replan(0, 1, steps[1..].to_vec(), None).unwrap();
+}
+
+/// Riding in a game (M1b.md, step 4 plan, part 2): a lander started docked
+/// to a hauler at LEO, and a module started docked to the lander, ride to
+/// the NRHO; the lander leaves for low lunar orbit from the hauler's orbit,
+/// the module with it. `Game::at` follows the chain. An edit of the hauler
+/// before the lander leaves designs the lander again; one after that, which
+/// leaves the hauler's departure as it was, designs nothing of the lander's.
+#[test]
+fn a_docked_ship_rides_its_vessel_in_a_game() {
+    let src = r#"
+name = "riding"
+
+[[ship]]
+id = 0
+name = "Hauler"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 30
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship.leg]]
+wait = 10
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship]]
+id = 1
+name = "Lander"
+start = { at = { ship = 0 }, epoch = "2045-03-01" }
+
+[[ship.leg]]
+wait = 6
+
+[[ship.leg]]
+to = "llo"
+days = [1.0]
+
+[[ship]]
+id = 2
+name = "Module"
+start = { at = { ship = 1 }, epoch = "2045-03-01" }
+"#;
+    let mut game = Game::new(parse(src), pool(4)).unwrap();
+    game.wait();
+    let failures: Vec<&String> = game
+        .ships()
+        .iter()
+        .filter_map(|s| s.failure.as_ref())
+        .collect();
+    assert!(failures.is_empty(), "{failures:?}");
+    let kinds =
+        |s: usize| -> Vec<ItemKind> { game.ships()[s].items().map(|i| i.kind.clone()).collect() };
+    assert!(
+        matches!(kinds(1).as_slice(), [ItemKind::Docked(0), ItemKind::Leg]),
+        "{:?}",
+        kinds(1)
+    );
+    assert_eq!(kinds(2), [ItemKind::Docked(1)]);
+    let hauler: Vec<Item> = game.ships()[0].items().cloned().collect();
+    let out = hauler.iter().find(|i| i.kind == ItemKind::Leg).unwrap();
+    let home = hauler
+        .iter()
+        .filter(|i| i.kind == ItemKind::Leg)
+        .nth(1)
+        .unwrap();
+    let lander: Vec<Item> = game.ships()[1].items().cloned().collect();
+    let leg = &lander[1];
+    assert_eq!(leg.label, "nrho → llo");
+    assert!(leg.start.0 >= out.end.0 && leg.start.0 < home.start.0);
+    let nrho_stay = nrho_stay(&game, 0);
+    let gap = {
+        let a = position(leg, leg.start);
+        let b = position(&nrho_stay, leg.start);
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
+    assert!(gap < 1.0, "{gap} km from the hauler at departure");
+
+    // The module through the chain: before the lander leaves, at the
+    // hauler's stop until the lander leaves; in the lander's flight, at
+    // the lander's next stop, for ever.
+    let (_, c, until) = game.at(2, Epoch(leg.start.0 - 0.1)).unwrap().unwrap();
+    assert_eq!(c.docked_to(), None);
+    assert_eq!(c.since(), out.end);
+    assert_eq!(until, Some(leg.start));
+    let (_, c, until) = game.at(2, Epoch(leg.start.0 + 0.1)).unwrap().unwrap();
+    assert_eq!(c.since(), leg.end);
+    assert_eq!(until, None);
+    // And at its start, at LEO with the hauler until the hauler leaves.
+    let (_, c, until) = game.at(2, Epoch::from_ymd(2045, 3, 1)).unwrap().unwrap();
+    assert_eq!(c.since(), Epoch::from_ymd(2045, 3, 1));
+    assert_eq!(until, Some(out.start));
+    assert!(game.at(9, out.start).unwrap().is_err(), "no ship 9");
+
+    // An edit of the hauler's leg out: the lander is designed again (its
+    // leg leaves from where the hauler now arrives).
+    let before = shown(&lander);
+    let mut edited = game.plan().ships[0].clone();
+    let Step::Go(go) = &mut edited.steps[0] else {
+        panic!("a leg")
+    };
+    go.days = vec![4.0];
+    game.edit(0, edited).unwrap();
+    game.wait();
+    let lander_after: Vec<Item> = game.ships()[1].items().cloned().collect();
+    assert_ne!(shown(&lander_after), before);
+    assert_eq!(lander_after.len(), 2);
+    // An edit of the hauler's last leg, after the lander has left and
+    // leaving the hauler's departure from the NRHO as it was: nothing of
+    // the lander's is designed again.
+    let before = shown(&lander_after);
+    let made = game.designs_made();
+    let mut edited = game.plan().ships[0].clone();
+    let Step::Go(go) = &mut edited.steps[4] else {
+        panic!("a leg")
+    };
+    go.days = vec![6.0];
+    game.edit(0, edited).unwrap();
+    game.wait();
+    let lander_again: Vec<Item> = game.ships()[1].items().cloned().collect();
+    assert_eq!(shown(&lander_again), before);
+    assert!(
+        game.designs_made() - made <= 2,
+        "{}",
+        game.designs_made() - made
+    );
 }

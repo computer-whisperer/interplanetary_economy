@@ -12,7 +12,9 @@
 
 use crate::hash::Fixed;
 use crate::log::Replan;
-use orbit::mission::{Checkpoint, Item, ItemKind, Meeting, Planner, Ship, Step, World, reads};
+use orbit::mission::{
+    Checkpoint, Item, ItemKind, Meeting, Others, Planner, Ship, Step, World, reads,
+};
 use orbit::time::Epoch;
 use std::collections::HashMap;
 use std::hash::Hasher;
@@ -21,11 +23,12 @@ use std::sync::{Arc, Mutex};
 
 pub type Key = u64;
 
-/// What a key designs: where the ship starts, or a step's items and where
-/// the ship is after them.
+/// What a key designs: where the ship starts (and its items: the dock, for
+/// a ship started docked to a vessel), or a step's items and where the
+/// ship is after them.
 #[derive(Clone)]
 pub enum Designed {
-    Start(Result<Checkpoint, String>),
+    Start(Result<(Checkpoint, Vec<Item>), String>),
     Step {
         items: Vec<Item>,
         after: Checkpoint,
@@ -34,13 +37,23 @@ pub enum Designed {
     End,
 }
 
-/// The key of a ship's start: where and when.
-pub fn start_key(ship: &Ship) -> Key {
+/// The key of a ship's start: where and when; for a start docked to a
+/// vessel, where the vessel is then (`host`).
+pub fn start_key(ship: &Ship, host: Option<&Host>) -> Key {
     let mut h = Fixed::default();
     h.str("start")
         .debug(&ship.start.kind)
         .str(&ship.start.label)
         .f64(ship.epoch.0);
+    match host {
+        None => {}
+        Some(Ok((key, _, _))) => {
+            h.str("docked").u64(*key);
+        }
+        Some(Err(why)) => {
+            h.str("not docked").str(why);
+        }
+    }
     h.finish()
 }
 
@@ -49,9 +62,22 @@ pub fn start_key(ship: &Ship) -> Key {
 /// why it is not there (the step fails).
 pub type Met = Result<(Key, Checkpoint), String>;
 
-/// Finds where a vessel is after the leg a meeting names ([`Met`]);
-/// `None` while the vessel's design has not got there.
-pub type Meet<'a> = dyn Fn(&Meeting) -> Option<Met> + 'a;
+/// Where a vessel is at a time, for a ship docked to it or docking to it
+/// (M1b.md, step 4 plan, part 2): the key of the designs that say so, its
+/// stop then (its next, if it is in flight then: where it is stopped from
+/// the checkpoint's `since`), and when it leaves that stop (`None`: never,
+/// as far as its plan goes); or why that is not to be had.
+pub type Host = Result<(Key, Checkpoint, Option<Epoch>), String>;
+
+/// The other ships' designs as they stand, read by a walk (M1b.md, step 3
+/// plan, part 3; step 4 plan, part 2): `None` while they do not reach what
+/// is asked, and the walk waits.
+pub trait Designs {
+    /// Where the vessel `m` names is after the leg named ([`Met`]).
+    fn met(&self, m: &Meeting) -> Option<Met>;
+    /// Where vessel `host` is at `t` ([`Host`]).
+    fn at(&self, host: u64, t: Epoch) -> Option<Host>;
+}
 
 /// Hashes what designing `steps` reads: a wait's days, a dock's vessel,
 /// and a leg's all but its manifest, which is kept as written and designs
@@ -80,8 +106,18 @@ pub fn flight(h: &mut Fixed, steps: &[Step]) {
 }
 
 /// The key of the step from the checkpoint keyed `at`, which goes on
-/// from step `next` of `ship`; `met`, where its leg meets a vessel.
-pub fn step_key(at: Key, ship: &Ship, next: usize, met: Option<&Met>) -> Key {
+/// from step `next` of `ship`, and what it reads of other ships: `met`,
+/// where its leg meets a vessel; `until`, where its leg docks, when the
+/// vessel leaves; `host`, where the ship is docked, where the vessel is
+/// when it leaves.
+pub fn step_key(
+    at: Key,
+    ship: &Ship,
+    next: usize,
+    met: Option<&Met>,
+    until: Option<&Host>,
+    host: Option<&Host>,
+) -> Key {
     let mut h = Fixed::default();
     h.str("step").u64(at).u64(next as u64);
     flight(
@@ -97,6 +133,17 @@ pub fn step_key(at: Key, ship: &Ship, next: usize, met: Option<&Met>) -> Key {
             h.str("misses").str(why);
         }
     }
+    for (what, read) in [("until", until), ("rides", host)] {
+        match read {
+            None => {}
+            Some(Ok((key, _, _))) => {
+                h.str(what).u64(*key);
+            }
+            Some(Err(why)) => {
+                h.str(what).str("not").str(why);
+            }
+        }
+    }
     h.finish()
 }
 
@@ -106,6 +153,17 @@ fn meeting(ship: &Ship, next: usize) -> Option<&Meeting> {
     ship.steps[next.min(ship.steps.len())..reads(ship, next)]
         .iter()
         .find_map(Step::meeting)
+}
+
+/// The vessel the step from `next` of `ship` docks to by its leg, if it
+/// does.
+fn docks(ship: &Ship, next: usize) -> Option<&Meeting> {
+    ship.steps[next.min(ship.steps.len())..reads(ship, next)]
+        .iter()
+        .find_map(|s| match s {
+            Step::Go(go) if go.dock => go.to.meeting.as_ref(),
+            _ => None,
+        })
 }
 
 /// The key of the checkpoint keyed `at` with the ship staying there until
@@ -187,10 +245,10 @@ pub type Fetch<'a> = dyn FnMut(Key, &dyn Fn() -> Designed) -> Option<Arc<Designe
 
 /// Walks `ship`'s steps from its start, with its re-plans (in the order
 /// they were made), taking each step's design from `fetch(key, step)`,
-/// which finds it or designs it (`None`: not to be had now), and where a
-/// step's leg meets a vessel, where the vessel is from `meet` (`None`:
-/// not designed that far yet; the walk waits). Each step of the ship's
-/// design as it stands goes to `out`, in order, with its key.
+/// which finds it or designs it (`None`: not to be had now), and what a
+/// step reads of the other ships from `designs` (`None`: not designed that
+/// far yet; the walk waits). Each step of the ship's design as it stands
+/// goes to `out`, in order, with its key.
 ///
 /// A re-plan takes effect at the checkpoint before the step that holds
 /// its first step replaced: there, if the ship arrived after it was made;
@@ -202,16 +260,30 @@ pub fn walk(
     ship: &Ship,
     replans: &[&Replan],
     fetch: &mut Fetch,
-    meet: &Meet,
+    designs: &dyn Designs,
     out: &mut dyn FnMut(Key, &Arc<Designed>),
     refused: &mut dyn FnMut(usize, String),
 ) -> Ended {
     let mut ship = ship.clone();
-    let mut key = start_key(&ship);
+    // A start docked to a vessel is where the vessel is at the epoch.
+    let host = match &ship.start.meeting {
+        Some(m) => match designs.at(m.ship, ship.epoch) {
+            Some(host) => Some(host),
+            None => return Ended::Waiting,
+        },
+        None => None,
+    };
+    let mut key = start_key(&ship, host.as_ref());
     let start = {
         let ship = &ship;
         fetch(key, &|| {
-            Designed::Start(Planner::new(world, ship).map(|p| p.checkpoint()))
+            Designed::Start(match &host {
+                None => Planner::new(world, ship).map(|p| (p.checkpoint(), Vec::new())),
+                Some(host) => {
+                    let host = host.clone().map(|(_, c, until)| (c, until));
+                    Planner::docked(world, ship, host).map(|p| (p.checkpoint(), p.start_items()))
+                }
+            })
         })
     };
     let Some(start) = start else {
@@ -219,7 +291,7 @@ pub fn walk(
     };
     out(key, &start);
     let mut c = match &*start {
-        Designed::Start(Ok(c)) => c.clone(),
+        Designed::Start(Ok((c, _))) => c.clone(),
         Designed::Start(Err(why)) => return Ended::Done(Some(why.clone())),
         _ => unreachable!("a start's key designs a start"),
     };
@@ -249,7 +321,7 @@ pub fn walk(
             if c.since().0 < r.at.0 {
                 // The ship was here before the re-plan: it is staying if
                 // the step from here had not left by then.
-                let Some((old, designed)) = keyed(world, &ship, &c, key, meet)
+                let Some((old, designed)) = keyed(world, &ship, &c, key, designs)
                     .and_then(|(k, design)| Some((k, fetch(k, &design)?)))
                 else {
                     return Ended::Waiting;
@@ -285,7 +357,7 @@ pub fn walk(
             apply(&mut edited.steps, r);
             (ship, c, key) = (edited, at, at_key);
         }
-        let Some((k, designed)) = keyed(world, &ship, &c, key, meet)
+        let Some((k, designed)) = keyed(world, &ship, &c, key, designs)
             .and_then(|(k, design)| Some((k, fetch(k, &design)?)))
         else {
             return Ended::Waiting;
@@ -306,27 +378,47 @@ pub fn walk(
 }
 
 /// The key of the step from `c` of `ship` (`c` keyed `at`), and its
-/// design; `None` while the vessel its leg meets is not designed that far
-/// (`meet`).
+/// design; `None` while what it reads of the other ships (`designs`) is
+/// not designed that far: the vessel its leg meets, after the leg named;
+/// for a leg that docks, when that vessel leaves the stop; for a ship
+/// docked to a vessel, where the vessel is when the ship leaves.
 fn keyed<'a>(
     world: &'a World,
     ship: &'a Ship,
     c: &'a Checkpoint,
     at: Key,
-    meet: &Meet,
+    designs: &dyn Designs,
 ) -> Option<(Key, impl Fn() -> Designed + 'a)> {
-    let met = match meeting(ship, c.next()) {
+    let next = c.next();
+    let met = match meeting(ship, next) {
         None => None,
-        Some(m) => Some(meet(m)?),
+        Some(m) => Some(designs.met(m)?),
     };
-    let key = step_key(at, ship, c.next(), met.as_ref());
+    let until = match (&met, docks(ship, next)) {
+        (Some(Ok((_, at))), Some(m)) => Some(designs.at(m.ship, at.since())?),
+        _ => None,
+    };
+    let host = match c.docked_to() {
+        None => None,
+        Some(h) => Some(designs.at(h, c.departs(ship))?),
+    };
+    let key = step_key(at, ship, next, met.as_ref(), until.as_ref(), host.as_ref());
     let design = move || {
         let mut planner = Planner::resume(world, ship, c.clone());
-        let items = match &met {
-            None => planner.step(),
-            Some(met) => planner.meet(met.as_ref().map(|(_, c)| c).map_err(Clone::clone)),
+        let others = Others {
+            met: met
+                .as_ref()
+                .map(|m| m.as_ref().map(|(_, c)| c.clone()).map_err(Clone::clone)),
+            until: until
+                .as_ref()
+                .map(|u| u.as_ref().map(|(_, _, u)| *u).map_err(Clone::clone)),
+            host: host.as_ref().map(|h| {
+                h.as_ref()
+                    .map(|(_, c, u)| (c.clone(), *u))
+                    .map_err(Clone::clone)
+            }),
         };
-        match items {
+        match planner.next(others) {
             Some(items) => Designed::Step {
                 items,
                 after: planner.checkpoint(),
@@ -370,7 +462,7 @@ mod tests {
         "#;
         let plan = Plan::parse(src, Ephemeris::standard(), Places::standard()).unwrap();
         let tug = &plan.ships[1];
-        let key = |ship: &Ship, next: usize| step_key(7, ship, next, None);
+        let key = |ship: &Ship, next: usize| step_key(7, ship, next, None, None, None);
         let mut docked = tug.clone();
         let Step::Go(go) = &mut docked.steps[0] else {
             panic!("a leg")
