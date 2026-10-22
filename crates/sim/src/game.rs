@@ -8,7 +8,9 @@
 //! the fleet, the designs as they stand, and its walk waits for the
 //! vessel's to get there.
 
-use crate::designs::{Cache, Designed, Designs, Ended, Host, Key, Met, apply, flight, walk};
+use crate::designs::{
+    Cache, Designed, Designs, Docked, Ended, Host, Key, Met, apply, flight, walk,
+};
 use crate::hash::Fixed;
 use crate::log::{Check, Log, Mode, Replan, here_without_a_stop, minute};
 use crate::params::{Draw, Economy, EconomyFile};
@@ -229,16 +231,20 @@ impl Fleet {
     /// `None` while the designs do not reach `t` (the vessel waited on
     /// goes to `waited`).
     fn at(&self, host: u64, t: Epoch, waited: &mut Option<u64>) -> Option<Host> {
-        self.at_through(host, t, waited, 0)
+        self.trace(host, t, waited, 0)
+            .map(|r| r.map(|tr| (tr.key, tr.at, tr.until)))
     }
 
-    fn at_through(
+    /// [`Fleet::at`], with the chain of vessels followed: `host`, the
+    /// vessel it is docked to, and so on to the one with a place of its
+    /// own, each at its own checkpoint at `t`.
+    fn trace(
         &self,
         host: u64,
         t: Epoch,
         waited: &mut Option<u64>,
         depth: usize,
-    ) -> Option<Host> {
+    ) -> Option<Result<Trace, String>> {
         let label = format!("ship {host}");
         if depth > 2 * (self.by_id.len() + 1) {
             return Some(Err(format!("{label} is docked through a cycle")));
@@ -282,8 +288,8 @@ impl Fleet {
                         // vessel docked to leaves.
                         found = Some(match items.first().map(|i| (&i.kind, i.start)) {
                             Some((ItemKind::Docked(h2), td)) => {
-                                match self.at_through(*h2, td, waited, depth + 1)? {
-                                    Ok((k2, _, until)) => (chain(at_key, k2), at, until),
+                                match self.trace(*h2, td, waited, depth + 1)? {
+                                    Ok(tr) => (chain(at_key, tr.key), at, tr.until),
                                     Err(why) => return Some(Err(why)),
                                 }
                             }
@@ -309,7 +315,7 @@ impl Fleet {
                             break;
                         }
                         // In flight: at the next stop, from its arrival.
-                        return self.at_through(host, after.since(), waited, depth + 1);
+                        return self.trace(host, after.since(), waited, depth + 1);
                     }
                     current = Some((*key, after));
                 }
@@ -330,21 +336,138 @@ impl Fleet {
                 (k, c, None)
             }
         };
+        let own = (host, c.clone());
         match c.docked_to() {
-            None => Some(Ok((host_key(at_key, until), c.clone(), until))),
+            None => Some(Ok(Trace {
+                key: host_key(at_key, until),
+                chain: vec![own],
+                at: c.clone(),
+                until,
+            })),
             Some(h2) => {
-                let inner = self.at_through(h2, t, waited, depth + 1)?;
+                let inner = self.trace(h2, t, waited, depth + 1)?;
                 Some(
                     inner
-                        .map(|(k2, c2, u2)| {
-                            let until = earliest(until, u2);
-                            (host_key(chain(at_key, k2), until), c2, until)
+                        .map(|tr| {
+                            let until = earliest(until, tr.until);
+                            let mut followed = vec![own];
+                            followed.extend(tr.chain);
+                            Trace {
+                                key: host_key(chain(at_key, tr.key), until),
+                                chain: followed,
+                                at: tr.at,
+                                until,
+                            }
                         })
                         .map_err(|why| format!("{label} is docked to ship {h2}: {why}")),
                 )
             }
         }
     }
+
+    /// When ship `ship`, docked at `from` or at `from`'s stop, and ready
+    /// at `ready`, is with the vessel `m` names at its stop after the leg
+    /// named ([`Docked`]; M1b.md, step 4 plan, part 3): the first time, no
+    /// earlier than the vessel arrives, at which the chain of vessels the
+    /// ship is docked to holds the vessel, or one of them (or the ship
+    /// itself, at its own stop) met the vessel at that stop, or the vessel
+    /// met one of them where it is. Not with it, a docked ship is tried
+    /// again at its chain's next stop; a ship at its own stop fails. The
+    /// vessel leaving its stop first fails too. `None` while the designs
+    /// do not reach that far.
+    fn dock(
+        &self,
+        ship: u64,
+        from: &Checkpoint,
+        ready: Epoch,
+        m: &Meeting,
+        waited: &mut Option<u64>,
+    ) -> Option<Docked> {
+        let (k_vessel, c_vessel) = match self.met_alone(m)? {
+            Ok(found) => found,
+            Err(why) => return Some(Err(why)),
+        };
+        // The vessel's stop: until it leaves, through its own vessel.
+        let stop = match self.trace(m.ship, c_vessel.since(), waited, 0)? {
+            Ok(tr) => tr,
+            Err(why) => return Some(Err(why)),
+        };
+        let mut key = chain(k_vessel, stop.key);
+        let mut t = Epoch(ready.0.max(c_vessel.since().0));
+        for _ in 0..DOCK_STOPS {
+            if let Some(u) = stop.until
+                && t.0 >= u.0
+            {
+                return Some(Err(format!(
+                    "ship {} leaves {} {}, before the ship is with it",
+                    m.ship,
+                    c_vessel.label(),
+                    when(u)
+                )));
+            }
+            // The ship's chain of vessels at `t`, or itself at its stop.
+            let (vessels, until) = match from.docked_to() {
+                None => (vec![(ship, from.clone())], None),
+                Some(h) => match self.trace(h, t, waited, 0)? {
+                    Ok(tr) => {
+                        key = chain(key, tr.key);
+                        (tr.chain, tr.until)
+                    }
+                    Err(why) => return Some(Err(format!("ship {h}: {why}"))),
+                },
+            };
+            // In flight at `t` (the chain's next stop is given): when it
+            // has stopped.
+            let arrived = vessels
+                .iter()
+                .map(|(_, c)| c.since().0)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if arrived > t.0 + 1e-9 {
+                t = Epoch(arrived);
+                continue;
+            }
+            let holds = vessels.iter().any(|(v, _)| *v == m.ship);
+            let met_it = vessels.iter().any(|(_, c)| c.with() == Some(*m));
+            let met_by = c_vessel.with().is_some_and(|w| {
+                vessels
+                    .iter()
+                    .any(|(v, c)| *v == w.ship && c.next() == w.leg.map_or(0, |l| l + 1))
+            });
+            if holds || met_it || met_by {
+                let mut h = Fixed::default();
+                h.u64(key).f64(t.0);
+                return Some(Ok((h.finish(), t, c_vessel)));
+            }
+            let Some(h) = from.docked_to() else {
+                return Some(Err(format!("at {}, not with {}", from.label(), m.label())));
+            };
+            // Not with it here: when the chain leaves, it is in flight,
+            // and the next stop follows.
+            let Some(leaves) = until else {
+                return Some(Err(format!("docked to ship {h}, never with {}", m.label())));
+            };
+            t = Epoch(leaves.0.max(t.0 + 1e-9));
+        }
+        Some(Err(format!(
+            "not with {} within {DOCK_STOPS} stops of its vessel",
+            m.label()
+        )))
+    }
+}
+
+/// How many stops of its chain of vessels a ship is tried at for a dock
+/// step before the step fails.
+const DOCK_STOPS: usize = 32;
+
+/// Where a vessel is at a time, traced: the key of the designs that say
+/// so, the chain of vessels followed (the vessel, the one it is docked to,
+/// and so on), each at its own checkpoint, the last one's checkpoint
+/// (where they all are), and when the chain leaves there.
+struct Trace {
+    key: Key,
+    chain: Vec<(u64, Checkpoint)>,
+    at: Checkpoint,
+    until: Option<Epoch>,
 }
 
 /// The key of a vessel's stop to a ship docked there: the key of the
@@ -408,6 +531,17 @@ impl Designs for Lookup<'_> {
             self.waited.set(Some((v, fleet.seen(v))));
         }
         at
+    }
+
+    fn dock(&self, ship: u64, from: &Checkpoint, ready: Epoch, m: &Meeting) -> Option<Docked> {
+        let fleet = self.fleet.lock().unwrap();
+        let mut waited = Some(m.ship);
+        let dock = fleet.dock(ship, from, ready, m, &mut waited);
+        if dock.is_none() {
+            let v = waited.unwrap_or(m.ship);
+            self.waited.set(Some((v, fleet.seen(v))));
+        }
+        dock
     }
 }
 

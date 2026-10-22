@@ -201,10 +201,11 @@ fn a_vessel_not_there_or_in_a_low_orbit_fails_the_step() {
     );
 }
 
-/// A dock step is read but not designed yet (M1b.md, step 4 plan, part 3):
-/// it says so, where the ship is after its leg.
+/// A dock step (M1b.md, step 4 plan, part 3), by hand: given when the
+/// ship is with the vessel, the step is the dock then, and the ship is
+/// docked where the vessel is; given why it never is, the step fails.
 #[test]
-fn a_dock_step_is_not_designed_yet() {
+fn a_dock_step_docks_where_the_ship_is() {
     let world = World::standard();
     let src = PLAN.to_string()
         + r#"
@@ -216,24 +217,67 @@ fn a_dock_step_is_not_designed_yet() {
     to = "nrho"
     days = [5.0]
     [[ship.leg]]
+    wait = 1
+    [[ship.leg]]
     dock = { ship = 0, leg = 0 }
+    note = "moved over"
     "#;
     let plan = Plan::parse(&src, world.eph, Places::standard()).unwrap();
-    let depot = Planner::new(&world, &plan.ships[0]).unwrap().checkpoint();
+    let (_, depot) = fly(&world, &plan.ships[0], None);
+    let at_nrho = &depot[1];
     let mut rider = Planner::new(&world, &plan.ships[3]).unwrap();
     assert_eq!(rider.meets(), None);
     rider.step().expect("the leg to the NRHO");
+    let arrived = rider.checkpoint().since();
+    assert_eq!(rider.meets(), None);
     assert_eq!(
-        rider.meets(),
+        rider.dock_step(),
         Some(&Meeting {
             ship: 0,
             leg: Some(0)
         })
     );
-    let items = rider.meet(Ok(&depot)).unwrap();
+    let with = arrived.plus_days(1.0);
+    let items = rider
+        .next(Others {
+            dock: Some(Ok((with, at_nrho.clone()))),
+            ..Others::default()
+        })
+        .unwrap();
+    // It stays where it is, keeping station, until the dock.
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].kind, ItemKind::Stay);
+    assert_eq!(
+        (items[0].label.as_str(), items[0].start, items[0].end),
+        ("at nrho", arrived, with)
+    );
+    assert!(items[0].dv > 0.0);
+    assert_eq!(items[1].kind, ItemKind::Docked(0));
+    assert_eq!(items[1].label, "docked to ship 0");
+    assert_eq!(
+        (items[1].step, items[1].start, items[1].end),
+        (2, with, with)
+    );
+    assert_eq!(items[1].note.as_deref(), Some("moved over"));
+    assert_eq!(rider.docked_to(), Some(0));
+    let c = rider.checkpoint();
+    assert_eq!(
+        (c.docked_to(), c.since(), c.label()),
+        (Some(0), with, "nrho")
+    );
+    assert!(rider.next(Others::default()).is_none(), "the plan is done");
+
+    let mut rider = Planner::new(&world, &plan.ships[3]).unwrap();
+    rider.step().expect("the leg to the NRHO");
+    let items = rider
+        .next(Others {
+            dock: Some(Err("at nrho, not with ship 0, leg 0".into())),
+            ..Others::default()
+        })
+        .unwrap();
     assert_eq!(items.len(), 1);
     assert!(
-        matches!(&items[0].kind, ItemKind::Failed(why) if why == "a dock step is not designed yet (M1b.md, step 4 plan, part 3)"),
+        matches!(&items[0].kind, ItemKind::Failed(why) if why == "ship 0, leg 0: at nrho, not with ship 0, leg 0"),
         "{:?}",
         items[0].kind
     );

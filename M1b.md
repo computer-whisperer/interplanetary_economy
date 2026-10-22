@@ -8,7 +8,7 @@ runs a vessel dry or short, the sandbox's editor sets meetings and
 manifests while its panel shows transfers and purchases, `sim run`
 prints them with the depot scenarios' checks holding, and the tests and
 measurements are in); step 4, docking, under way (its plan, below), parts
-1 and 2 done. Decided: one engine for both modes, with economy components
+1 to 3 done. Decided: one engine for both modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they stay,
 with docking a step of its own (Design, Vessels, stations and stocks).
@@ -2344,6 +2344,29 @@ Where the work is (found drafting):
 3. **The dock step**: its time by the assembly's co-location, its
    failure, its manifest; a module carried by a tug and moved to a
    depot. Tests on that plan.
+   - Built (2026-10-21): `Checkpoint::with` (the vessel the leg that
+     arrived there met), `Others::dock`, `Planner::dock_step`, the dock
+     step's items (a stay to the dock for a ship at a stop of its own,
+     keeping station; the dock event; a docked ship rides) in
+     `orbit::mission`; `Designs::dock` and the key part "docks" in
+     `sim::designs`; `Fleet::trace` (the chain of vessels a ship is
+     docked through, each at its own checkpoint, and when the chain
+     leaves) and `Fleet::dock` in `sim::game`: from the later of ready
+     and the vessel's arrival, the ship is with the vessel when its
+     chain holds it, or a vessel of the chain (or the ship itself) met
+     it at that stop, or the vessel met one of them where it is; not
+     with it, a docked ship is tried at its chain's next stop (when the
+     whole chain has stopped: found by the test, the first draft docked
+     at the carrier's departure, the chain in flight giving its next
+     stop), a ship at its own stop fails at once; the vessel leaving
+     first, or the chain's plan ending, fails. The dock's manifest is
+     part 4's (the loop). Tests: `a_dock_step_docks_where_the_ship_is`
+     (`crates/orbit/tests/meeting.rs`, by hand) and
+     `a_dock_step_joins_the_vessel_the_ship_is_with`
+     (`crates/sim/tests/game.rs`, 55 s: the plan's module on a tug to a
+     depot, the tug leaving alone; a visitor that met the depot docking
+     a day later, its stay kept; a ship on its own orbit, a carrier that
+     never meets, a depot that leaves first, each in its words).
 4. **The loop** (`sim::state`): membership in time; a burn against the
    assembly's mass from the burner's tanks; no upkeep for a member;
    members stranded with a dry host (`Dry` says so: "stranded: Depot,

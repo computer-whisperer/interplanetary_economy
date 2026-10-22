@@ -69,14 +69,24 @@ pub type Met = Result<(Key, Checkpoint), String>;
 /// as far as its plan goes); or why that is not to be had.
 pub type Host = Result<(Key, Checkpoint, Option<Epoch>), String>;
 
+/// When a ship docks to a vessel by a dock step (M1b.md, step 4 plan,
+/// part 3): the key of the designs that say so, the time the ship is with
+/// the vessel at its stop, and the vessel's checkpoint there; or why that
+/// is not to be had.
+pub type Docked = Result<(Key, Epoch, Checkpoint), String>;
+
 /// The other ships' designs as they stand, read by a walk (M1b.md, step 3
-/// plan, part 3; step 4 plan, part 2): `None` while they do not reach what
-/// is asked, and the walk waits.
+/// plan, part 3; step 4 plan, parts 2 and 3): `None` while they do not
+/// reach what is asked, and the walk waits.
 pub trait Designs {
     /// Where the vessel `m` names is after the leg named ([`Met`]).
     fn met(&self, m: &Meeting) -> Option<Met>;
     /// Where vessel `host` is at `t` ([`Host`]).
     fn at(&self, host: u64, t: Epoch) -> Option<Host>;
+    /// When ship `ship`, at or docked at `from` and ready at `ready`, is
+    /// with the vessel `m` names at its stop after the leg named
+    /// ([`Docked`]).
+    fn dock(&self, ship: u64, from: &Checkpoint, ready: Epoch, m: &Meeting) -> Option<Docked>;
 }
 
 /// Hashes what designing `steps` reads: a wait's days, a dock's vessel,
@@ -109,7 +119,8 @@ pub fn flight(h: &mut Fixed, steps: &[Step]) {
 /// from step `next` of `ship`, and what it reads of other ships: `met`,
 /// where its leg meets a vessel; `until`, where its leg docks, when the
 /// vessel leaves; `host`, where the ship is docked, where the vessel is
-/// when it leaves.
+/// when it leaves; `dock`, for a dock step, when the ship is with the
+/// vessel.
 pub fn step_key(
     at: Key,
     ship: &Ship,
@@ -117,6 +128,7 @@ pub fn step_key(
     met: Option<&Met>,
     until: Option<&Host>,
     host: Option<&Host>,
+    dock: Option<&Docked>,
 ) -> Key {
     let mut h = Fixed::default();
     h.str("step").u64(at).u64(next as u64);
@@ -144,15 +156,37 @@ pub fn step_key(
             }
         }
     }
+    match dock {
+        None => {}
+        Some(Ok((key, _, _))) => {
+            h.str("docks").u64(*key);
+        }
+        Some(Err(why)) => {
+            h.str("docks not").str(why);
+        }
+    }
     h.finish()
 }
 
-/// The vessel the step from `next` of `ship` meets, if its leg meets one
-/// or its dock names one.
+/// The vessel the step from `next` of `ship` meets, if its leg meets one.
 fn meeting(ship: &Ship, next: usize) -> Option<&Meeting> {
     ship.steps[next.min(ship.steps.len())..reads(ship, next)]
         .iter()
-        .find_map(Step::meeting)
+        .find_map(|s| match s {
+            Step::Go(go) => go.to.meeting.as_ref(),
+            _ => None,
+        })
+}
+
+/// The vessel the step from `next` of `ship` docks to by a dock step, if
+/// it is one.
+fn dock_step(ship: &Ship, next: usize) -> Option<&Meeting> {
+    ship.steps[next.min(ship.steps.len())..reads(ship, next)]
+        .iter()
+        .find_map(|s| match s {
+            Step::Dock(d) => d.to.meeting.as_ref(),
+            _ => None,
+        })
 }
 
 /// The vessel the step from `next` of `ship` docks to by its leg, if it
@@ -398,11 +432,25 @@ fn keyed<'a>(
         (Some(Ok((_, at))), Some(m)) => Some(designs.at(m.ship, at.since())?),
         _ => None,
     };
-    let host = match c.docked_to() {
+    let dock = match dock_step(ship, next) {
         None => None,
-        Some(h) => Some(designs.at(h, c.departs(ship))?),
+        Some(m) => Some(designs.dock(ship.id, c, c.departs(ship), m)?),
     };
-    let key = step_key(at, ship, next, met.as_ref(), until.as_ref(), host.as_ref());
+    // A dock step takes the vessel's place; a leg from a docked ship takes
+    // its vessel's.
+    let host = match (c.docked_to(), &dock) {
+        (Some(h), None) => Some(designs.at(h, c.departs(ship))?),
+        _ => None,
+    };
+    let key = step_key(
+        at,
+        ship,
+        next,
+        met.as_ref(),
+        until.as_ref(),
+        host.as_ref(),
+        dock.as_ref(),
+    );
     let design = move || {
         let mut planner = Planner::resume(world, ship, c.clone());
         let others = Others {
@@ -415,6 +463,11 @@ fn keyed<'a>(
             host: host.as_ref().map(|h| {
                 h.as_ref()
                     .map(|(_, c, u)| (c.clone(), *u))
+                    .map_err(Clone::clone)
+            }),
+            dock: dock.as_ref().map(|d| {
+                d.as_ref()
+                    .map(|(_, t, c)| (*t, c.clone()))
                     .map_err(Clone::clone)
             }),
         };
@@ -462,7 +515,7 @@ mod tests {
         "#;
         let plan = Plan::parse(src, Ephemeris::standard(), Places::standard()).unwrap();
         let tug = &plan.ships[1];
-        let key = |ship: &Ship, next: usize| step_key(7, ship, next, None, None, None);
+        let key = |ship: &Ship, next: usize| step_key(7, ship, next, None, None, None, None);
         let mut docked = tug.clone();
         let Step::Go(go) = &mut docked.steps[0] else {
             panic!("a leg")

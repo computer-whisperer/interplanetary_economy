@@ -1517,3 +1517,202 @@ start = { at = { ship = 1 }, epoch = "2045-03-01" }
         game.designs_made() - made
     );
 }
+
+/// A dock step in a game (M1b.md, step 4 plan, part 3): a module started
+/// docked to a tug moves to the depot when the tug has docked there, and
+/// stays when the tug leaves; a visitor that met the depot docks where it
+/// is, once the depot is there; a ship on an orbit of its own, or one whose
+/// carrier never meets the depot, cannot; and a depot that leaves first
+/// fails the step.
+#[test]
+fn a_dock_step_joins_the_vessel_the_ship_is_with() {
+    let src = r#"
+name = "docking"
+
+[[ship]]
+id = 0
+name = "Depot"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 60
+
+[[ship]]
+id = 1
+name = "Tug"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+dock = true
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 2
+name = "Hab"
+start = { at = { ship = 1 }, epoch = "2045-03-06" }
+
+[[ship.leg]]
+dock = { ship = 0, leg = 0 }
+
+[[ship]]
+id = 3
+name = "Visitor"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = { ship = 0, leg = 0 }
+days = [5.0]
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+dock = { ship = 0, leg = 0 }
+
+[[ship]]
+id = 4
+name = "Loner"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+dock = { ship = 0, leg = 0 }
+
+[[ship]]
+id = 5
+name = "Never"
+start = { at = { ship = 6 }, epoch = "2045-03-06" }
+
+[[ship.leg]]
+dock = { ship = 0, leg = 0 }
+
+[[ship]]
+id = 6
+name = "Carrier"
+start = { at = "leo", epoch = "2045-03-06" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 2
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 7
+name = "Brief"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = "nrho"
+days = [5.0]
+
+[[ship.leg]]
+wait = 1
+
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+aero = true
+
+[[ship]]
+id = 8
+name = "Late"
+start = { at = { ship = 1 }, epoch = "2045-03-06" }
+
+[[ship.leg]]
+dock = { ship = 7, leg = 0 }
+"#;
+    let mut game = Game::new(parse(src), pool(4)).unwrap();
+    game.wait();
+    let items = |id: u64| -> Vec<Item> {
+        let k = game.index(id).unwrap();
+        game.ships()[k].items().cloned().collect()
+    };
+    let kinds =
+        |items: &[Item]| -> Vec<ItemKind> { items.iter().map(|i| i.kind.clone()).collect() };
+    let failure = |id: u64| -> Option<String> {
+        items(id).last().and_then(|i| match &i.kind {
+            ItemKind::Failed(why) => Some(why.clone()),
+            _ => None,
+        })
+    };
+    for id in [0, 1, 2, 3, 6, 7] {
+        assert_eq!(failure(id), None, "ship {id}");
+    }
+
+    // The Hab: docked to the Tug at its start, to the Depot when the Tug
+    // docks there, and there when the Tug has left.
+    let tug = items(1);
+    let docks = tug.iter().find(|i| i.kind == ItemKind::Docked(0)).unwrap();
+    let home = tug
+        .iter()
+        .filter(|i| i.kind == ItemKind::Leg)
+        .nth(1)
+        .unwrap();
+    let hab = items(2);
+    assert_eq!(kinds(&hab), [ItemKind::Docked(1), ItemKind::Docked(0)]);
+    assert_eq!(hab[1].start, docks.start);
+    assert_eq!(hab[1].step, 0);
+    let (_, c, until) = game.at(2, home.end).unwrap().unwrap();
+    assert_eq!((c.docked_to(), c.label(), until), (None, "nrho", None));
+    let out = tug.iter().find(|i| i.kind == ItemKind::Leg).unwrap();
+    let (_, c, until) = game.at(2, Epoch(out.start.0 - 0.1)).unwrap().unwrap();
+    assert_eq!(
+        (c.label(), until),
+        ("leo", Some(out.start)),
+        "at LEO with the Tug"
+    );
+
+    // The Visitor met the depot without docking, and docks a day later.
+    let visitor = items(3);
+    let leg = visitor.iter().find(|i| i.kind == ItemKind::Leg).unwrap();
+    let stay = visitor
+        .iter()
+        .find(|i| i.kind == ItemKind::Stay && i.start == leg.end)
+        .expect("a stay on the depot's orbit before the dock");
+    let dock = visitor.last().unwrap();
+    assert_eq!(dock.kind, ItemKind::Docked(0));
+    assert_eq!(dock.step, 2);
+    assert!((dock.start.0 - leg.end.plus_days(1.0).0).abs() < 1e-9);
+    assert_eq!(stay.end, dock.start);
+    assert!(stay.dv > 0.0, "it kept station alone until it docked");
+
+    // The Loner is on an orbit of its own; the Never rides a carrier that
+    // never meets the depot; the Late docks to a depot that has left.
+    assert_eq!(
+        failure(4).as_deref(),
+        Some("ship 0, leg 0: at nrho, not with ship 0, leg 0")
+    );
+    assert_eq!(
+        failure(5).as_deref(),
+        Some("ship 0, leg 0: docked to ship 6, never with ship 0, leg 0")
+    );
+    let late = failure(8).unwrap();
+    assert!(
+        late.starts_with("ship 7, leg 0: ship 7 leaves nrho ")
+            && late.ends_with(", before the ship is with it"),
+        "{late}"
+    );
+}

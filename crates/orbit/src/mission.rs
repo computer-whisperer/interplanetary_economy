@@ -1320,6 +1320,9 @@ pub struct Checkpoint {
     ready: Epoch,
     not_before: Epoch,
     stopped: bool,
+    /// The vessel the leg that arrived here met, docked to it or not
+    /// (M1b.md, step 4 plan, part 3: a dock step may dock to it).
+    with: Option<Meeting>,
 }
 
 impl Checkpoint {
@@ -1345,6 +1348,16 @@ impl Checkpoint {
             Here::Docked(h) => Some(h),
             _ => None,
         }
+    }
+
+    /// The vessel the leg that arrived here met, if one did.
+    pub fn with(&self) -> Option<Meeting> {
+        self.with
+    }
+
+    /// The place, as the plan labels it.
+    pub fn label(&self) -> &str {
+        &self.label
     }
 
     /// When the step from here leaves, before its leg is designed: when
@@ -1488,6 +1501,8 @@ pub struct Planner<'w> {
     /// took, and when that vessel leaves it (`None`: never): the leg
     /// leaves before then, and no stay is made (the ship rode).
     riding: Option<(u64, Option<Epoch>)>,
+    /// The vessel the leg that arrived where the ship is met, if one did.
+    with: Option<Meeting>,
 }
 
 /// What the planner is told of the other ships for the next step (M1b.md,
@@ -1505,6 +1520,10 @@ pub struct Others {
     /// ready to leave ([`Checkpoint::departs`]), its next stop if it is in
     /// flight then, and when it leaves that stop.
     pub host: Option<Result<(Checkpoint, Option<Epoch>), String>>,
+    /// For a dock step: when the ship is with the vessel the step names,
+    /// at its stop after the leg named (part 3), and the vessel's
+    /// checkpoint there.
+    pub dock: Option<Result<(Epoch, Checkpoint), String>>,
 }
 
 impl<'w> Planner<'w> {
@@ -1532,6 +1551,7 @@ impl<'w> Planner<'w> {
             met: None,
             docking: None,
             riding: None,
+            with: None,
         };
         p.here = match &ship.start.kind {
             PlaceKind::Low(orbit) => Here::Low {
@@ -1607,6 +1627,7 @@ impl<'w> Planner<'w> {
             met: None,
             docking: None,
             riding: None,
+            with: None,
         })
     }
 
@@ -1638,6 +1659,19 @@ impl<'w> Planner<'w> {
             .is_some_and(|s| matches!(s, Step::Go(go) if go.dock))
     }
 
+    /// The vessel the next step docks to without a flight, if it is a
+    /// dock step: it is designed with when the ship is with the vessel
+    /// ([`Others::dock`]).
+    pub fn dock_step(&self) -> Option<&Meeting> {
+        match self.ship.steps[self.next.min(self.ship.steps.len())..]
+            .iter()
+            .find(|s| s.is_stop())
+        {
+            Some(Step::Dock(d)) => d.to.meeting.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Where it is between steps, to go on from (with the steps from
     /// there edited) by [`Planner::resume`].
     pub fn checkpoint(&self) -> Checkpoint {
@@ -1650,6 +1684,7 @@ impl<'w> Planner<'w> {
             ready: self.ready,
             not_before: self.not_before,
             stopped: self.stopped,
+            with: self.with,
         }
     }
 
@@ -1671,16 +1706,21 @@ impl<'w> Planner<'w> {
             met: None,
             docking: None,
             riding: None,
+            with: checkpoint.with,
         }
     }
 
-    /// The vessel the next step's leg meets, or its dock names, if any:
-    /// that step is designed by [`Planner::meet`].
+    /// The vessel the next step's leg meets, if it meets one: that step
+    /// is designed by [`Planner::meet`] (a dock step's vessel is
+    /// [`Planner::dock_step`]).
     pub fn meets(&self) -> Option<&Meeting> {
-        self.ship.steps[self.next.min(self.ship.steps.len())..]
+        match self.ship.steps[self.next.min(self.ship.steps.len())..]
             .iter()
             .find(|s| s.is_stop())
-            .and_then(Step::meeting)
+        {
+            Some(Step::Go(go)) => go.to.meeting.as_ref(),
+            _ => None,
+        }
     }
 
     /// The next items: a stay and the leg or event after it, or a failure
@@ -1691,7 +1731,7 @@ impl<'w> Planner<'w> {
     /// what it reads of the other ships.
     pub fn step(&mut self) -> Option<Vec<Item>> {
         assert!(
-            self.meets().is_none() && self.docked_to().is_none(),
+            self.meets().is_none() && self.docked_to().is_none() && self.dock_step().is_none(),
             "a step that reads another ship is designed with `next`"
         );
         self.advance(Others::default())
@@ -1786,24 +1826,51 @@ impl<'w> Planner<'w> {
                         });
                     }
                 }
+                // A dock step: the ship docks to the vessel when it is with
+                // it (`Others::dock`), where the vessel is (M1b.md, step 4
+                // plan, part 3).
                 Step::Dock(d) => {
-                    self.stopped = true;
-                    return Some(vec![Item {
-                        step: self.at,
-                        kind: ItemKind::Failed(
-                            "a dock step is not designed yet (M1b.md, step 4 plan, part 3)".into(),
-                        ),
-                        label: format!("{} docks to {}", self.label, d.to.label),
-                        start: self.ready,
-                        end: self.ready,
-                        dv: 0.0,
-                        track: None,
-                        markers: Vec::new(),
-                        options: Vec::new(),
-                        window: None,
-                        seconds: 0.0,
-                        note: d.note.clone(),
-                    }]);
+                    let m = d.to.meeting.expect("a dock names a vessel");
+                    self.ready = Epoch(self.ready.0.max(self.not_before.0));
+                    let dock = others
+                        .dock
+                        .take()
+                        .expect("a dock step is designed with when the ship is with the vessel");
+                    let label = format!("{} docks to {}", self.label, d.to.label);
+                    return Some(match dock {
+                        Err(why) => {
+                            let why = format!("{}: {why}", m.label());
+                            vec![self.failed(label, self.ready, why, d.note.clone())]
+                        }
+                        Ok((t, c)) => {
+                            // A ship at a stop of its own stays there until
+                            // the dock; a docked one rides.
+                            let mut items = match self.docked_to() {
+                                Some(_) => Vec::new(),
+                                None => match self.stay(t, None) {
+                                    Ok((items, _)) => items,
+                                    Err(why) => {
+                                        return Some(vec![self.failed(
+                                            label,
+                                            self.ready,
+                                            why,
+                                            d.note.clone(),
+                                        )]);
+                                    }
+                                },
+                            };
+                            self.place = c.place;
+                            self.here = Here::Docked(m.ship);
+                            self.label = c.label;
+                            self.since = t;
+                            self.ready = Epoch(self.ready.0.max(t.0));
+                            self.with = None;
+                            let mut event = docked_event(self.at, m.ship, t);
+                            event.note = d.note.clone();
+                            items.push(event);
+                            items
+                        }
+                    });
                 }
                 Step::Go(go) => {
                     let clock = Instant::now();
@@ -2089,6 +2156,7 @@ impl<'w> Planner<'w> {
             Some(c) => c.label,
             None => go.to.label.clone(),
         };
+        self.with = go.to.meeting;
         self.since = at;
         self.ready = at;
     }
