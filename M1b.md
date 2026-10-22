@@ -7,11 +7,12 @@ a transfer reaches the whole assembly; career buys a docked start at
 LEO and checks docks; the sandbox draws, lists and edits docking; `sim
 run` prints dock lines with the assembled station's checks holding; and
 the tests and measurements are in); step 5, plants, programs and
-surveys, next, its plan to be written. Decided: one engine for both
-modes, with economy components
-landing in the sandbox first (Modes, below); the four decisions below,
-each as recommended; and stations as vessels, flown to where they stay,
-with docking a step of its own (Design, Vessels, stations and stocks).
+surveys, next: its plan is drafted (2026-10-22, below), its seven
+decisions to be ruled. Decided: one engine for both modes, with
+economy components landing in the sandbox first (Modes, below); the
+four decisions below, each as recommended; and stations as vessels,
+flown to where they stay, with docking a step of its own (Design,
+Vessels, stations and stocks).
 
 - Step 1, part 1: designs are bit-identical on 1 and 24 threads, and
   going on from a checkpoint gives a fresh design's bits
@@ -2521,3 +2522,282 @@ Left out of step 4: undocking to stay alone (above); tanks pooled for
 burns; docking's duration (instantaneous at the arrival; a setting if
 wanted); crew moving between vessels (step 8); meeting or docking in a
 low orbit (Scope).
+
+## Step 5 plan (2026-10-22): plants, programs and surveys
+
+Plants that turn equipment delivered to a site into propellant and
+metal, the programs that must be finished before they are installed,
+the surveys that reveal what a deposit holds, and the first keyed draws
+(Design, Plants, programs and surveys; Steps, 5). Drafted 2026-10-22 for
+the user's ruling; each part is committed on its own.
+
+What step 5 adds to step 4's vessels: today equipment is a commodity a
+ship carries and gives into a vessel's hold, and nothing is made
+anywhere; every tonne of propellant comes from Earth at LEO. After step
+5 a lander lands at the south pole with equipment and installs it into
+a plant option, and from a year later the site's stock grows by what
+the plant yields; a lander landing there fills its tanks from it.
+Technology programs gate what can be installed, and in career a
+deposit's grade is known only by a survey's estimate, or once a plant on
+it runs.
+
+Scale, at the central draw (`data/economy.toml`): a tonne of equipment
+on the rich lunar ice yields 28.6 t a year of water, 25.5 t of LOX and
+3.2 t of LH2 (the typical deposit 23.5, the lean 13.2); regolith oxygen
+2.9 t a year per tonne, Mars ice 2.8, Phobos 4.6, asteroid volatiles
+9.1, PGM 3.3 kg. M2's central world's 66 kt a year of lunar propellant
+is ~2,300 t of equipment, $23B at $10,000/kg before launch. The lunar
+ice program is $3.3B over 5 years and its survey $300M over 3; a plant's
+build is 12 months.
+
+Decided (to rule):
+
+- **Sites hold stocks, and a plant's output goes into its site's.** A
+  surface or a body (the south pole, the mare, Mars's surface, Phobos,
+  each asteroid) is a site: a place with a stock by commodity and the
+  plants installed there. A ship there transfers with the site
+  (`With::Site`), as a ship at LEO transfers with Earth: what its
+  manifest gives is stored, what it takes comes from the stock. Storage
+  is unbounded, as in M2 (a tank farm, if wanted, is a later facility);
+  hydrogen boils off in a site's stock as it does in a tank. This
+  settles step 3's "where plants' output goes": not into a vessel.
+  - Rejected: a plant as a vessel. A plant sits on its body, on the
+    ephemeris's rails, so it is not a vessel by the design's definition;
+    it would need an id, a class and a manifest's naming, and two plants
+    at one site would be two stocks a lander must choose between.
+- **Installing is a give of equipment with `install = "option"`** on
+  the manifest of a leg to a site: the equipment the manifest gives at
+  that stop goes into the plant option named (`lunar-ice:rich`,
+  `regolith-oxygen-polar`, `mars-ice`, `volatiles@ryugu`) instead of
+  the stock, and `build_months` later each tonne adds 1/α t/yr of
+  capacity. The technology must be finished when the ship arrives; the
+  survey is not needed (building blind; DESIGN.md, Prospecting). Not
+  finished, the give falls short (`Short::NotReady`: "lunar-ice is not
+  finished until 2046-01-01") and the equipment stays aboard; career
+  refuses such a plan as it refuses one short of stock. The option must
+  be one of the site's (a static error otherwise); which deposit a
+  plant works is the player's choice, as in M2, and a plant stays on its
+  deposit when the deposit runs out.
+  - Rejected: an install step without a ship (nothing on the surface
+    would make it); installing later from the site's stock (a rule for
+    when, and by whom).
+- **Programs are actions in the log,** `[[program]] id = "lunar-ice",
+  start = "2040-01-01"`, technology and survey alike (both are
+  `Program`s). A program finishes `years` after its start and spends
+  its cost evenly over them, recorded as a ship's purchases are (the
+  account is step 8's). Each starts once. Career starts one at now; the
+  sandbox anywhere. A program's cost and years are known when it
+  starts: the hidden information is the deposits', not the programs'.
+- **A survey's estimate is the first keyed draw.** When a survey
+  finishes, each deposit it covers (the lunar ice's three share one)
+  gets an estimate of its grade and of its reserve, the truth times
+  exp(σz), z standard normal from the stream keyed by the survey's id,
+  σ the survey row's `noise` (new, fixed; [guess]: 0.3 for lunar ice and
+  the asteroid prospectors, 0.4 for Mars and Phobos, which are mapped
+  from orbit: LCROSS put Cabeus at 5.6 ± 2.9 wt%, and a rover does
+  better), and learns whether the resource is there at all, exactly.
+  The stream: `ChaCha8Rng` seeded by the fixed hash (`sim::hash::Fixed`)
+  of the game's seed (0 for the central draw) and the key
+  `survey:lunar-ice` (step 1 plan, part 6). The estimate is drawn in the
+  sandbox too: it is state, and a career log opened in the sandbox
+  hashes the same.
+- **Absent deposits stay in the economy.** Today a world where Phobos
+  is dry, or an asteroid barren, has no option and no survey for it, so
+  a plan naming one would fail to read and give the draw away. Every
+  option and survey the file describes exists in every world,
+  `Facility::present` false where the draw left it out, its grade as
+  drawn (the samples are made today before the `continue`); the absent
+  option's survey has its cost and years sampled last, after everything
+  drawn today, and an asteroid's absent kinds get no grade and no draw,
+  so no seed's other parameters move. A plant on an absent deposit is
+  built and yields nothing. The kill-test's LP skips absent options
+  (`plan::scenario`).
+- **Career's knowledge is a policy, and the judge uses it.** For each
+  option, `Known::{Exact, Estimate, Prior}`: the sandbox knows
+  everything; in career an option is exact once a plant on it has
+  finished building (its output is there to see), estimated once its
+  survey has finished, and before that the prior: the file's central
+  grade and reserve, the output scaled by the probability the resource
+  is present. The game's state runs on the truth. Career's judge (step
+  3 plan, part 6: a plan is refused when it runs a vessel dry or a
+  transfer short) runs its projection with the knowledge of now instead
+  of the truth, so that a refusal tells the player nothing a survey
+  would: a blind build is accepted on its prior and plays out on the
+  truth. The loop takes the grades to use as an input (`state::run(…,
+  &Knowledge)`): the truth for the state, the known for the judge. M3
+  draws `Game::known`.
+  - Rejected: judging on the truth. The grade would be hidden on the
+    screen and read off the refusals, a free survey.
+- **Production accrues continuously** at the capacity in force, paid up
+  when a transfer is made at the site and at each midnight for the
+  hash, as upkeep and boil-off are, with hydrogen's boil-off and the
+  deposit's reserve in closed form (the stock's hydrogen tends to P/λ;
+  the reserve's exhaustion is found at its moment). The Design's "a
+  daily tick runs production" was written before the loop paid lazily
+  (step 2 plan, part 3); this keeps the loop's time independent of how
+  many sites sit idle, and a take made during a day exact. The Design
+  is rewritten with the ruling.
+
+The language (`orbit::mission`, `sim::log`):
+
+```toml
+[[program]]
+id = "lunar-ice"            # a technology, from data/economy.toml
+start = "2040-01-01"
+
+[[program]]
+id = "survey:lunar-ice"     # a survey, likewise
+start = "2041-06-01"
+
+[[ship]]
+id = 0
+name = "Lander"
+class = "lander"
+start = { at = "leo", epoch = "2045-03-01", cargo = { equipment = 10.0 } }
+
+[[ship.leg]]
+to = "llo"
+days = [3.5]
+
+[[ship.leg]]
+to = "moon-south-pole"
+cargo = { equipment = 0.0 }   # give all of it ...
+install = "lunar-ice:rich"    # ... into the rich deposit's plant
+
+[[ship.leg]]
+wait = 3
+
+[[ship.leg]]
+to = "llo"
+
+[[check]]
+program = "lunar-ice"
+at = "2045-01-02"
+finished = true               # or spent_musd = [lo, hi]
+
+[[check]]
+site = "moon-south-pole"
+at = "2047-03-08"
+stock = { lox = [250.0, 260.0], lh2 = [26.0, 32.0] }
+# or: capacity_tpy = { "lunar-ice:rich" = [286.0, 287.0] }
+
+[[check]]
+survey = "survey:lunar-ice"
+at = "2044-06-01"
+grade = { "lunar-ice:rich" = [0.04, 0.07] }   # the estimate; or present = true
+```
+
+- `install` goes with a leg to a site, naming one of its options; on a
+  leg elsewhere, or to a vessel, an error. The stop's equipment given is
+  installed; the other commodities given are stored.
+- A `[[program]]` names a program of the economy, once; `start` to the
+  minute, as a re-plan's `at` is. In career `start` must be now when
+  the action is made. A program runs nothing dry and needs no judging:
+  a log read back applies its programs first, each checked statically,
+  then its ships and re-plans as now (step 3 plan, part 6), so that an
+  install sees its technology's finish.
+- Checks: `program` (finished, or spent so far), `site` (the stock by
+  commodity, the capacity by option, within bounds), `survey` (an
+  estimate within bounds, or present). `Check::Transfer`'s `give =
+  "equipment"` covers an install, short or made.
+
+Where the work is (found drafting):
+
+- The loop keeps sites beside ships: `SiteState { place, stock, plants
+  }`, a plant per option with its installments (when, tonnes, ready),
+  what it has produced and whether its deposit is exhausted;
+  `State::sites`. `With::Site(PlaceId)` where `With::NoOne` is today at
+  a surface or a body (`Game::stops`, by the route graph's id);
+  `Stop::install`. The hash adds each site's stock, capacity and
+  installments by day, and each program's spending.
+- α follows the grade: `Facility` keeps `plant` and `ore` apart (today
+  only their sum, `alpha`), so that a known grade gives a known α for
+  the judge's projection, and grows `present`, the prior grade and
+  reserve (`Dist::central`); the survey's `noise` rides on its
+  `Program`. The lunar ice's three deposits share one survey (one
+  estimate each, from one stream); an asteroid's kinds have a survey
+  each (`survey:volatiles@ryugu`, `survey:pgm@ryugu`): learning one kind
+  absent leaves the other open, one survey more than a visit would take
+  (an approximation kept, for the ids M2's LP uses).
+- Knowledge threads through `Game`: the state's loop runs with the
+  truth, the judge's with `Game::known(now)`. The prior's capacity
+  scales by the presence probability, a mean.
+- Programs are kept in `Plan` as written (`Plan::programs`, as
+  `replans` and `checks` are) and read by `sim::log` into
+  `Log::programs`; the sandbox's editor adds and dates them.
+- The sandbox's panel gets rows apart from ships: each site with plants
+  or stock (the stock by commodity, each option's capacity and what is
+  building, the deposit's reserve left or exhausted; the truth, since
+  the sandbox knows everything, with the estimates beside it where a
+  survey has finished), and each program (started, finishes, spent).
+  The editor's manifest gets an `install` menu of the site's options;
+  "+ Program" adds one at the clock's date.
+
+1. **Keyed draws, and the economy's additions** (`sim::draw`,
+   `sim::params`): `Draw::keyed(seed, key)`, the fixed hash of the seed
+   and the key seeding a `ChaCha8Rng`, a normal and a chance from it;
+   `Facility::{plant, ore, present, prior_grade, prior_reserve}`,
+   `Program::noise`, `noise` in `data/economy.toml`'s survey rows;
+   absent deposits kept, their surveys sampled last; the LP skips them
+   (`plan::scenario`). Tests: the same key gives the same stream and
+   different keys different ones; a stream's first value is fixed (as
+   `hash::it_is_fixed` is); the facilities' and programs' numbers of the
+   central draw and seeds 1–3 are unchanged by the additions (captured
+   before and compared after, once, as step 2's part 1 did); M2's tests
+   pass unchanged.
+2. **Programs in the log** (`orbit::mission`, `sim::log`, `sim::game`):
+   `[[program]]` read and written back; `Log::programs`; a program once,
+   known to the economy; career's start at now, and a log read back
+   applying its programs first; `ProgramState` (started, finishes,
+   spent by a time); `Check::Program`; the hash; `sim run`'s lines
+   ("program  lunar-ice  2040-01-01 — 2045-01-01, $3,300M; spent
+   $1,980M by 2043-01-01"). Tests: the round trip and refusals; career
+   refuses a start not at now and a second start; the hash with a
+   program.
+3. **Sites and plants in the loop** (`orbit::mission`, `sim::ships`,
+   `sim::state`, `sim::game`): `install` on a manifest, `With::Site`,
+   `Stop::install`; `SiteState`, installments and capacity after the
+   build, production accrued at each event and midnight, the reserve's
+   exhaustion, hydrogen's boil-off in the stock; a give stores, a take
+   draws; `Short::NotReady`; the hash; `Check::Site`; `sim run`'s site
+   lines ("site  moon-south-pole: lunar-ice:rich 286.3 t/yr from
+   2046-03-08 (10.000 t); LOX 254.483 t, LH2 29.112 t"). Tests by hand:
+   an installment yields from its ready date at 1/α; a take draws what
+   accrued; the reserve caps it at its moment; hydrogen in the stock
+   tends to P/λ; an install before the technology falls short and the
+   equipment stays aboard; an absent deposit yields nothing.
+4. **Surveys and knowledge** (`sim::state`, `sim::game`): the estimate
+   at a survey's finish from its keyed draw (`Survey { estimates by
+   option, present }` in the state); `Known`, `Game::known(t)`; the
+   judge on knowledge (`state::run` with a `Knowledge`); career refuses
+   an install whose technology is not finished at the arrival
+   ("installs lunar-ice:rich 2045-03-08, before lunar-ice is finished
+   2046-01-01") and accepts a blind build on its prior; `Check::Survey`.
+   Tests: the estimate is the same on 1 and 24 threads and in a career
+   log opened in the sandbox; the judge accepts a blind build that the
+   truth would refuse, and the state then falls short; an install
+   before the technology is refused.
+5. **The sandbox** (`sandbox::panel`, `sandbox::editor`): site and
+   program rows; the editor's `install` menu and "+ Program"; the map
+   unchanged (a site is a place already drawn). GPU tests as step 4's:
+   the rows by name after a plan with an install; the editor's menu.
+6. **Headless and the scenario** (`sim::main`, `data/scenarios/`): `sim
+   run` prints programs and sites after the ships, and the hash covers
+   them; `data/scenarios/lunar-ice-plant.toml` (career: the lunar ice
+   program from 2040 and its survey from 2041, the estimate checked
+   against the truth's bounds; a methalox lander lands in 2045 with 10 t
+   of equipment and installs it on the rich deposit; a hydrolox lander
+   lands two years later and fills its tanks from the stock; checks on
+   the programs, the survey, the capacity, the stock and the takes).
+   The step 3 and 4 scenarios unchanged.
+7. **Tests and measurements**: the loop's time with sites on the plant
+   scenario (the published plan's 5.5 ms is the mark); the design times
+   unchanged (nothing of step 5 is read by the planner); the hashes at
+   1 and 24 threads; the full workspace suite.
+
+Left out of step 5: storage capacity at a site (a tank farm); plant
+wear, operating costs and power (M2 has none); a program's schedule risk
+(its years as a keyed draw); a survey mission flown (a survey is a
+program paid for, as in M2; a flown prospector is a later realism
+setting); installing from a site's stock; selling the output (steps 7
+and 8); crew at a site (step 8).
