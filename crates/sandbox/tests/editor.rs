@@ -547,3 +547,116 @@ days = [5.0]
         short.0
     );
 }
+
+/// Docking in the editor (M1b.md, step 4 plan, part 6): the tug's leg to
+/// the depot docks by its switch; the module's start is set to the tug from
+/// the start's menu, a dock step is added and pointed at the depot from its
+/// menu; once designed, the panel shows the module's docks by name and the
+/// tug's leg carrying it.
+#[test]
+fn a_module_is_docked_in_the_editor() {
+    use orbit::mission::{ItemKind, Meeting};
+    const ASSEMBLY: &str = r#"
+name = "Assembly"
+
+[[ship]]
+id = 0
+name = "Depot"
+class = "hauler"
+start = { at = "nrho", epoch = "2045-03-01" }
+
+[[ship.leg]]
+wait = 30
+
+[[ship]]
+id = 1
+name = "Tug"
+class = "tug-h"
+start = { at = "leo", epoch = "2045-03-01" }
+
+[[ship.leg]]
+to = { ship = 0 }
+days = [5.0]
+
+[[ship]]
+id = 2
+name = "Hab"
+class = "module"
+start = { at = "leo", epoch = "2045-03-01" }
+"#;
+    let eph = Ephemeris::standard();
+    let mut plan = Loaded::start(Plan::parse(ASSEMBLY, eph, Places::standard()).unwrap()).unwrap();
+    plan.wait();
+    let mut app = Shell::new(plan.epoch());
+    app.load(plan);
+    let mut h = Harness::new(&app, (1400.0, 1000.0));
+    h.draw(&mut app);
+    let ship = |app: &Shell, s: usize| app.plan.as_ref().unwrap().plan().ships[s].clone();
+
+    // The tug's leg to the depot docks.
+    open_editor_on(&mut h, &mut app, 1);
+    h.click_key(&mut app, &Field::Dock(0).key());
+    assert_eq!(app.editor.as_ref().unwrap().refused, None);
+    assert!(matches!(&ship(&app, 1).steps[0], Step::Go(g) if g.dock));
+    h.shot(&mut app, "dock-switch");
+    h.click_key(&mut app, &Field::Done.key());
+    assert!(app.editor.is_none());
+
+    // The module starts docked to the tug, and docks to the depot.
+    open_editor_on(&mut h, &mut app, 2);
+    h.click_key(&mut app, &Field::Start.key());
+    h.shot(&mut app, "start-menu");
+    h.click_key(&mut app, &format!("{}:option:meet:1", Field::Start.key()));
+    assert_eq!(app.editor.as_ref().unwrap().refused, None);
+    assert_eq!(
+        ship(&app, 2).start.meeting,
+        Some(Meeting { ship: 1, leg: None })
+    );
+    h.click_key(&mut app, &Field::AddDock.key());
+    assert!(matches!(&ship(&app, 2).steps[0], Step::Dock(_)));
+    h.click_key(&mut app, &Field::DockTo(0).key());
+    h.click_key(
+        &mut app,
+        &format!("{}:option:meet:0", Field::DockTo(0).key()),
+    );
+    assert_eq!(app.editor.as_ref().unwrap().refused, None);
+    let Step::Dock(d) = &ship(&app, 2).steps[0] else {
+        unreachable!()
+    };
+    assert_eq!(d.to.meeting, Some(Meeting { ship: 0, leg: None }));
+    h.shot(&mut app, "dock-step");
+
+    app.plan.as_mut().unwrap().wait();
+    h.draw(&mut app);
+    let plan = app.plan.as_ref().unwrap();
+    for s in &plan.ships {
+        assert!(s.failure.is_none(), "{}: {:?}", s.name, s.failure);
+    }
+    let kinds: Vec<ItemKind> = plan.ships[2].items.iter().map(|i| i.kind.clone()).collect();
+    assert_eq!(kinds, [ItemKind::Docked(1), ItemKind::Docked(0)]);
+    let rows = panel::rows(eph, &plan.ships, app.clock.t, None);
+    let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+    assert!(
+        labels.contains(&"to Tug") && labels.contains(&"to Depot"),
+        "{labels:?}"
+    );
+    let docks: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.kind == "docked")
+        .map(|r| r.label.as_str())
+        .collect();
+    assert_eq!(docks, ["to Depot", "to Tug", "to Depot"]);
+    let tug_leg = rows
+        .iter()
+        .find(|r| r.label == "leo → ship 0")
+        .expect("the tug's leg");
+    assert!(
+        tug_leg
+            .lines
+            .iter()
+            .any(|(l, _)| l.contains("with 20") && l.contains("docked")),
+        "{:?}",
+        tug_leg.lines
+    );
+    h.shot(&mut app, "assembly-panel");
+}

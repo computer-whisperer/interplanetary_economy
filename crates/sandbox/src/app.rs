@@ -691,7 +691,7 @@ impl Shell {
             return false;
         }
         match routed {
-            Some(f @ (Field::Start | Field::To(_) | Field::Class)) => {
+            Some(f @ (Field::Start | Field::To(_) | Field::DockTo(_) | Field::Class)) => {
                 ed.menu = if ed.menu == Some(f) { None } else { Some(f) };
             }
             Some(Field::Done) => {
@@ -707,7 +707,9 @@ impl Shell {
                 self.leg = None;
             }
             Some(f) if !f.typed() => {
-                if let Some(ship) = editor::press(&ship, f, Places::standard()) {
+                let ships = &self.plan.as_ref().unwrap().plan().ships;
+                let pressed = editor::press(&ship, f, Places::standard(), ships);
+                if let Some(ship) = pressed {
                     self.change(s, ship);
                 }
             }
@@ -973,11 +975,53 @@ impl Shell {
     /// body, or within rounding of the line's ends). `None` where no item
     /// with a track spans `t`.
     pub fn ship_position(&self, s: usize, t: Epoch, view: &render::Pose) -> Option<DVec3> {
-        let ship = &self.plan.as_ref()?.ships[s];
-        let k = ship
+        self.position_through(s, t, view, 0)
+    }
+
+    /// The vessel ship `s` is docked to at `t`, by its place in the plan,
+    /// if any (M1b.md, step 4 plan, part 6).
+    fn docked_host(&self, s: usize, t: Epoch) -> Option<usize> {
+        let plan = self.plan.as_ref()?;
+        let host = sim::state::docked_to(plan.ships[s].items.iter(), t.0)?;
+        plan.ships.iter().position(|v| v.id == host)
+    }
+
+    /// The last of ship `s`'s chain of vessels at `t`: the one with a
+    /// position of its own (`s` itself, undocked).
+    fn docked_root(&self, s: usize, t: Epoch) -> usize {
+        let n = self.plan.as_ref().map_or(0, |p| p.ships.len());
+        let mut at = s;
+        for _ in 0..n {
+            match self.docked_host(at, t) {
+                Some(h) => at = h,
+                None => break,
+            }
+        }
+        at
+    }
+
+    /// [`Shell::ship_position`]: where none of the ship's own tracks spans
+    /// `t`, the position of the vessel it is docked to then.
+    fn position_through(
+        &self,
+        s: usize,
+        t: Epoch,
+        view: &render::Pose,
+        depth: usize,
+    ) -> Option<DVec3> {
+        let plan = self.plan.as_ref()?;
+        let ship = &plan.ships[s];
+        let Some(k) = ship
             .items
             .iter()
-            .rposition(|i| i.track.as_ref().is_some_and(|track| spans(track, t)))?;
+            .rposition(|i| i.track.as_ref().is_some_and(|track| spans(track, t)))
+        else {
+            if depth > plan.ships.len() {
+                return None;
+            }
+            let host = self.docked_host(s, t)?;
+            return self.position_through(host, t, view, depth + 1);
+        };
         let near = self.near.get(s).and_then(Option::as_ref);
         self.item_line(s, k)
             .and_then(|line| line.at(t.seconds()))
@@ -1007,10 +1051,27 @@ impl Shell {
         let (balls, mut anchors) = labels::bodies(eph, t, &self.bodies, self.camera.focus, &view);
         let pose = scene.poses[paths::VIEW_POSE];
         if let Some(plan) = &self.plan {
-            for (s, ship) in plan.ships.iter().enumerate() {
-                if let Some(p) = self.ship_position(s, t, &pose) {
-                    anchors.extend(labels::ship(&view, &balls, s, &ship.name, p, SHIP_PX));
+            // A docked ship is where its vessel is: the vessels at one
+            // point share a label, "Depot + Hab" (M1b.md, step 4 plan,
+            // part 6).
+            let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+            for s in 0..plan.ships.len() {
+                let root = self.docked_root(s, t);
+                match groups.iter_mut().find(|(r, _)| *r == root) {
+                    Some((_, members)) => members.push(s),
+                    None => groups.push((root, vec![s])),
                 }
+            }
+            for (root, members) in groups {
+                let Some(p) = self.ship_position(root, t, &pose) else {
+                    continue;
+                };
+                let names: Vec<&str> = std::iter::once(root)
+                    .chain(members.into_iter().filter(|&m| m != root))
+                    .map(|m| plan.ships[m].name.as_str())
+                    .collect();
+                let name = names.join(" + ");
+                anchors.extend(labels::ship(&view, &balls, root, &name, p, SHIP_PX));
             }
             for e in &self.events {
                 let m = &plan.ships[e.ship].items[e.item].markers[e.marker];

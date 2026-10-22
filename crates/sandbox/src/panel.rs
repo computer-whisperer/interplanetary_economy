@@ -183,6 +183,19 @@ pub fn rows(
         let now = current(ship, t);
         for (k, item) in ship.items.iter().enumerate() {
             let mut row = item_row(eph, item);
+            // A dock, to the vessel by name (M1b.md, step 4 plan, part 6).
+            if let ItemKind::Docked(host) = item.kind {
+                row.label = format!(
+                    "to {}",
+                    whom(
+                        ships,
+                        With::Vessel {
+                            id: host,
+                            leg: None
+                        }
+                    )
+                );
+            }
             if past_stay(item.step) == Some(k) {
                 for w in ship.warnings.iter().filter(|w| w.step == Some(item.step)) {
                     row.lines.push((w.why.clone(), Tone::Warning));
@@ -375,7 +388,13 @@ fn burned(tanks: &Tanks, item: &Item, k: usize) -> Vec<(String, Tone)> {
             .map_or(String::new(), |load| {
                 format!(" · left {}", carried(&load, tanks.fuel))
             });
-        lines.push((format!("{what} {}{left}", mass(used)), Tone::Muted));
+        // What rode along (M1b.md, step 4 plan, part 6).
+        let riders = state.riders.get(k).copied().unwrap_or(0.0);
+        let with = match riders > 0.0 {
+            true => format!(" · with {} docked", mass(riders)),
+            false => String::new(),
+        };
+        lines.push((format!("{what} {}{left}{with}", mass(used)), Tone::Muted));
     }
     match tanks.dry() {
         Some(dry) if dry.item == k => lines.push((

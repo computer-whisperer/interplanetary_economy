@@ -8,7 +8,9 @@
 use crate::windows::Windows;
 use glam::DVec3;
 use orbit::ephem::Ephemeris;
-use orbit::mission::{Choice, Item, ItemKind, Marker, MarkerKind, Pin, Plan, Planner, Step};
+use orbit::mission::{
+    Choice, Item, ItemKind, Marker, MarkerKind, Others, Pin, Plan, Planner, Step,
+};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
 use orbit::track::Track;
 use rayon::prelude::*;
@@ -331,32 +333,41 @@ impl Loaded {
         let Step::Go(go) = &ship.steps[step] else {
             unreachable!("checked above")
         };
-        // A leg leaving a vessel the ship is docked to, or docking to one,
-        // is designed with where that vessel is (M1b.md, step 4 plan, part
-        // 2); the sweep does not read that yet (part 6).
-        if from.docked_to().is_some() || go.dock {
-            self.sweeps.insert(
-                (s, step),
-                Sweep {
-                    options: Some(Err(
-                        "a leg that leaves a vessel it is docked to, or docks, is not swept yet"
-                            .into(),
-                    )),
-                    ..sweep
-                },
-            );
-            return;
-        }
-        // A leg that meets a vessel is designed where the vessel is
-        // (M1b.md, step 3 plan, part 3), as the designs stand.
-        let met = match go.to.meeting.as_ref().map(|m| self.game.met(m)) {
-            None => None,
-            Some(Some(met)) => Some(met.map(|(_, c)| c)),
-            Some(None) => {
+        // What the leg reads of other ships, as the designs stand (M1b.md,
+        // step 3 plan, part 3; step 4 plan, parts 2 and 6): where the
+        // vessel it meets is, when that vessel leaves if the leg docks, and
+        // where the vessel the ship is docked to is when the leg leaves.
+        let read = || -> Result<Others, &'static str> {
+            let mut others = Others::default();
+            if let Some(m) = &go.to.meeting {
+                let met = self.game.met(m).ok_or("the vessel met")?;
+                if go.dock
+                    && let Ok((_, c)) = &met
+                {
+                    let at = self
+                        .game
+                        .at(m.ship, c.since())
+                        .ok_or("the vessel docked to")?;
+                    others.until = Some(at.map(|(_, _, until)| until));
+                }
+                others.met = Some(met.map(|(_, c)| c));
+            }
+            if let Some(h) = from.docked_to() {
+                let at = self
+                    .game
+                    .at(h, from.departs(&ship))
+                    .ok_or("the vessel the ship is docked to")?;
+                others.host = Some(at.map(|(_, c, until)| (c, until)));
+            }
+            Ok(others)
+        };
+        let others = match read() {
+            Ok(others) => others,
+            Err(what) => {
                 self.sweeps.insert(
                     (s, step),
                     Sweep {
-                        options: Some(Err("the vessel met is not designed that far yet".into())),
+                        options: Some(Err(format!("{what} is not designed that far yet"))),
                         ..sweep
                     },
                 );
@@ -377,14 +388,11 @@ impl Loaded {
                     });
                 }
                 let mut planner = Planner::resume(world, &ship, from.clone());
-                let mut met = met.clone();
+                let mut others = Some(others.clone());
                 loop {
-                    let items = match (planner.meets(), met.take()) {
-                        (Some(_), Some(met)) => planner.meet(met.as_ref().map_err(Clone::clone)),
-                        (Some(_), None) => return Err("the leg meets a vessel not designed".into()),
-                        (None, _) => planner.step(),
-                    }
-                    .ok_or("the leg was not reached")?;
+                    let items = planner
+                        .next(others.take().unwrap_or_default())
+                        .ok_or("the leg was not reached")?;
                     // The leg itself, not the stay before it.
                     let leg = |i: &&Item| {
                         i.step == step && matches!(i.kind, ItemKind::Leg | ItemKind::Failed(_))

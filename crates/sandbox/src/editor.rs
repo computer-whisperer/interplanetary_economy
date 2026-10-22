@@ -2,14 +2,16 @@
 //! its class and load (M1b.md, step 2 plan, part 4), and its steps (a
 //! leg's destination, a place or a vessel of the plan met where it is
 //! after one of its legs; durations, window and aerocapture; its manifest,
-//! what to carry after the stop; a wait's days), steps added, removed and
-//! moved. Each change makes a new ship, which the plan designs again from
+//! what to carry after the stop; a wait's days; a dock step's vessel),
+//! steps added, removed and moved; docking (M1b.md, step 4 plan, part 6: a
+//! start docked to a vessel, a leg's dock switch, a dock step). Each
+//! change makes a new ship, which the plan designs again from
 //! the first step it changes (a new class, load or manifest designs
 //! nothing); legs that cannot be flown say why at once, by the planner's
 //! own rules (`mission::check`).
 
 use damascene_core::prelude::*;
-use orbit::mission::{Go, Manifest, Meeting, Meetings, Ship, Spot, Step};
+use orbit::mission::{Dock, Go, Manifest, Meeting, Meetings, Ship, Spot, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::params::ShipClass;
@@ -36,6 +38,10 @@ pub enum Field {
     Open(usize),
     Close(usize),
     Aero(usize),
+    /// Leg `i` docks to the vessel it meets (M1b.md, step 4 plan).
+    Dock(usize),
+    /// Dock step `i`'s vessel (a menu).
+    DockTo(usize),
     Wait(usize),
     /// Leg `i`'s manifest (M1b.md, step 3 plan, part 4): the propellant,
     /// t, and cargo, t by commodity, to carry after its stop; empty, left
@@ -48,6 +54,8 @@ pub enum Field {
     Remove(usize),
     AddLeg,
     AddWait,
+    /// A dock step added, to the first other vessel of the plan.
+    AddDock,
     RemoveShip,
     Done,
 }
@@ -66,6 +74,8 @@ impl Field {
             Field::Open(i) => format!("edit:{i}:open"),
             Field::Close(i) => format!("edit:{i}:close"),
             Field::Aero(i) => format!("edit:{i}:aero"),
+            Field::Dock(i) => format!("edit:{i}:dock"),
+            Field::DockTo(i) => format!("edit:{i}:dockto"),
             Field::Wait(i) => format!("edit:{i}:wait"),
             Field::LegPropellant(i) => format!("edit:{i}:propellant"),
             Field::LegCargo(i, c) => format!("edit:{i}:cargo:{}", c.id()),
@@ -74,6 +84,7 @@ impl Field {
             Field::Remove(i) => format!("edit:{i}:remove"),
             Field::AddLeg => "edit:add-leg".into(),
             Field::AddWait => "edit:add-wait".into(),
+            Field::AddDock => "edit:add-dock".into(),
             Field::RemoveShip => "edit:remove-ship".into(),
             Field::Done => "edit:done".into(),
         }
@@ -91,6 +102,7 @@ impl Field {
             "propellant" => Field::Propellant,
             "add-leg" => Field::AddLeg,
             "add-wait" => Field::AddWait,
+            "add-dock" => Field::AddDock,
             "remove-ship" => Field::RemoveShip,
             "done" => Field::Done,
             _ if rest.starts_with("cargo:") => Field::Cargo(commodity(rest)?),
@@ -103,6 +115,8 @@ impl Field {
                     "open" => Field::Open(i),
                     "close" => Field::Close(i),
                     "aero" => Field::Aero(i),
+                    "dock" => Field::Dock(i),
+                    "dockto" => Field::DockTo(i),
                     "wait" => Field::Wait(i),
                     "propellant" => Field::LegPropellant(i),
                     _ if what.starts_with("cargo:") => Field::LegCargo(i, commodity(what)?),
@@ -400,10 +414,11 @@ pub fn choose(
 }
 
 /// `ship` with its start's place, or step `i`'s destination, set to the
-/// place `id`; or its destination to meeting a vessel (`meet:ID:LEG`),
-/// where the vessel is after that leg as the plan's `ships` stand (the
-/// game's check refuses what cannot be designed: a ship meeting itself,
-/// or meetings waiting on each other).
+/// place `id`; or to meeting a vessel (`meet:ID:LEG`), where the vessel is
+/// after that leg as the plan's `ships` stand; a start docked to a vessel
+/// (`meet:ID`: where the vessel is at the epoch), or a dock step's vessel
+/// (M1b.md, step 4 plan, part 6). The game's check refuses what cannot be
+/// designed: a ship meeting itself, or meetings waiting on each other.
 fn place(
     ship: &Ship,
     field: Field,
@@ -413,8 +428,8 @@ fn place(
 ) -> Result<Ship, String> {
     let spot = match parse_meet_option(id) {
         Some(m) => {
-            if field == Field::Start {
-                return Err("a start is a place".into());
+            if field == Field::Start && m.leg.is_some() {
+                return Err("a start docks to a vessel where it is at the epoch: not a leg".into());
             }
             let kind = Meetings::new(ships)?.place(&m)?;
             Spot::meeting(m, kind)
@@ -428,9 +443,26 @@ fn place(
             Some(Step::Go(go)) => go.to = spot,
             _ => return Err("not a leg".into()),
         },
+        Field::DockTo(i) => match ship.steps.get_mut(i) {
+            Some(Step::Dock(d)) if spot.meeting.is_some() => d.to = spot,
+            Some(Step::Dock(_)) => return Err("a dock names a vessel, not a place".into()),
+            _ => return Err("not a dock".into()),
+        },
         _ => return Err("not a place".into()),
     }
     Ok(ship)
+}
+
+/// Where `ship` starts, as the editor shows it: a vessel of the plan's
+/// `ships` by its name, docked ("Tug, docked"), or a place by its label.
+pub fn start_shown(ship: &Ship, ships: &[Ship]) -> String {
+    match ship.start.meeting {
+        Some(m) => match ships.iter().find(|s| s.id == m.ship) {
+            Some(vessel) => format!("{}, docked", vessel.name),
+            None => ship.start.label.clone(),
+        },
+        None => ship.start.label.clone(),
+    }
 }
 
 /// Where leg `i` of `ship` goes, as the editor shows it: a vessel of the
@@ -452,15 +484,20 @@ pub fn destination(ship: &Ship, ships: &[Ship], i: usize) -> String {
     }
 }
 
-/// `ship` after pressing `field`: aerocapture toggled, a step moved,
-/// removed or added (after the last; a leg to the NRHO in 5 days, a wait
-/// of a day). `None` where it changes nothing.
-pub fn press(ship: &Ship, field: Field, places: &Places) -> Option<Ship> {
+/// `ship` after pressing `field`: aerocapture or docking toggled, a step
+/// moved, removed or added (after the last; a leg to the NRHO in 5 days, a
+/// wait of a day, a dock to the first other vessel of the plan's `ships`).
+/// `None` where it changes nothing.
+pub fn press(ship: &Ship, field: Field, places: &Places, ships: &[Ship]) -> Option<Ship> {
     let mut ship = ship.clone();
     let n = ship.steps.len();
     match field {
         Field::Aero(i) => match ship.steps.get_mut(i) {
             Some(Step::Go(go)) => go.aero = !go.aero,
+            _ => return None,
+        },
+        Field::Dock(i) => match ship.steps.get_mut(i) {
+            Some(Step::Go(go)) if go.to.meeting.is_some() => go.dock = !go.dock,
             _ => return None,
         },
         Field::Up(i) if i > 0 && i < n => ship.steps.swap(i - 1, i),
@@ -479,6 +516,18 @@ pub fn press(ship: &Ship, field: Field, places: &Places) -> Option<Ship> {
             manifest: Manifest::default(),
         })),
         Field::AddWait => ship.steps.push(Step::Wait(1.0)),
+        Field::AddDock => {
+            let vessel = ships.iter().find(|v| v.id != ship.id)?;
+            let m = Meeting {
+                ship: vessel.id,
+                leg: None,
+            };
+            ship.steps.push(Step::Dock(Dock {
+                to: Spot::meeting(m, vessel.start.kind.clone()),
+                manifest: Manifest::default(),
+                note: None,
+            }));
+        }
         _ => return None,
     }
     Some(ship)
@@ -530,7 +579,8 @@ pub fn section(
     let caption = |s: &str| text(s.to_string()).caption().muted();
     let menu = |field: Field| {
         let shown = match field {
-            Field::To(i) => destination(ship, ships, i),
+            Field::To(i) | Field::DockTo(i) => destination(ship, ships, i),
+            Field::Start => start_shown(ship, ships),
             _ => value(ship, field),
         };
         select_trigger(field.key(), shown).width(Size::Fixed(150.0))
@@ -554,6 +604,7 @@ pub fn section(
             .width(Size::Fill(1.0)),
         small("+ Leg", Field::AddLeg),
         small("+ Wait", Field::AddWait),
+        small("+ Dock", Field::AddDock),
         small("Done", Field::Done),
     ])
     .gap(tokens::SPACE_1)
@@ -679,20 +730,18 @@ pub fn section(
                     .align(Align::Center),
                 );
                 let aero = switch(Field::Aero(i).key(), go.aero);
-                rows.push(
-                    row([
-                        caption("days"),
-                        input(editor, ship, Field::Days(i), selection, 80.0),
-                        caption("aero"),
-                        aero,
-                    ])
-                    .gap(tokens::SPACE_1)
-                    .align(Align::Center)
-                    .padding(Sides {
-                        left: 16.0,
-                        ..Sides::zero()
-                    }),
-                );
+                let mut flight = vec![
+                    caption("days"),
+                    input(editor, ship, Field::Days(i), selection, 80.0),
+                    caption("aero"),
+                    aero,
+                ];
+                // A leg to a vessel may dock to it (M1b.md, step 4 plan).
+                if go.to.meeting.is_some() {
+                    flight.push(caption("dock"));
+                    flight.push(switch(Field::Dock(i).key(), go.dock));
+                }
+                rows.push(indented(flight, 16.0));
                 rows.push(
                     row([
                         caption("window"),
@@ -720,13 +769,12 @@ pub fn section(
                 }
                 rows.extend(manifest_rows(i));
             }
-            // A dock step: its vessel (the menu to choose one is step 4,
-            // part 6's) and its manifest.
+            // A dock step: its vessel and its manifest.
             Step::Dock(_) => {
                 rows.push(
                     row([
                         caption(&format!("{}. dock to", i + 1)),
-                        caption(&destination(ship, ships, i)),
+                        menu(Field::DockTo(i)),
                         spacer(),
                     ]
                     .into_iter()
@@ -776,8 +824,10 @@ pub fn section(
 /// The menu for `field` of `ship`: for a leg's destination, every other
 /// ship of the plan's `ships` by name, where it starts and after each of
 /// its legs ("Depot, leg 2 — nrho"), then every place by id, with its
-/// name (a start's menu: the places); or, for the class, "none" and every
-/// class, with its propellant, tanks and hold.
+/// name; for the start, every other ship, docked to where it is at the
+/// epoch, then the places; for a dock step, the ships as for a leg; or,
+/// for the class, "none" and every class, with its propellant, tanks and
+/// hold.
 pub fn menu(
     field: Field,
     ship: &Ship,
@@ -835,6 +885,26 @@ pub fn menu(
                     .map(|p| (p.id.clone(), format!("{} — {}", p.id, p.name))),
             )
             .collect(),
+        Field::DockTo(_) => vessels().collect(),
+        Field::Start => ships
+            .iter()
+            .filter(|v| v.id != ship.id)
+            .map(|v| {
+                let m = Meeting {
+                    ship: v.id,
+                    leg: None,
+                };
+                (
+                    meet_option(&m),
+                    format!("{} — docked, where it is then", v.name),
+                )
+            })
+            .chain(
+                places
+                    .iter()
+                    .map(|p| (p.id.clone(), format!("{} — {}", p.id, p.name))),
+            )
+            .collect(),
         _ => places
             .iter()
             .map(|p| (p.id.clone(), format!("{} — {}", p.id, p.name)))
@@ -885,6 +955,8 @@ window = ["2045-03-08", "2045-03-10"]
             Field::Open(1),
             Field::Close(1),
             Field::Aero(2),
+            Field::Dock(2),
+            Field::DockTo(5),
             Field::Wait(4),
             Field::LegPropellant(2),
             Field::LegCargo(0, Commodity::Lox),
@@ -894,6 +966,7 @@ window = ["2045-03-08", "2045-03-10"]
             Field::Remove(0),
             Field::AddLeg,
             Field::AddWait,
+            Field::AddDock,
             Field::RemoveShip,
             Field::Done,
         ] {
@@ -965,17 +1038,17 @@ window = ["2045-03-08", "2045-03-10"]
     #[test]
     fn steps_move_and_places_change() {
         let (s, places) = (ship(), Places::standard());
-        let t = press(&s, Field::Down(0), places).unwrap();
+        let t = press(&s, Field::Down(0), places, &[]).unwrap();
         assert!(matches!(t.steps[0], Step::Wait(_)));
         assert_eq!(first_change(&s, &t), Some(Some(0)));
-        assert!(press(&s, Field::Up(0), places).is_none());
-        assert!(press(&s, Field::Down(2), places).is_none());
-        let t = press(&s, Field::Remove(1), places).unwrap();
+        assert!(press(&s, Field::Up(0), places, &[]).is_none());
+        assert!(press(&s, Field::Down(2), places, &[]).is_none());
+        let t = press(&s, Field::Remove(1), places, &[]).unwrap();
         assert_eq!(t.steps.len(), 2);
         assert_eq!(first_change(&s, &t), Some(Some(1)));
-        let t = press(&s, Field::AddWait, places).unwrap();
+        let t = press(&s, Field::AddWait, places, &[]).unwrap();
         assert_eq!(first_change(&s, &t), Some(Some(3)));
-        let t = press(&s, Field::Aero(0), places).unwrap();
+        let t = press(&s, Field::Aero(0), places, &[]).unwrap();
         assert!(matches!(&t.steps[0], Step::Go(g) if g.aero));
         let t = place(&s, Field::To(0), "moon-south-pole", places, &[]).unwrap();
         assert_eq!(value(&t, Field::To(0)), "moon-south-pole");
@@ -1039,9 +1112,83 @@ window = ["2045-03-08", "2045-03-10"]
             "{}",
             refused("meet:7:5")
         );
+        // A start may dock to a vessel where it is at the epoch, not to
+        // a leg of it (M1b.md, step 4 plan, part 6).
         assert_eq!(
-            place(&s, Field::Start, "meet:7", places, &ships).unwrap_err(),
-            "a start is a place"
+            place(&s, Field::Start, "meet:7", places, &ships)
+                .unwrap()
+                .start
+                .meeting,
+            Some(Meeting { ship: 7, leg: None })
+        );
+        assert_eq!(
+            place(&s, Field::Start, "meet:7:0", places, &ships).unwrap_err(),
+            "a start docks to a vessel where it is at the epoch: not a leg"
+        );
+    }
+
+    /// Docking in the editor (M1b.md, step 4 plan, part 6): a leg to a
+    /// vessel may dock, a leg to a place may not; a dock step is added to
+    /// the first other vessel and pointed at a leg of it, never at a place;
+    /// a start docked to a vessel shows by name.
+    #[test]
+    fn docking_is_edited() {
+        let places = Places::standard();
+        let src = r#"
+name = "x"
+[[ship]]
+id = 7
+name = "Depot"
+start = { at = "nrho", epoch = "2045-03-01" }
+[[ship.leg]]
+wait = 30
+[[ship.leg]]
+to = "dro"
+days = [8.0]
+[[ship]]
+id = 1
+name = "Tug"
+start = { at = "leo", epoch = "2045-03-01" }
+[[ship.leg]]
+to = { ship = 7 }
+days = [5.0]
+[[ship.leg]]
+to = "leo"
+days = [5.0]
+"#;
+        let ships = Plan::parse(src, orbit::ephem::Ephemeris::standard(), places)
+            .unwrap()
+            .ships;
+        let tug = &ships[1];
+        let docked = press(tug, Field::Dock(0), places, &ships).unwrap();
+        assert!(matches!(&docked.steps[0], Step::Go(g) if g.dock));
+        assert!(
+            press(tug, Field::Dock(1), places, &ships).is_none(),
+            "a leg to a place does not dock"
+        );
+        let with_dock = press(tug, Field::AddDock, places, &ships).unwrap();
+        let Step::Dock(d) = &with_dock.steps[2] else {
+            panic!("a dock")
+        };
+        assert_eq!(d.to.meeting, Some(Meeting { ship: 7, leg: None }));
+        assert_eq!(destination(&with_dock, &ships, 2), "Depot, start");
+        let moved = place(&with_dock, Field::DockTo(2), "meet:7:1", places, &ships).unwrap();
+        assert_eq!(destination(&moved, &ships, 2), "Depot, leg 1");
+        assert_eq!(
+            place(&with_dock, Field::DockTo(2), "nrho", places, &ships).unwrap_err(),
+            "a dock names a vessel, not a place"
+        );
+        assert_eq!(
+            place(tug, Field::DockTo(0), "meet:7", places, &ships).unwrap_err(),
+            "not a dock"
+        );
+        let starts = place(tug, Field::Start, "meet:7", places, &ships).unwrap();
+        assert_eq!(starts.start.meeting, Some(Meeting { ship: 7, leg: None }));
+        assert_eq!(start_shown(&starts, &ships), "Depot, docked");
+        assert_eq!(start_shown(tug, &ships), "leo");
+        assert!(
+            press(&ships[0], Field::AddDock, places, &ships[..1]).is_none(),
+            "no other vessel to dock to"
         );
     }
 

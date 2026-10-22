@@ -8,7 +8,7 @@ runs a vessel dry or short, the sandbox's editor sets meetings and
 manifests while its panel shows transfers and purchases, `sim run`
 prints them with the depot scenarios' checks holding, and the tests and
 measurements are in); step 4, docking, under way (its plan, below), parts
-1 to 5 done. Decided: one engine for both modes, with economy components
+1 to 6 done. Decided: one engine for both modes, with economy components
 landing in the sandbox first (Modes, below); the four decisions below,
 each as recommended; and stations as vessels, flown to where they stay,
 with docking a step of its own (Design, Vessels, stations and stocks).
@@ -2441,6 +2441,25 @@ Where the work is (found drafting):
    panel's "docked to Tug" rows and an assembly's mass on the host's
    burns; the editor: a start's menu offers vessels, a dock toggle on a
    leg to a vessel, a "dock to" step. GPU tests as step 3's.
+   - Built (2026-10-21): a ship's position through the vessel it is
+     docked to where none of its own tracks spans the time
+     (`app::ship_position`, to the depth of the fleet); the vessels at
+     one point share a label, the root's name first ("Depot + Hab");
+     the panel's dock rows by name ("docked · to Tug") and a burn's
+     " · with 20.000 t docked"; the editor's `Field::{Dock, DockTo,
+     AddDock}` (a "dock" switch beside "aero" on a leg to a vessel, a
+     "dock to" menu of the vessels on a dock step, "+ Dock" adding one
+     to the first other vessel), the start's menu offering each other
+     vessel ("Tug — docked, where it is then") before the places and
+     showing "Tug, docked"; the sandbox's sweep reads what a leg from a
+     docked vessel, or one that docks, reads (`Others` from `Game::met`
+     and `Game::at`), so those legs sweep too. Tests: `docking_is_edited`
+     (`sandbox::editor`), the start test's expectation turned around,
+     and `a_module_is_docked_in_the_editor` (`crates/sandbox/tests/
+     editor.rs`, GPU: the tug's switch, the module's start and dock step
+     from the menus, the designed docks in the panel by name, the tug's
+     leg with 20 t docked; shots dock-switch, start-menu, dock-step,
+     assembly-panel).
 7. **Tests and measurements**: the loop's time with assemblies; the
    design waits with a chain; the full workspace suite.
 
