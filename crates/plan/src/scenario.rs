@@ -6,7 +6,8 @@
 use crate::calendar::{Calendar, DAYS_PER_YEAR};
 use orbit::routes::PlaceId;
 use sim::params::{
-    AsteroidDraw, Demanded, Economy, Output, ProgramKind, Propellant, PropellantSpec, ShipClass,
+    AsteroidDraw, Demanded, Economy, Facility, Output, ProgramKind, Propellant, PropellantSpec,
+    ShipClass,
 };
 
 /// A kind of plant at one site.
@@ -89,24 +90,42 @@ impl Scenario {
         let build_periods = |months: f64| (months / 12.0 / cal.period_years()).round() as usize;
         let lead_periods =
             |years: f64| (years / cal.period_years() - 1e-9).ceil().max(1.0) as usize;
-        let facilities = e
-            .facilities
+        // The LP knows which sites have the resource (M2's foresight): the
+        // options the draw left out, and their surveys, are not its.
+        let present: Vec<&Facility> = e.facilities.iter().filter(|f| f.present).collect();
+        let kept: Vec<bool> = (0..e.programs.len())
+            .map(|j| {
+                e.programs[j].kind == ProgramKind::Technology
+                    || present.iter().any(|f| f.programs.contains(&j))
+            })
+            .collect();
+        let index: Vec<usize> = kept
+            .iter()
+            .scan(0, |n, &k| {
+                let i = *n;
+                *n += usize::from(k);
+                Some(i)
+            })
+            .collect();
+        let facilities = present
             .iter()
             .map(|f| FacilityOption {
                 id: f.id.clone(),
                 node: f.node,
                 output: f.output,
-                alpha: f.alpha,
+                alpha: f.alpha(),
                 grade: f.grade,
                 build_periods: build_periods(f.build_months),
                 reserve: f.reserve,
-                programs: f.programs.clone(),
+                programs: f.programs.iter().map(|&j| index[j]).collect(),
             })
             .collect();
         let programs = e
             .programs
             .iter()
-            .map(|p| Program {
+            .zip(&kept)
+            .filter(|(_, k)| **k)
+            .map(|(p, _)| Program {
                 id: p.id.clone(),
                 kind: p.kind,
                 // M2's foresight offset: the LP knows which sites have the
@@ -166,5 +185,50 @@ impl Scenario {
     /// Discount factor of period `p`, at its middle.
     pub fn discount(&self, p: usize) -> f64 {
         (1.0 + self.discount_rate).powf(-self.cal.years_at(p))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orbit::ephem::Ephemeris;
+    use orbit::routes::RouteGraph;
+    use sim::params::{Draw, EconomyFile};
+
+    /// The options the draw left out, and their surveys, are not the LP's;
+    /// a kept option's programs are the same ones by id.
+    #[test]
+    fn absent_options_and_their_surveys_are_left_out() {
+        let eph = Ephemeris::standard();
+        let e = EconomyFile::standard().draw(eph, RouteGraph::standard(), &mut Draw::Central);
+        let sc = Scenario::new(&e, 3);
+        let present: Vec<&Facility> = e.facilities.iter().filter(|f| f.present).collect();
+        assert!(
+            present.len() < e.facilities.len(),
+            "the central world has absent options"
+        );
+        assert_eq!(sc.facilities.len(), present.len());
+        for (j, p) in sc.programs.iter().enumerate() {
+            if p.kind == ProgramKind::Survey {
+                assert!(
+                    sc.facilities.iter().any(|f| f.programs.contains(&j)),
+                    "{}",
+                    p.id
+                );
+            }
+        }
+        for (f, ef) in sc.facilities.iter().zip(&present) {
+            let ids: Vec<&str> = f
+                .programs
+                .iter()
+                .map(|&j| sc.programs[j].id.as_str())
+                .collect();
+            let eids: Vec<&str> = ef
+                .programs
+                .iter()
+                .map(|&j| e.programs[j].id.as_str())
+                .collect();
+            assert_eq!(ids, eids, "{}", f.id);
+        }
     }
 }

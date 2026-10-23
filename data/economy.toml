@@ -192,8 +192,10 @@ build_months = 12.0
 technology = "lunar-ice"
 # Prospecting: VIPER ~$0.93B with its lander (cancelled 2024; Planetary
 # Society); CLPS-class payloads ~$0.06–0.35B (PRIME-1 delivery $47M), 3–5
-# years. By 2040, CLPS-class [ext].
-survey = { cost_musd = { median = 300.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.25 } }
+# years. By 2040, CLPS-class [ext]. The estimate's noise (its lognormal
+# sigma): LCROSS put Cabeus at 5.6 ± 2.9 wt% from orbit, and a rover on the
+# ground does better [guess].
+survey = { cost_musd = { median = 300.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.25 }, noise = 0.3 }
 
 [[facility]]
 # Oxygen from regolith at a sunlit polar site: carbothermal 0.39 t/(t/yr)
@@ -233,7 +235,7 @@ build_months = 12.0
 technology = "mars-ice"
 # Ice mapping: Mars Ice Mapper, NASA share $185M of an international
 # mission, ~$0.25–0.8B in all, 6–7 years (SpaceNews 2020) [ext].
-survey = { cost_musd = { median = 500.0, sigma = 0.5 }, years = { median = 6.0, sigma = 0.25 } }
+survey = { cost_musd = { median = 500.0, sigma = 0.5 }, years = { median = 6.0, sigma = 0.25 }, noise = 0.4 }
 
 [[facility]]
 # Phobos may be carbonaceous (D-type spectrum) or not; if volatile-rich,
@@ -248,8 +250,9 @@ present = 0.4
 build_months = 12.0
 technology = "volatiles"
 # JAXA MMX: development ~$0.35B, ~8 years from approval to Phobos remote
-# sensing; a follow-on with heritage ~6 [ext].
-survey = { cost_musd = { median = 400.0, sigma = 0.4 }, years = { median = 6.0, sigma = 0.25 } }
+# sensing; a follow-on with heritage ~6 [ext]. Mapped from orbit: noise 0.4
+# [guess].
+survey = { cost_musd = { median = 400.0, sigma = 0.4 }, years = { median = 6.0, sigma = 0.25 }, noise = 0.4 }
 
 # Asteroid composition priors by spectral class; the weights are the
 # probability of each asteroid_plant's resource, the rest is barren.
@@ -296,7 +299,8 @@ technology = "volatiles"
 # Small-sat prospector: Janus <$49M for two craft, AstroForge Odin <$7M, DSI
 # Prospector-1 "tens of millions"; ~3 years to build, cruise and
 # characterize (2–5). Flagships cost ~$0.4–1.4B (Hayabusa2, OSIRIS-REx).
-survey = { cost_musd = { median = 50.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.3 } }
+# A prospector at the body: noise 0.3 [guess].
+survey = { cost_musd = { median = 50.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.3 }, noise = 0.3 }
 
 [[asteroid_plant]]
 # Platinum-group metals from metal-rich material: total PGM 7 / 27 / 75 ppm
@@ -311,7 +315,7 @@ grade = { median = 10e-6, sigma = 0.8 }
 minable_fraction = 0.5
 build_months = 12.0
 technology = "pgm"
-survey = { cost_musd = { median = 50.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.3 } }
+survey = { cost_musd = { median = 50.0, sigma = 0.7 }, years = { median = 3.0, sigma = 0.3 }, noise = 0.3 }
 
 # Technology programs: development (non-recurring cost, not plant hardware)
 # from program start to the first installable plant, paid at no more than

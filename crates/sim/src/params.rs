@@ -2,8 +2,10 @@
 //! them (M1b.md, step 2 plan, part 1): an [`Economy`] is one game's worth
 //! of concrete numbers, in their own units. M2's LP builds its periods
 //! from one (`plan::scenario`). The draw keeps M2's order, so M2's seeds
-//! give M2's worlds.
+//! give M2's worlds. Keyed draws (step 5 plan, part 1) are streams named
+//! by a key, for what is drawn as the game runs.
 
+use crate::hash::Fixed;
 use orbit::ephem::{BodyKind, Ephemeris};
 use orbit::routes::{PlaceId, RouteGraph};
 use orbit::time::Epoch;
@@ -12,6 +14,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 use std::f64::consts::PI;
+use std::hash::Hasher;
 
 /// Standard gravity, km/s².
 const G0: f64 = 9.806_65e-3;
@@ -34,7 +37,7 @@ impl Dist {
         }
     }
 
-    fn sample(&self, rng: &mut Draw) -> f64 {
+    pub fn sample(&self, rng: &mut Draw) -> f64 {
         match (*self, rng) {
             (d, Draw::Central) => d.central(),
             (Dist::Fixed(x), _) => x,
@@ -58,8 +61,16 @@ impl Draw {
         Draw::Random(Box::new(ChaCha8Rng::seed_from_u64(seed)))
     }
 
+    /// The stream named `key` in the world of `seed` (0 for the central
+    /// draw): the same in every build and on every thread, and another
+    /// for another seed or key. Always random: what it draws (a survey's
+    /// estimate) is state, in the central world too.
+    pub fn keyed(seed: u64, key: &str) -> Self {
+        Draw::seeded(Fixed::default().u64(seed).str(key).finish())
+    }
+
     /// True with probability `p`; the central draw takes the likelier side.
-    fn chance(&mut self, p: f64) -> bool {
+    pub fn chance(&mut self, p: f64) -> bool {
         match self {
             Draw::Central => p >= 0.5,
             Draw::Random(r) => r.random_bool(p.clamp(0.0, 1.0)),
@@ -266,13 +277,16 @@ struct Need<'a> {
     survey: Option<(&'a ProgramRow, f64, String)>,
 }
 
-/// A fixed cost paid before a plant: spent at no more than `cost_musd /
+/// A survey, paid before a plant: spent at no more than `cost_musd /
 /// years` per year, after which the plant may be installed.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProgramRow {
     cost_musd: Dist,
     years: Dist,
+    /// The estimate's lognormal σ: the survey reports each deposit's grade
+    /// and reserve as the truth times exp(σz).
+    noise: f64,
 }
 
 #[derive(Deserialize)]
@@ -396,23 +410,54 @@ pub struct PropellantSpec {
     pub fuel_boiloff_per_day: f64,
 }
 
-/// A kind of plant at one site, as drawn.
+/// A kind of plant at one site, as drawn: a plant option. Every option
+/// the file describes is in every world, `present` or not, so that a plan
+/// naming one reads in every world (step 5 plan, decision 5).
 #[derive(Clone, Debug)]
 pub struct Facility {
     pub id: String,
     pub node: PlaceId,
     /// Per t/yr of rated output.
     pub output: Output,
-    /// Equipment, t per t/yr of output.
-    pub alpha: f64,
+    /// Equipment, t per t/yr of output, for the plant and its power.
+    pub plant: f64,
+    /// Equipment, t per t/yr of ore handled (output over grade).
+    pub ore: f64,
+    /// Product mass per mass of ore.
     pub grade: f64,
+    /// Whether the resource is there at all; a plant on an absent deposit
+    /// yields nothing.
+    pub present: bool,
     /// From installation to output.
     pub build_months: f64,
     /// Cumulative output the deposit can yield, t.
     pub reserve: Option<f64>,
+    /// What is known of the deposit before a survey.
+    pub prior: Prior,
     /// Indices into [`Economy::programs`] that must be finished before
     /// the plant is installed.
     pub programs: Vec<usize>,
+}
+
+impl Facility {
+    /// Equipment, t per t/yr of output, were the grade `grade`.
+    pub fn alpha_at(&self, grade: f64) -> f64 {
+        self.plant + self.ore / grade
+    }
+
+    /// Equipment, t per t/yr of output, at the true grade.
+    pub fn alpha(&self) -> f64 {
+        self.alpha_at(self.grade)
+    }
+}
+
+/// What the file says of a deposit before anything is learned: its central
+/// grade and reserve, and the probability that the resource is there.
+#[derive(Clone, Copy, Debug)]
+pub struct Prior {
+    pub grade: f64,
+    pub reserve: Option<f64>,
+    pub present: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -436,6 +481,8 @@ pub struct Program {
     /// The probability that what a survey characterizes has the resource
     /// at all; 1 for a technology.
     pub prior: f64,
+    /// A survey's estimate's lognormal σ; 0 for a technology.
+    pub noise: f64,
 }
 
 /// Third-party demand for one thing: Q = `ref_tpy` × `share` × (price /
@@ -544,12 +591,11 @@ impl EconomyFile {
             })
             .collect();
 
-        let alpha = |e: &EquipmentRow, grade: f64, draw: &mut Draw| {
-            e.plant.sample(draw) + e.ore.sample(draw) / grade
-        };
         // Each plant's technology and survey, and each deposit's size, are
         // sampled after everything else so that adding them left the other
-        // parameters of each seed as they were.
+        // parameters of each seed as they were; and the surveys of absent
+        // options after those, since absent options were once left out.
+        // An absent option draws nothing more than it did then.
         let mut needs: Vec<Need> = Vec::new();
         let mut reserves: Vec<(usize, &Dist)> = Vec::new();
         let mut facilities = Vec::new();
@@ -558,17 +604,25 @@ impl EconomyFile {
             let grade = f.grade.sample(draw);
             let plant = f.equipment_t_per_tpy.plant.sample(draw);
             let ore = f.equipment_t_per_tpy.ore.sample(draw);
-            if !present {
-                continue;
-            }
-            let option = |id: String, grade: f64| Facility {
+            let option = |id: String, factor: f64, reserve: Option<&Dist>| Facility {
                 id,
                 node: node(&f.node),
                 output: f.output.into(),
-                alpha: plant + ore / grade,
-                grade,
+                plant,
+                ore,
+                grade: grade * factor,
+                present,
                 build_months: f.build_months,
-                reserve: None,
+                reserve: if present {
+                    None
+                } else {
+                    reserve.map(Dist::central)
+                },
+                prior: Prior {
+                    grade: f.grade.central() * factor,
+                    reserve: reserve.map(Dist::central),
+                    present: f.present,
+                },
                 programs: Vec::new(),
             };
             let need = || Need {
@@ -579,12 +633,18 @@ impl EconomyFile {
                     .map(|s| (s, f.present, format!("survey:{}", f.id))),
             };
             if f.deposits.is_empty() {
-                facilities.push(option(f.id.clone(), grade));
+                facilities.push(option(f.id.clone(), 1.0, None));
                 needs.push(need());
             }
             for d in &f.deposits {
-                reserves.push((facilities.len(), &d.reserve_t));
-                facilities.push(option(format!("{}:{}", f.id, d.id), grade * d.grade_factor));
+                if present {
+                    reserves.push((facilities.len(), &d.reserve_t));
+                }
+                facilities.push(option(
+                    format!("{}:{}", f.id, d.id),
+                    d.grade_factor,
+                    Some(&d.reserve_t),
+                ));
                 needs.push(need());
             }
         }
@@ -628,27 +688,44 @@ impl EconomyFile {
                 .collect();
             weights.push((1.0 - weights.iter().sum::<f64>()).max(0.0));
             let k = draw.pick(&weights);
-            let composition = plants.get(k).map(|p| {
-                let grade = p.grade.sample(draw);
+            for (j, p) in plants.iter().enumerate() {
+                let present = j == k;
+                let e = &p.equipment_t_per_tpy;
+                let (grade, plant, ore) = if present {
+                    (
+                        p.grade.sample(draw),
+                        e.plant.sample(draw),
+                        e.ore.sample(draw),
+                    )
+                } else {
+                    (p.grade.central(), e.plant.central(), e.ore.central())
+                };
+                let reserve = |grade: f64| Some(mass_t * p.minable_fraction * grade);
                 facilities.push(Facility {
                     id: format!("{}@{}", p.id, n.id),
                     node: place,
                     output: p.output.into(),
-                    alpha: alpha(&p.equipment_t_per_tpy, grade, draw),
+                    plant,
+                    ore,
                     grade,
+                    present,
                     build_months: p.build_months,
-                    reserve: Some(mass_t * p.minable_fraction * grade),
+                    reserve: reserve(grade),
+                    prior: Prior {
+                        grade: p.grade.central(),
+                        reserve: reserve(p.grade.central()),
+                        present: weights[j],
+                    },
                     programs: Vec::new(),
                 });
                 needs.push(Need {
                     technology: &p.technology,
-                    survey: Some((&p.survey, weights[k], format!("survey:{}@{}", p.id, n.id))),
+                    survey: Some((&p.survey, weights[j], format!("survey:{}@{}", p.id, n.id))),
                 });
-                p.id.clone()
-            });
+            }
             asteroids.push(AsteroidDraw {
                 id: n.id.clone(),
-                composition,
+                composition: plants.get(k).map(|p| p.id.clone()),
                 mass_t,
             });
         }
@@ -708,29 +785,22 @@ impl EconomyFile {
                 cost_musd: t.cost_musd.sample(draw),
                 years: t.years.sample(draw),
                 prior: 1.0,
+                noise: 0.0,
             })
             .collect();
-        for (f, need) in facilities.iter_mut().zip(needs) {
-            let find = |programs: &[Program], kind, id: &str| {
-                programs.iter().position(|p| p.kind == kind && p.id == id)
-            };
+        let mut later: Vec<(usize, &ProgramRow, f64, String)> = Vec::new();
+        for (k, (f, need)) in facilities.iter_mut().zip(needs).enumerate() {
             let tech =
                 find(&programs, ProgramKind::Technology, need.technology).unwrap_or_else(|| {
                     panic!("economy.toml: unknown technology {:?}", need.technology)
                 });
             f.programs.push(tech);
             if let Some((row, prior, id)) = need.survey {
-                let survey = find(&programs, ProgramKind::Survey, &id).unwrap_or_else(|| {
-                    programs.push(Program {
-                        id,
-                        kind: ProgramKind::Survey,
-                        cost_musd: row.cost_musd.sample(draw),
-                        years: row.years.sample(draw),
-                        prior,
-                    });
-                    programs.len() - 1
-                });
-                f.programs.push(survey);
+                if f.present {
+                    f.programs.push(survey(&mut programs, row, prior, id, draw));
+                } else {
+                    later.push((k, row, prior, id));
+                }
             }
         }
 
@@ -749,6 +819,10 @@ impl EconomyFile {
         }
         for (ship, row) in ships.iter_mut().zip(&self.ship) {
             ship.trip_musd += row.ops_musd_per_trip.sample(draw);
+        }
+        for (k, row, prior, id) in later {
+            let j = survey(&mut programs, row, prior, id, draw);
+            facilities[k].programs.push(j);
         }
 
         Economy {
@@ -774,6 +848,31 @@ impl EconomyFile {
             asteroids,
         }
     }
+}
+
+fn find(programs: &[Program], kind: ProgramKind, id: &str) -> Option<usize> {
+    programs.iter().position(|p| p.kind == kind && p.id == id)
+}
+
+/// The survey `id`, made from `row` if it is not yet among `programs`.
+fn survey(
+    programs: &mut Vec<Program>,
+    row: &ProgramRow,
+    prior: f64,
+    id: String,
+    draw: &mut Draw,
+) -> usize {
+    find(programs, ProgramKind::Survey, &id).unwrap_or_else(|| {
+        programs.push(Program {
+            id,
+            kind: ProgramKind::Survey,
+            cost_musd: row.cost_musd.sample(draw),
+            years: row.years.sample(draw),
+            prior,
+            noise: row.noise,
+        });
+        programs.len() - 1
+    })
 }
 
 impl From<OutputRow> for Output {
@@ -816,7 +915,7 @@ mod tests {
         ice.sort_by(|a, b| b.grade.total_cmp(&a.grade));
         for pair in ice.windows(2) {
             assert!(
-                pair[1].alpha > pair[0].alpha,
+                pair[1].alpha() > pair[0].alpha(),
                 "{} {}",
                 pair[0].id,
                 pair[1].id
@@ -826,5 +925,81 @@ mod tests {
         assert!(ice.iter().all(|f| f.reserve.is_some()));
         let surveys = e.programs.iter().filter(|p| p.id == "survey:lunar-ice");
         assert_eq!(surveys.count(), 1);
+    }
+
+    /// The same in every build: a keyed stream's first values are part of
+    /// the format (captured from this build, where `hash::it_is_fixed`'s
+    /// were computed apart), the same for the same seed and key, and
+    /// others for another seed or key.
+    #[test]
+    fn keyed_draws_are_fixed() {
+        let unit = Dist::Uniform {
+            low: 0.0,
+            high: 1.0,
+        };
+        let mut a = Draw::keyed(0, "survey:lunar-ice");
+        let first = unit.sample(&mut a);
+        let second = unit.sample(&mut a);
+        assert_eq!(first.to_bits(), KEYED_FIRST);
+        assert_eq!(second.to_bits(), KEYED_SECOND);
+        let mut b = Draw::keyed(0, "survey:lunar-ice");
+        assert_eq!(unit.sample(&mut b), first);
+        assert_ne!(unit.sample(&mut Draw::keyed(0, "survey:mars-ice")), first);
+        assert_ne!(unit.sample(&mut Draw::keyed(1, "survey:lunar-ice")), first);
+        assert!(Draw::keyed(0, "x").chance(1.0));
+        assert!(!Draw::keyed(0, "x").chance(0.0));
+    }
+
+    const KEYED_FIRST: u64 = 4_599_573_686_303_640_636;
+    const KEYED_SECOND: u64 = 4_600_259_522_190_956_308;
+
+    /// A world where the draw left a resource out keeps its options and
+    /// their surveys, so that a plan naming one reads in every world; the
+    /// surveys of absent options come after the others, sampled last.
+    #[test]
+    fn absent_options_are_kept() {
+        let eph = Ephemeris::standard();
+        // Phobos is present with probability 0.4: dry in the central world.
+        let e = EconomyFile::standard().draw(eph, RouteGraph::standard(), &mut Draw::Central);
+        let phobos = e
+            .facilities
+            .iter()
+            .find(|f| f.id == "phobos-volatiles")
+            .expect("the option is there");
+        assert!(!phobos.present);
+        assert_eq!(phobos.prior.present, 0.4);
+        assert_eq!(phobos.prior.grade, 0.06);
+        assert_eq!(phobos.grade, 0.06, "an absent option takes the central");
+        let survey = &e.programs[phobos.programs[1]];
+        assert_eq!(survey.id, "survey:phobos-volatiles");
+        assert_eq!(survey.kind, ProgramKind::Survey);
+        assert_eq!(survey.noise, 0.4);
+        let of_present: Vec<bool> = e
+            .programs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.kind == ProgramKind::Survey)
+            .map(|(j, _)| {
+                e.facilities
+                    .iter()
+                    .any(|f| f.present && f.programs.contains(&j))
+            })
+            .collect();
+        assert!(of_present.contains(&true) && of_present.contains(&false));
+        assert!(of_present.iter().skip_while(|p| **p).all(|p| !*p));
+        // Every asteroid has an option of each kind, present as drawn.
+        assert!(!e.asteroids.is_empty());
+        for a in &e.asteroids {
+            for kind in ["volatiles", "pgm"] {
+                let id = format!("{kind}@{}", a.id);
+                let f = e
+                    .facilities
+                    .iter()
+                    .find(|f| f.id == id)
+                    .expect("both kinds");
+                assert_eq!(f.present, a.composition.as_deref() == Some(kind), "{id}");
+                assert_eq!(f.programs.len(), 2);
+            }
+        }
     }
 }
