@@ -1,8 +1,8 @@
 //! A game's log (M1b.md, Modes; step 1 plan, part 2): its setup and its
 //! actions. Its file is a mission plan's (`orbit::mission::Plan`, whose
-//! ships are the first actions) with a `[game]` table and `[[replan]]`
-//! entries; a plan without them is a sandbox log, so the plans in
-//! `data/missions/` read as they are.
+//! ships are the first actions) with a `[game]` table, `[[program]]` and
+//! `[[replan]]` entries; a plan without them is a sandbox log, so the
+//! plans in `data/missions/` read as they are.
 
 use crate::designs::apply;
 use crate::ships::{Commodity, commodity};
@@ -34,6 +34,16 @@ pub struct Setup {
     pub start: Option<Epoch>,
     /// In career, the time the game has reached.
     pub now: Option<Epoch>,
+}
+
+/// A program of the economy started (M1b.md, step 5 plan, part 2): a
+/// technology or a survey, by its id, each once. It finishes its years
+/// after `start`, spending its cost evenly meanwhile.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Program {
+    pub id: String,
+    /// To the minute ([`minute`]); career's now when it was made.
+    pub start: Epoch,
 }
 
 /// A ship's steps from one of them on, replaced.
@@ -92,11 +102,24 @@ pub enum Check {
         at: Epoch,
         to: Option<u64>,
     },
+    /// The program `program` at `at`: finished or not, or what it has
+    /// spent, $M, within bounds (M1b.md, step 5 plan, part 2).
+    Program {
+        program: String,
+        at: Epoch,
+        expect: ProgramCheck,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProgramCheck {
+    Finished(bool),
+    Spent([f64; 2]),
 }
 
 impl Check {
-    /// The ship it checks, by id.
-    pub fn ship(&self) -> u64 {
+    /// The ship it checks, by id; none for a program's.
+    pub fn ship(&self) -> Option<u64> {
         match self {
             Check::At { ship, .. }
             | Check::Dv { ship, .. }
@@ -104,18 +127,21 @@ impl Check {
             | Check::Dry { ship, .. }
             | Check::Cargo { ship, .. }
             | Check::Transfer { ship, .. }
-            | Check::Docked { ship, .. } => *ship,
+            | Check::Docked { ship, .. } => Some(*ship),
+            Check::Program { .. } => None,
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Log {
-    /// Its name, header and ships as first given. Its `game` and
-    /// `replans` tables are read into [`Log::setup`] and
-    /// [`Log::replans`], and written from them.
+    /// Its name, header and ships as first given. Its `game`, `programs`,
+    /// `replans` and `checks` tables are read into the fields below, and
+    /// written from them.
     pub plan: Plan,
     pub setup: Setup,
+    /// In the order they were made.
+    pub programs: Vec<Program>,
     /// In the order they were made.
     pub replans: Vec<Replan>,
     /// What a scenario expects of the game.
@@ -135,10 +161,21 @@ struct GameFile {
     now: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProgramFile {
+    id: String,
+    start: String,
+}
+
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CheckFile {
-    ship: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ship: Option<u64>,
+    /// A program's check, by its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    program: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -166,6 +203,11 @@ struct CheckFile {
     /// The ship docked to at `at`, by id, or "no one".
     #[serde(skip_serializing_if = "Option::is_none")]
     docked_to: Option<toml::Value>,
+    /// A program finished at `at`, or not; or what it has spent, $M.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spent_musd: Option<[f64; 2]>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -224,11 +266,13 @@ impl Log {
     /// A sandbox log of `plan`'s ships.
     pub fn sandbox(mut plan: Plan) -> Log {
         plan.game = None;
+        plan.programs.clear();
         plan.replans.clear();
         plan.checks.clear();
         Log {
             plan,
             setup: Setup::default(),
+            programs: Vec::new(),
             replans: Vec::new(),
             checks: Vec::new(),
         }
@@ -249,6 +293,18 @@ impl Log {
                 }
             }
         };
+        let programs = std::mem::take(&mut plan.programs)
+            .into_iter()
+            .enumerate()
+            .map(|(i, table)| {
+                let fail = |e: String| format!("program {}: {e}", i + 1);
+                let p: ProgramFile = table.try_into().map_err(|e| fail(format!("{e}")))?;
+                Ok(Program {
+                    id: p.id,
+                    start: date(&p.start).map_err(fail)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let replans = std::mem::take(&mut plan.replans)
             .into_iter()
             .enumerate()
@@ -278,7 +334,8 @@ impl Log {
                 let c: CheckFile = table.try_into().map_err(|e| fail(format!("{e}")))?;
                 match c {
                     CheckFile {
-                        ship,
+                        ship: Some(ship),
+                        program: None,
                         at: Some(at),
                         place: Some(place),
                         step: None,
@@ -290,13 +347,16 @@ impl Log {
                         take: None,
                         short: None,
                         docked_to: None,
+                        finished: None,
+                        spent_musd: None,
                     } => Ok(Check::At {
                         ship,
                         at: date(&at).map_err(fail)?,
                         place,
                     }),
                     CheckFile {
-                        ship,
+                        ship: Some(ship),
+                        program: None,
                         at: None,
                         place: None,
                         step: Some(step),
@@ -308,9 +368,12 @@ impl Log {
                         take: None,
                         short: None,
                         docked_to: None,
+                        finished: None,
+                        spent_musd: None,
                     } => Ok(Check::Dv { ship, step, dv }),
                     CheckFile {
-                        ship,
+                        ship: Some(ship),
+                        program: None,
                         at: Some(at),
                         place: None,
                         step: None,
@@ -322,13 +385,16 @@ impl Log {
                         take: None,
                         short: None,
                         docked_to: None,
+                        finished: None,
+                        spent_musd: None,
                     } => Ok(Check::Propellant {
                         ship,
                         at: date(&at).map_err(fail)?,
                         t,
                     }),
                     CheckFile {
-                        ship,
+                        ship: Some(ship),
+                        program: None,
                         at: None,
                         place: None,
                         step,
@@ -340,9 +406,12 @@ impl Log {
                         take: None,
                         short: None,
                         docked_to: None,
+                        finished: None,
+                        spent_musd: None,
                     } if dry == step.is_some() => Ok(Check::Dry { ship, step }),
                     CheckFile {
-                        ship,
+                        ship: Some(ship),
+                        program: None,
                         at: Some(at),
                         place: None,
                         step: None,
@@ -354,6 +423,8 @@ impl Log {
                         take: None,
                         short: None,
                         docked_to: None,
+                        finished: None,
+                        spent_musd: None,
                     } => Ok(Check::Cargo {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -364,7 +435,8 @@ impl Log {
                             .map_err(fail)?,
                     }),
                     CheckFile {
-                        ship,
+                        ship: Some(ship),
+                        program: None,
                         at: None,
                         place: None,
                         step: Some(step),
@@ -376,6 +448,8 @@ impl Log {
                         take,
                         short: Some(short),
                         docked_to: None,
+                        finished: None,
+                        spent_musd: None,
                     } if give.is_some() != take.is_some() => {
                         let (kind, c) = match (give, take) {
                             (Some(c), None) => (Kind::Give, c),
@@ -391,7 +465,8 @@ impl Log {
                         })
                     }
                     CheckFile {
-                        ship,
+                        ship: Some(ship),
+                        program: None,
                         at: Some(at),
                         place: None,
                         step: None,
@@ -403,6 +478,8 @@ impl Log {
                         take: None,
                         short: None,
                         docked_to: Some(to),
+                        finished: None,
+                        spent_musd: None,
                     } => Ok(Check::Docked {
                         ship,
                         at: date(&at).map_err(fail)?,
@@ -416,11 +493,36 @@ impl Log {
                             }
                         },
                     }),
+                    CheckFile {
+                        ship: None,
+                        program: Some(program),
+                        at: Some(at),
+                        place: None,
+                        step: None,
+                        dv: None,
+                        propellant_t: None,
+                        dry: None,
+                        cargo: None,
+                        give: None,
+                        take: None,
+                        short: None,
+                        docked_to: None,
+                        finished,
+                        spent_musd,
+                    } if finished.is_some() != spent_musd.is_some() => Ok(Check::Program {
+                        program,
+                        at: date(&at).map_err(fail)?,
+                        expect: match (finished, spent_musd) {
+                            (Some(f), None) => ProgramCheck::Finished(f),
+                            (None, Some(s)) => ProgramCheck::Spent(s),
+                            _ => unreachable!("one of the two"),
+                        },
+                    }),
                     _ => Err(fail(
-                        "a check has `at` and `place`; `step` and `dv`; `at` and \
+                        "a check has `ship` with `at` and `place`; `step` and `dv`; `at` and \
                          `propellant_t`; `step` and `dry = true`; `dry = false`; `at` and \
                          `cargo`; `step`, `give` or `take`, and `short`; or `at` and \
-                         `docked_to`"
+                         `docked_to`; or `program` with `at` and `finished` or `spent_musd`"
                             .into(),
                     )),
                 }
@@ -429,6 +531,7 @@ impl Log {
         let mut log = Log {
             plan,
             setup,
+            programs,
             replans,
             checks,
         };
@@ -437,7 +540,8 @@ impl Log {
     }
 
     /// Why the log is not a game, if it is not: career has a now, and its
-    /// re-plans were made by then; re-plans are in time order, each of a
+    /// programs and re-plans were made by then; a program is started once;
+    /// re-plans are in time order, each of a
     /// ship the log has, from one of the steps it had then, and one that
     /// sets the manifest of the stop the ship is at (`here`) has a leg
     /// before them that arrives at one; and its meetings can be designed
@@ -453,6 +557,21 @@ impl Log {
             (Mode::Career, None) => return Err("[game]: a career game has a now".into()),
             (Mode::Sandbox, Some(_)) => return Err("[game]: now is career's".into()),
             _ => {}
+        }
+        for (i, p) in self.programs.iter().enumerate() {
+            let fail = |e: String| Err(format!("program {}: {e}", i + 1));
+            if self.programs[..i].iter().any(|q| q.id == p.id) {
+                return fail(format!("{} is started twice", p.id));
+            }
+            if let Some(now) = self.setup.now
+                && p.start.0 > now.0
+            {
+                return fail(format!(
+                    "started {}, after now ({})",
+                    p.start.stamp(),
+                    now.stamp()
+                ));
+            }
         }
         let mut steps: Vec<(u64, usize)> = self
             .plan
@@ -485,8 +604,9 @@ impl Log {
             *n = r.from + r.steps.len();
         }
         for (i, c) in self.checks.iter().enumerate() {
-            let ship = c.ship();
-            if !steps.iter().any(|(id, _)| *id == ship) {
+            if let Some(ship) = c.ship()
+                && !steps.iter().any(|(id, _)| *id == ship)
+            {
                 return Err(format!("check {}: no ship has id {ship}", i + 1));
             }
         }
@@ -552,6 +672,19 @@ impl Log {
                 .expect("a setup serializes"),
             )
         });
+        plan.programs = self
+            .programs
+            .iter()
+            .map(|p| {
+                table(
+                    toml::Value::try_from(ProgramFile {
+                        id: p.id.clone(),
+                        start: p.start.stamp(),
+                    })
+                    .expect("a program serializes"),
+                )
+            })
+            .collect();
         plan.replans = self
             .replans
             .iter()
@@ -578,31 +711,31 @@ impl Log {
                 table(
                     toml::Value::try_from(match c {
                         Check::At { ship, at, place } => CheckFile {
-                            ship: *ship,
+                            ship: Some(*ship),
                             at: Some(at.stamp()),
                             place: Some(place.clone()),
                             ..CheckFile::default()
                         },
                         Check::Dv { ship, step, dv } => CheckFile {
-                            ship: *ship,
+                            ship: Some(*ship),
                             step: Some(*step),
                             dv: Some(*dv),
                             ..CheckFile::default()
                         },
                         Check::Propellant { ship, at, t } => CheckFile {
-                            ship: *ship,
+                            ship: Some(*ship),
                             at: Some(at.stamp()),
                             propellant_t: Some(*t),
                             ..CheckFile::default()
                         },
                         Check::Dry { ship, step } => CheckFile {
-                            ship: *ship,
+                            ship: Some(*ship),
                             step: *step,
                             dry: Some(step.is_some()),
                             ..CheckFile::default()
                         },
                         Check::Cargo { ship, at, cargo } => CheckFile {
-                            ship: *ship,
+                            ship: Some(*ship),
                             at: Some(at.stamp()),
                             cargo: Some(
                                 cargo
@@ -619,7 +752,7 @@ impl Log {
                             commodity,
                             short,
                         } => CheckFile {
-                            ship: *ship,
+                            ship: Some(*ship),
                             step: Some(*step),
                             give: (*kind == Kind::Give).then(|| commodity.id().to_string()),
                             take: (*kind == Kind::Take).then(|| commodity.id().to_string()),
@@ -627,12 +760,29 @@ impl Log {
                             ..CheckFile::default()
                         },
                         Check::Docked { ship, at, to } => CheckFile {
-                            ship: *ship,
+                            ship: Some(*ship),
                             at: Some(at.stamp()),
                             docked_to: Some(match to {
                                 Some(id) => toml::Value::Integer(*id as i64),
                                 None => toml::Value::String("no one".into()),
                             }),
+                            ..CheckFile::default()
+                        },
+                        Check::Program {
+                            program,
+                            at,
+                            expect,
+                        } => CheckFile {
+                            program: Some(program.clone()),
+                            at: Some(at.stamp()),
+                            finished: match expect {
+                                ProgramCheck::Finished(f) => Some(*f),
+                                ProgramCheck::Spent(_) => None,
+                            },
+                            spent_musd: match expect {
+                                ProgramCheck::Spent(s) => Some(*s),
+                                ProgramCheck::Finished(_) => None,
+                            },
                             ..CheckFile::default()
                         },
                     })
@@ -658,6 +808,10 @@ seed = 3
 mode = "career"
 start = "2045-01-01"
 now = "2045-03-04T06:30"
+
+[[program]]
+id = "lunar-ice"
+start = "2045-01-01"
 
 [[ship]]
 id = 2
@@ -724,6 +878,16 @@ ship = 2
 step = 1
 take = "lox"
 short = true
+
+[[check]]
+program = "lunar-ice"
+at = "2046-01-01"
+finished = false
+
+[[check]]
+program = "lunar-ice"
+at = "2046-01-01"
+spent_musd = [600.0, 700.0]
 "#;
 
     fn parse(src: &str) -> Result<Log, String> {
@@ -735,6 +899,13 @@ short = true
         let log = parse(CAREER).unwrap();
         assert_eq!(log.setup.seed, Some(3));
         assert_eq!(log.setup.mode, Mode::Career);
+        assert_eq!(
+            log.programs,
+            [Program {
+                id: "lunar-ice".into(),
+                start: Epoch::from_ymd(2045, 1, 1)
+            }]
+        );
         assert_eq!(log.replans.len(), 1);
         assert_eq!(log.replans[0].steps.len(), 2);
         let tug = &log.plan.ships[0];
@@ -753,6 +924,7 @@ short = true
         assert!(text.starts_with("# A career game.\n"), "{text}");
         let back = parse(&text).unwrap();
         assert_eq!(back.to_toml(), text);
+        assert_eq!(back.programs, log.programs);
         assert_eq!(
             format!("{:?}", back.plan.ships),
             format!("{:?}", log.plan.ships)
@@ -804,6 +976,16 @@ short = true
                     commodity: Commodity::Lox,
                     short: true
                 },
+                Check::Program {
+                    program: "lunar-ice".into(),
+                    at: Epoch::from_ymd(2046, 1, 1),
+                    expect: ProgramCheck::Finished(false)
+                },
+                Check::Program {
+                    program: "lunar-ice".into(),
+                    at: Epoch::from_ymd(2046, 1, 1),
+                    expect: ProgramCheck::Spent([600.0, 700.0])
+                },
             ]
         );
     }
@@ -835,10 +1017,10 @@ short = true
         let no_ship = CAREER.replace("ship = 2\nat", "ship = 5\nat");
         assert_eq!(parse(&no_ship).unwrap_err(), "replan 1: no ship has id 5");
         let half = CAREER.replace("step = 2\ndv", "dv");
-        let neither = "check 2: a check has `at` and `place`; `step` and `dv`; `at` and \
-                       `propellant_t`; `step` and `dry = true`; `dry = false`; `at` and \
-                       `cargo`; `step`, `give` or `take`, and `short`; or `at` and \
-                       `docked_to`";
+        let neither = "check 2: a check has `ship` with `at` and `place`; `step` and `dv`; \
+                       `at` and `propellant_t`; `step` and `dry = true`; `dry = false`; `at` \
+                       and `cargo`; `step`, `give` or `take`, and `short`; or `at` and \
+                       `docked_to`; or `program` with `at` and `finished` or `spent_musd`";
         assert_eq!(parse(&half).unwrap_err(), neither);
         let dry_without_step = CAREER.replace("step = 2\ndry = true", "dry = true");
         assert_eq!(
@@ -874,6 +1056,37 @@ short = true
             parse(&here_at_the_start).unwrap_err(),
             "replan 1: `here` sets the manifest of the stop the ship is at, but no leg before \
              step 0 arrives at one"
+        );
+        // Programs (M1b.md, step 5 plan, part 2).
+        let twice = CAREER.replacen(
+            "[[program]]\n",
+            "[[program]]\nid = \"lunar-ice\"\nstart = \"2044-06-01\"\n\n[[program]]\n",
+            1,
+        );
+        assert_eq!(
+            parse(&twice).unwrap_err(),
+            "program 2: lunar-ice is started twice"
+        );
+        let late = CAREER.replace("start = \"2045-01-01\"", "start = \"2045-03-05\"");
+        assert_eq!(
+            parse(&late).unwrap_err(),
+            "program 1: started 2045-03-05, after now (2045-03-04T06:30)"
+        );
+        let with_a_ship = CAREER.replace(
+            "program = \"lunar-ice\"\nat = \"2046-01-01\"\nfinished",
+            "ship = 2\nprogram = \"lunar-ice\"\nat = \"2046-01-01\"\nfinished",
+        );
+        assert_eq!(
+            parse(&with_a_ship).unwrap_err(),
+            neither.replace("check 2", "check 9")
+        );
+        let both = CAREER.replace(
+            "finished = false",
+            "finished = false\nspent_musd = [0.0, 1.0]",
+        );
+        assert_eq!(
+            parse(&both).unwrap_err(),
+            neither.replace("check 2", "check 9")
         );
     }
 
@@ -972,7 +1185,7 @@ short = true
         assert!(
             parse(&both)
                 .unwrap_err()
-                .ends_with("or `at` and `docked_to`")
+                .contains("or `at` and `docked_to`")
         );
     }
 }

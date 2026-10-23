@@ -1,10 +1,11 @@
 //! Items as text and as CSV, for `sim run` (M1b.md, step 1 plan, part 8;
 //! M1c.md's `orbit mission`, which it replaces); a ship's propellant and
 //! tanks (step 2 plan, part 5); its transfers and purchases (step 3
-//! plan, part 8).
+//! plan, part 8); the programs started (step 5 plan, part 2).
 
+use crate::params::Economy;
 use crate::ships::{COMMODITIES, Commodity, Load};
-use crate::state::{Bought, Kind, ShipState, Transfer, With};
+use crate::state::{Bought, Kind, ShipState, State, Transfer, With};
 use orbit::ephem::Ephemeris;
 use orbit::mission::{Item, ItemKind, MarkerKind, Plan, when};
 use orbit::time::{Epoch, SECONDS_PER_DAY};
@@ -303,6 +304,32 @@ pub fn purchases(state: &ShipState) -> Option<String> {
         parts.join(", "),
         musd(total)
     ))
+}
+
+/// The programs started (M1b.md, step 5 plan, part 2), each with its
+/// dates and cost, and finished or what it has spent by `by`: "programs:
+/// lunar-ice  2040-01-01 — 2045-01-01, $3,300M; spent $1,980M by
+/// 2043-01-01".
+pub fn programs(economy: &Economy, state: &State, by: Epoch) -> Option<String> {
+    if state.programs.is_empty() {
+        return None;
+    }
+    let mut out = String::from("\nprograms:\n");
+    for p in &state.programs {
+        let progress = match p.finished_by(by) {
+            true => "finished".to_string(),
+            false => format!("spent {} by {}", musd(p.spent_by(by)), by.stamp()),
+        };
+        let _ = writeln!(
+            out,
+            "  {}  {} — {}, {}; {progress}",
+            economy.programs[p.program].id,
+            p.start.stamp(),
+            p.finish.stamp(),
+            musd(p.cost_musd)
+        );
+    }
+    Some(out)
 }
 
 /// Tonnes to the kilogram; under half a kilogram, grams (a stay's upkeep).

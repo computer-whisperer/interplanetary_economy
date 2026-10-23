@@ -476,6 +476,11 @@ stations and stocks); and sites holding stocks, with the rest of step
   `Program::noise`; absent options kept in every world, their surveys
   sampled last; the LP leaves them out). M2's 16 scenario texts are
   the same to the bit.
+- Part 2: programs in the log (`[[program]] id, start`; `Log::programs`,
+  `Game::start_program`: career at now, each once, nothing to judge);
+  `ProgramState` in the state (its finish and what it has spent by a
+  time), in the hash, in `sim run`'s programs block, and
+  `Check::Program` (finished, or spent within bounds).
 
 M1b builds the engine that runs the economy forward in time. The
 Authority's ships are flown by the autopilot and carry mass and
@@ -2819,6 +2824,35 @@ Where the work is (found drafting):
    $1,980M by 2043-01-01"). Tests: the round trip and refusals; career
    refuses a start not at now and a second start; the hash with a
    program.
+   - Built (2026-10-23): `Plan::programs` kept as written
+     (`orbit::mission`, `[[program]]` after `[game]`); `log::Program {
+     id, start }`, `Log::programs`, read and written back; `Log::check`
+     refuses a program started twice or, in career, after now;
+     `game::allowed` one the economy does not name. `state::ProgramState
+     { program, start, finish, cost_musd }` with `finished_by` and
+     `spent_by` (evenly over its years of 365.25 days: a finish is not a
+     calendar anniversary), `State::programs`, `state::run` taking them
+     (part 3 reads them for installs). `Game::start_program(id, start)`:
+     to the minute; career at now (`may_act` first), the sandbox at any
+     date, with undo; a program is not an action to judge, so the loop
+     runs again and nothing is designed. The hash adds each program
+     started by the day with what it has spent, so logs without one hash
+     as before. `Check::Program { program, at, expect:
+     ProgramCheck::{Finished(bool), Spent([lo, hi])} }` (`[[check]]
+     program = "lunar-ice", at = "…", finished = true` or `spent_musd =
+     [lo, hi]`); `Check::ship` is now `Option<u64>`, a program's check
+     going to the first game (`sim::run`). `sim run` prints "programs:
+     lunar-ice  2044-01-01 — 2048-12-31T06:00, $3,300M; spent $771M by
+     2045-03-02T20:52" after the ships, by the later of now and the
+     loop's end. Tests: the log's round trip with a program and its two
+     checks, and what is refused (twice, after now, a program check with
+     a ship, both `finished` and `spent_musd`);
+     `career_starts_a_program_at_now` (not at now, unknown, twice; the
+     state's cost and finish; the log written reads back with the same
+     hashes; the checks' lines);
+     `the_sandbox_starts_a_program_at_any_date` (and undoes it). Cleanup
+     beside it: `plan::calendar::DAYS_PER_YEAR` re-exports the engine's
+     new `params::DAYS_PER_YEAR`.
 3. **Sites and plants in the loop** (`orbit::mission`, `sim::ships`,
    `sim::state`, `sim::game`): `install` on a manifest, `With::Site`,
    `Stop::install`; `SiteState`, installments and capacity after the

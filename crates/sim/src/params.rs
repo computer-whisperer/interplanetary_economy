@@ -19,6 +19,9 @@ use std::hash::Hasher;
 /// Standard gravity, km/s².
 const G0: f64 = 9.806_65e-3;
 
+/// The economy's year (a program's years, a plant's t/yr).
+pub const DAYS_PER_YEAR: f64 = 365.25;
+
 /// An uncertain parameter: fixed, lognormal or uniform.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]

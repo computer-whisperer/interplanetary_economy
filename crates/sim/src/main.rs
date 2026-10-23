@@ -110,6 +110,13 @@ fn run(file: &PathBuf, alone: bool, tracks: Option<PathBuf>) -> Result<()> {
             }
         }
     }
+    // The programs are every game's: by career's now, or the loop's end.
+    if let Some(game) = games.first() {
+        let by = Epoch(game.now().0.max(game.state().until.0));
+        if let Some(lines) = report::programs(game.economy(), game.state(), by) {
+            print!("{lines}");
+        }
+    }
     if let [game] = games.as_slice() {
         println!("\nthe state, hashed, on the first of each month:");
         for (t, h) in monthly(game) {

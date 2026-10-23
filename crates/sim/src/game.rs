@@ -12,11 +12,11 @@ use crate::designs::{
     Cache, Designed, Designs, Docked, Ended, Host, Key, Met, apply, flight, walk,
 };
 use crate::hash::Fixed;
-use crate::log::{Check, Log, Mode, Replan, here_without_a_stop, minute};
+use crate::log::{Check, Log, Mode, Program, ProgramCheck, Replan, here_without_a_stop, minute};
 use crate::params::{Draw, Economy, EconomyFile};
 use crate::report;
 use crate::ships::{self, Breach, Commodity};
-use crate::state::{self, Course, Dry, Kind, ShipState, State, Stop, With};
+use crate::state::{self, Course, Dry, Kind, ProgramState, ShipState, State, Stop, With};
 use orbit::mission::{
     Checkpoint, Item, ItemKind, Manifest, MarkerKind, Meeting, Plan, Ship, Step, World,
     resume_point, when,
@@ -715,6 +715,11 @@ fn remanifest(log: &mut Log, k: usize, refused: &[(usize, String)], standing: &[
 /// ship start at LEO, where it is bought, and keep within its class as
 /// each of its re-plans leaves its steps (M1b.md, step 2 plan, part 2).
 fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
+    for (i, p) in log.programs.iter().enumerate() {
+        if program(economy, &p.id).is_none() {
+            return Err(format!("program {}: no program is named {:?}", i + 1, p.id));
+        }
+    }
     for ship in &log.plan.ships {
         let fail = |e: String| format!("ship {:?}: {e}", ship.name);
         let fitted = ships::read(ship, economy).map_err(fail)?;
@@ -766,6 +771,11 @@ fn allowed(log: &Log, mode: Mode, economy: &Economy) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The program of `economy` with id `id`, by its place.
+fn program(economy: &Economy, id: &str) -> Option<usize> {
+    economy.programs.iter().position(|p| p.id == id)
 }
 
 /// Whether `ship` starts at LEO, or docked to a vessel of `ships` that
@@ -888,6 +898,7 @@ impl Game {
             ships: Vec::new(),
             header: String::new(),
             game: None,
+            programs: Vec::new(),
             replans: Vec::new(),
             checks: Vec::new(),
         });
@@ -951,7 +962,16 @@ impl Game {
                 }
             })
             .collect();
-        let state = state::run(&courses, &self.economy);
+        let programs: Vec<ProgramState> = self
+            .log
+            .programs
+            .iter()
+            .map(|p| {
+                let j = program(&self.economy, &p.id).expect("a game's programs exist (`allowed`)");
+                ProgramState::new(&self.economy, j, p.start)
+            })
+            .collect();
+        let state = state::run(&courses, &programs, &self.economy);
         self.state = state;
     }
 
@@ -1763,6 +1783,42 @@ impl Game {
         Ok(())
     }
 
+    /// Starts program `id` (a technology or a survey of the economy) at
+    /// `start`, to the minute (M1b.md, step 5 plan, part 2): in career, at
+    /// now. Each starts once. Nothing is designed again: a program runs
+    /// nothing dry, so there is nothing to judge; the loop runs again,
+    /// with it.
+    pub fn start_program(&mut self, id: &str, start: Epoch) -> Result<(), String> {
+        let start = minute(start);
+        if self.mode == Mode::Career {
+            self.may_act()?;
+            let now = minute(self.now);
+            if start != now {
+                return Err(format!(
+                    "career starts a program at now ({}), not {}",
+                    now.stamp(),
+                    start.stamp()
+                ));
+            }
+        }
+        if let Some(p) = self.log.programs.iter().find(|p| p.id == id) {
+            return Err(format!("{id} was started {}", p.start.stamp()));
+        }
+        let log = self.changed(|log| {
+            log.programs.push(Program {
+                id: id.to_string(),
+                start,
+            })
+        })?;
+        let before = std::mem::replace(&mut self.log, log);
+        if self.mode == Mode::Sandbox {
+            self.undo.push(before);
+        }
+        self.rerun();
+        self.publish_all();
+        Ok(())
+    }
+
     /// Back to the log before the last edit: designs from the cache.
     pub fn undo(&mut self) -> bool {
         let Some(before) = self.undo.pop() else {
@@ -1900,7 +1956,48 @@ impl Game {
 
     /// Whether `check` holds, saying what the game has either way.
     pub fn check(&self, check: &Check) -> Result<String, String> {
-        let ship = check.ship();
+        if let Check::Program {
+            program: id,
+            at,
+            expect,
+        } = check
+        {
+            let on = format!("{id} on {}", at.stamp());
+            let j =
+                program(&self.economy, id).ok_or(format!("{on}: no program is named {id:?}"))?;
+            let p = self
+                .state
+                .programs
+                .iter()
+                .find(|p| p.program == j)
+                .ok_or(format!("{on}: not started"))?;
+            let line = match p.finished_by(*at) {
+                true => format!("{on}: finished {}", p.finish.stamp()),
+                false => format!(
+                    "{on}: spent {} of {}, finishes {}",
+                    report::musd(p.spent_by(*at)),
+                    report::musd(p.cost_musd),
+                    p.finish.stamp()
+                ),
+            };
+            return match expect {
+                ProgramCheck::Finished(f) if p.finished_by(*at) == *f => Ok(line),
+                ProgramCheck::Finished(true) => Err(format!("{line}; expected: finished")),
+                ProgramCheck::Finished(false) => Err(format!("{line}; expected: not finished")),
+                ProgramCheck::Spent([lo, hi]) => {
+                    let spent = p.spent_by(*at);
+                    match *lo <= spent && spent <= *hi {
+                        true => Ok(line),
+                        false => Err(format!(
+                            "{line}; expected: {} to {} spent",
+                            report::musd(*lo),
+                            report::musd(*hi)
+                        )),
+                    }
+                }
+            };
+        }
+        let ship = check.ship().expect("the other checks are a ship's");
         let s = self.index(ship).ok_or(format!("no ship has id {ship}"))?;
         let (d, state) = (&self.ships[s], &self.state.ships[s]);
         let items: Vec<&Item> = d.items().collect();
@@ -2073,6 +2170,7 @@ impl Game {
                     false => Err(format!("{line}; expected: in full")),
                 }
             }
+            Check::Program { .. } => unreachable!("answered above"),
         }
     }
 
@@ -2080,7 +2178,8 @@ impl Game {
     /// (M1b.md, step 1 plan, part 5; step 2 plan, part 3): each ship's
     /// place, its position (by bits) and its Δv so far, its tanks and hold
     /// (by bits) and whether it ran dry; a ship not designed that far, or
-    /// beyond where the loop ran, as pending.
+    /// beyond where the loop ran, as pending; and each program started by
+    /// then, with what it has spent (step 5 plan, part 2).
     pub fn day_hashes(&self, from: Epoch, days: usize) -> Vec<u64> {
         (0..days)
             .map(|d| {
@@ -2091,6 +2190,9 @@ impl Game {
                     h.u64(ship.id);
                     state(&mut h, ship, t);
                     tanks(&mut h, &self.state, s, t);
+                }
+                for p in self.state.programs.iter().filter(|p| p.start.0 <= t.0) {
+                    h.str("program").u64(p.program as u64).f64(p.spent_by(t));
                 }
                 h.finish()
             })

@@ -27,7 +27,7 @@
 //! vessel reaches its whole assembly, the vessel first and the others by
 //! id.
 
-use crate::params::{Economy, PROPELLANTS, PropellantSpec};
+use crate::params::{DAYS_PER_YEAR, Economy, PROPELLANTS, PropellantSpec};
 use crate::ships::{COMMODITIES, Commodity, Fitted, GRAM, Load, Manifest};
 use orbit::mission::{Item, ItemKind, MarkerKind};
 use orbit::time::Epoch;
@@ -241,11 +241,49 @@ impl ShipState {
     }
 }
 
+/// A program started (M1b.md, step 5 plan, part 2): a technology or a
+/// survey of the economy, spending its cost evenly from its start to its
+/// finish, its years later.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProgramState {
+    /// Into `Economy::programs`.
+    pub program: usize,
+    pub start: Epoch,
+    pub finish: Epoch,
+    /// $M, in all.
+    pub cost_musd: f64,
+}
+
+impl ProgramState {
+    /// Program `program` of `economy` started at `start`.
+    pub fn new(economy: &Economy, program: usize, start: Epoch) -> ProgramState {
+        let p = &economy.programs[program];
+        ProgramState {
+            program,
+            start,
+            finish: start.plus_days(p.years * DAYS_PER_YEAR),
+            cost_musd: p.cost_musd,
+        }
+    }
+
+    pub fn finished_by(&self, t: Epoch) -> bool {
+        t.0 >= self.finish.0
+    }
+
+    /// What it has spent by `t`, $M.
+    pub fn spent_by(&self, t: Epoch) -> f64 {
+        let x = (t.0 - self.start.0) / (self.finish.0 - self.start.0);
+        self.cost_musd * x.clamp(0.0, 1.0)
+    }
+}
+
 /// The state the loop reached.
 #[derive(Clone, Debug)]
 pub struct State {
     /// By the game's ships, in their order.
     pub ships: Vec<ShipState>,
+    /// The programs started, in the log's order.
+    pub programs: Vec<ProgramState>,
     /// How far it ran.
     pub until: Epoch,
     /// Every ship was designed to its end: the state is known beyond
@@ -257,6 +295,7 @@ impl Default for State {
     fn default() -> Self {
         State {
             ships: Vec::new(),
+            programs: Vec::new(),
             until: Epoch(f64::NEG_INFINITY),
             done: true,
         }
@@ -967,7 +1006,7 @@ enum What {
 }
 
 /// The loop, over `ships` in `economy`.
-pub fn run(ships: &[Course], economy: &Economy) -> State {
+pub fn run(ships: &[Course], programs: &[ProgramState], economy: &Economy) -> State {
     let reached = |c: &Course| c.items.last().map_or(c.epoch, |i| i.end).0;
     let done = ships.iter().all(|c| c.done);
     let until = match done {
@@ -1142,6 +1181,7 @@ pub fn run(ships: &[Course], economy: &Economy) -> State {
     }
     State {
         ships: l.out,
+        programs: programs.to_vec(),
         until: Epoch(until),
         done,
     }
@@ -1264,14 +1304,14 @@ mod tests {
         // Enough for 1.69 km/s: the stay and the first burn, not the
         // second.
         let p = lander.dry * ((1.69 / ve).exp() - 1.0);
-        let state = run(&[course(&e, "lander", p, 0.0, vec![&stay, &leg])], &e);
+        let state = run(&[course(&e, "lander", p, 0.0, vec![&stay, &leg])], &[], &e);
         let dry = state.ships[0].dry.unwrap();
         assert_eq!((dry.item, dry.marker), (1, Some(1)), "{dry:?}");
         assert!(close(dry.short, 1.7 - 1.69), "{}", dry.short);
 
         // A stay from 06:00 to noon two days on, the game's last item.
         let stay = item(ItemKind::Stay, 0.25, 2.5, 0.1, &[]);
-        let state = run(&[course(&e, "lander", 300.0, 0.25, vec![&stay])], &e);
+        let state = run(&[course(&e, "lander", 300.0, 0.25, vec![&stay])], &[], &e);
         let m0 = lander.dry + 300.0;
         let end = state.ships[0].load(Epoch(day0() + 2.5)).unwrap();
         let left = m0 * (-0.1f64 / ve).exp() - lander.dry;
@@ -1291,7 +1331,7 @@ mod tests {
         let tug = e.ships.iter().find(|c| c.id == "tug-h").unwrap();
         let spec = e.propellant(tug.propellant);
         let leg = item(ItemKind::Leg, 9.9, 10.0, 1.0, &[(10.0, 1.0)]);
-        let state = run(&[course(&e, "tug-h", 150.0, 0.0, vec![&leg])], &e);
+        let state = run(&[course(&e, "tug-h", 150.0, 0.0, vec![&leg])], &[], &e);
         let s = spec.lox_share;
         let kept = (1.0 - spec.fuel_boiloff_per_day).powi(10);
         let (lox, fuel) = (150.0 * s, 150.0 * (1.0 - s) * kept);
@@ -1315,7 +1355,11 @@ mod tests {
         let ve = e.propellant(Propellant::Methalox).ve;
         let stay = item(ItemKind::Stay, 0.0, 10.0, 1.0, &[]);
         let later = item(ItemKind::Stay, 10.0, 20.0, 1.0, &[]);
-        let state = run(&[course(&e, "lander", 2.0, 0.0, vec![&stay, &later])], &e);
+        let state = run(
+            &[course(&e, "lander", 2.0, 0.0, vec![&stay, &later])],
+            &[],
+            &e,
+        );
         let s = &state.ships[0];
         // 0.179 km/s in the tanks: the first day's 0.1, not the second's.
         let dry = s.dry.unwrap();
@@ -1336,7 +1380,7 @@ mod tests {
         let e = economy();
         let f = e.propellant(Propellant::Hydrolox).fuel_boiloff_per_day;
         let leg = item(ItemKind::Leg, 0.25, 0.3, 0.0, &[(0.25, 0.0)]);
-        let state = run(&[course(&e, "tug-h", 150.0, 0.25, vec![&leg])], &e);
+        let state = run(&[course(&e, "tug-h", 150.0, 0.25, vec![&leg])], &[], &e);
         let s = &state.ships[0];
         let f0 = s.load(Epoch(day0() + 0.25)).unwrap().fuel;
         for days in [0.75, 39.75] {
@@ -1354,7 +1398,7 @@ mod tests {
         for c in &mut unfinished {
             c.done = false;
         }
-        let state = run(&unfinished, &e);
+        let state = run(&unfinished, &[], &e);
         assert_eq!(state.until, Epoch(day0() + 0.3));
         assert!(state.known(Epoch(day0() + 0.29)));
         assert!(
@@ -1369,7 +1413,7 @@ mod tests {
     fn a_burn_before_the_start_is_recorded_at_it() {
         let e = economy();
         let leg = item(ItemKind::Leg, -1e-9, 0.1, 0.5, &[(-1e-9, 0.5)]);
-        let state = run(&[course(&e, "lander", 300.0, 0.0, vec![&leg])], &e);
+        let state = run(&[course(&e, "lander", 300.0, 0.0, vec![&leg])], &[], &e);
         let s = &state.ships[0];
         assert!(s.load(Epoch(day0() - 5e-10)).is_none());
         assert!(s.load(Epoch(day0())).unwrap().propellant() < 300.0);
@@ -1457,7 +1501,7 @@ mod tests {
             ),
             None,
         ];
-        let state = run(&[tug, depot], &e);
+        let state = run(&[tug, depot], &[], &e);
         let (tug, depot) = (&state.ships[0], &state.ships[1]);
         let (day2, day5) = (Epoch(day0() + 2.0), Epoch(day0() + 5.0));
         // Given on arrival: LOX into the depot's tanks, hydrogen (which
@@ -1548,7 +1592,7 @@ mod tests {
         let mut b = course(&e, "tug-h", 20.0, 0.0, leaving.iter().collect());
         b.id = 2;
         b.stops = vec![stop(Manifest::default(), manifest(Some(100.0), &[])), None];
-        let state = run(&[a, b, depot], &e);
+        let state = run(&[a, b, depot], &[], &e);
         let (a, b, depot) = (&state.ships[0], &state.ships[1], &state.ships[2]);
         let day2 = Epoch(day0() + 2.0);
         assert!(a.dry.is_none() && b.dry.is_none() && depot.dry.is_none());
@@ -1591,7 +1635,7 @@ mod tests {
             let mut tug = course(&e, "tug-h", 140.0, 0.0, legs.iter().collect());
             tug.fitted.as_mut().unwrap().load.cargo[Commodity::Equipment as usize] = 10.0;
             tug.stops = stops;
-            let state = run(&[tug, depot], &e);
+            let state = run(&[tug, depot], &[], &e);
             moved(&state.ships[0])
         };
         fn depot<'a>(e: &Economy, propellant: f64, start: f64, items: Vec<&'a Item>) -> Course<'a> {
@@ -1733,7 +1777,7 @@ mod tests {
             None,
         ];
         tug.bought = true;
-        let state = run(&[tug], &e);
+        let state = run(&[tug], &[], &e);
         let tug = &state.ships[0];
         let day5 = Epoch(day0() + 5.0);
         let launch = e.launch_usd_per_kg_at(day5);
@@ -1796,7 +1840,7 @@ mod tests {
         let legs = visit(0.0, 0.0);
         let mut tug = course(&e, "tug-h", 10.0, 0.0, legs.iter().collect());
         tug.stops = vec![stop(Manifest::default(), manifest(Some(150.0), &[])), None];
-        let state = run(&[tug, depot], &e);
+        let state = run(&[tug, depot], &[], &e);
         let (tug, depot) = (&state.ships[0], &state.ships[1]);
         let taken: Vec<_> = moved(tug);
         assert_eq!(taken.len(), 2);
@@ -1821,8 +1865,12 @@ mod tests {
         let dock = item(ItemKind::Docked(0), 0.0, 0.0, 0.0, &[]);
         let mut rider = course(&e, "lander", 100.0, 0.0, vec![&dock]);
         rider.id = 1;
-        let alone = run(&[course(&e, "hauler", 500.0, 0.0, vec![&leg])], &e);
-        let with = run(&[course(&e, "hauler", 500.0, 0.0, vec![&leg]), rider], &e);
+        let alone = run(&[course(&e, "hauler", 500.0, 0.0, vec![&leg])], &[], &e);
+        let with = run(
+            &[course(&e, "hauler", 500.0, 0.0, vec![&leg]), rider],
+            &[],
+            &e,
+        );
         let used = |m: f64| m * (1.0 - (-1.0 / ve).exp());
         let m = hauler.dry + 500.0;
         assert!((alone.ships[0].used[0] - used(m)).abs() < 1e-9);
@@ -1856,9 +1904,9 @@ mod tests {
             r.id = 1;
             r
         }
-        let alone = run(&[host()], &e).ships[0].used[0];
-        let from_start = run(&[host(), rider(&e, &dock0)], &e);
-        let from_day_five = run(&[host(), rider(&e, &dock5)], &e);
+        let alone = run(&[host()], &[], &e).ships[0].used[0];
+        let from_start = run(&[host(), rider(&e, &dock0)], &[], &e);
+        let from_day_five = run(&[host(), rider(&e, &dock5)], &[], &e);
         let (b, c) = (from_start.ships[0].used[0], from_day_five.ships[0].used[0]);
         assert!(alone < c && c < b, "{alone} {c} {b}");
         assert_eq!(from_start.ships[1].used, [0.0]);
@@ -1886,7 +1934,7 @@ mod tests {
         let mut lander = course(&e, "lander", 10.0, 0.0, legs.iter().collect());
         lander.stops = vec![stop(Manifest::default(), manifest(Some(400.0), &[])), None];
         let (depot, stage) = assembly(100.0);
-        let state = run(&[lander, depot, stage], &e);
+        let state = run(&[lander, depot, stage], &[], &e);
         let taken = moved(&state.ships[0]);
         assert_eq!(taken.len(), 2);
         assert!(
@@ -1908,7 +1956,7 @@ mod tests {
         let mut lander = course(&e, "lander", 400.0, 0.0, legs.iter().collect());
         lander.stops = vec![stop(manifest(Some(10.0), &[]), Manifest::default()), None];
         let (depot, stage) = assembly(1150.0);
-        let state = run(&[lander, depot, stage], &e);
+        let state = run(&[lander, depot, stage], &[], &e);
         let given = moved(&state.ships[0]);
         assert_eq!(given.len(), 2);
         assert!(
@@ -1943,7 +1991,7 @@ mod tests {
         let mut visitor = course(&e, "lander", 10.0, 0.0, legs.iter().collect());
         visitor.id = 2;
         visitor.stops = vec![stop(Manifest::default(), manifest(Some(50.0), &[])), None];
-        let state = run(&[host, rider, visitor], &e);
+        let state = run(&[host, rider, visitor], &[], &e);
         let host_dry = state.ships[0].dry.unwrap();
         assert_eq!(
             (host_dry.item, host_dry.marker, host_dry.with),

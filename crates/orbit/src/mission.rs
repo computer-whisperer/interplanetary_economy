@@ -91,10 +91,11 @@ pub struct Plan {
     /// The comments its file opens with, kept when it is written out
     /// (the rest of its comments are not).
     pub header: String,
-    /// Its `[game]` table, `[[replan]]` and `[[check]]` entries, which the
-    /// sim engine reads (M1b.md, step 1 plan, parts 2 and 8): kept as
-    /// written.
+    /// Its `[game]` table, `[[program]]`, `[[replan]]` and `[[check]]`
+    /// entries, which the sim engine reads (M1b.md, step 1 plan, parts 2
+    /// and 8; step 5 plan, part 2): kept as written.
     pub game: Option<toml::Table>,
+    pub programs: Vec<toml::Table>,
     pub replans: Vec<toml::Table>,
     pub checks: Vec<toml::Table>,
 }
@@ -346,6 +347,8 @@ struct PlanFile {
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     game: Option<toml::Table>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    program: Vec<toml::Table>,
     #[serde(default)]
     ship: Vec<ShipFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -472,6 +475,7 @@ impl Plan {
             header,
             game: file.game,
             replans: file.replan,
+            programs: file.program,
             checks: file.check,
         };
         plan.resolve()?;
@@ -501,6 +505,7 @@ impl Plan {
         let file = PlanFile {
             name: self.name.clone(),
             game: self.game.clone(),
+            program: self.programs.clone(),
             ship: self
                 .ships
                 .iter()

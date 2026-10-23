@@ -2,7 +2,7 @@
 
 use orbit::time::Epoch;
 
-pub const DAYS_PER_YEAR: f64 = 365.25;
+pub use sim::params::DAYS_PER_YEAR;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Calendar {

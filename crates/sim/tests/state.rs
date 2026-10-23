@@ -801,7 +801,7 @@ fn the_published_plan_runs_again_quickly() {
             })
             .collect();
         let clock = std::time::Instant::now();
-        sim::state::run(&courses, game.economy());
+        sim::state::run(&courses, &[], game.economy());
         clock.elapsed().as_secs_f64() * 1e3
     };
     let alone: Vec<f64> = (0..5).map(|_| loop_alone()).collect();
@@ -871,7 +871,7 @@ fn the_published_plan_runs_again_quickly() {
     let times: Vec<f64> = (0..3)
         .map(|_| {
             let clock = std::time::Instant::now();
-            let state = sim::state::run(&courses, game.economy());
+            let state = sim::state::run(&courses, &[], game.economy());
             assert!(state.ships.iter().all(|s| s.dry.is_none()));
             clock.elapsed().as_secs_f64() * 1e3
         })
@@ -920,7 +920,7 @@ fn the_assembled_station_runs_again_quickly() {
             })
             .collect();
         let clock = std::time::Instant::now();
-        sim::state::run(&courses, game.economy());
+        sim::state::run(&courses, &[], game.economy());
         clock.elapsed().as_secs_f64() * 1e3
     };
     let alone: Vec<f64> = (0..5).map(|_| loop_alone()).collect();

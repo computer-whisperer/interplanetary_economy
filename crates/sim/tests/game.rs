@@ -9,7 +9,7 @@ use orbit::mission::{Item, ItemKind, Manifest, Planner, Step};
 use orbit::places::Places;
 use orbit::time::Epoch;
 use sim::game::{Game, world};
-use sim::log::{Log, Mode};
+use sim::log::{Check, Log, Mode, ProgramCheck};
 use std::sync::Arc;
 
 fn pool(threads: usize) -> Arc<rayon::ThreadPool> {
@@ -1789,4 +1789,77 @@ start = { at = { ship = 0 }, epoch = "2045-03-10", cargo = { equipment = 10.0 } 
     let hab = game.index(1).unwrap();
     let bought = &game.state().ships[hab].purchases;
     assert_eq!(bought.len(), 2, "the module and its equipment: {bought:?}");
+}
+
+/// Programs are actions in the log (M1b.md, step 5 plan, part 2): career
+/// starts one at now, once, of the economy; the log written reads back
+/// with it and hashes the same; the hash covers its spending; its checks.
+#[test]
+fn career_starts_a_program_at_now() {
+    let mut game = Game::new(round_trip_in_career("2045-03-04T00:00"), pool(4)).unwrap();
+    game.wait();
+    let now = game.now();
+    let without = hashes(&game);
+    let why = game
+        .start_program("lunar-ice", Epoch::from_ymd(2045, 3, 5))
+        .unwrap_err();
+    assert_eq!(
+        why,
+        "career starts a program at now (2045-03-04), not 2045-03-05"
+    );
+    let why = game.start_program("water", now).unwrap_err();
+    assert_eq!(why, "program 1: no program is named \"water\"");
+    game.start_program("lunar-ice", now).unwrap();
+    let why = game.start_program("lunar-ice", now).unwrap_err();
+    assert_eq!(why, "lunar-ice was started 2045-03-04");
+    game.start_program("survey:lunar-ice", now).unwrap();
+    assert_eq!(game.state().programs.len(), 2);
+    let p = &game.state().programs[0];
+    assert_eq!(game.economy().programs[p.program].id, "lunar-ice");
+    assert_eq!(p.cost_musd, 3300.0);
+    assert!((p.finish.0 - now.0 - 5.0 * 365.25).abs() < 1e-9);
+    let with = hashes(&game);
+    assert_ne!(with, without);
+    let mut again = Game::new(parse(&game.log().to_toml()), pool(4)).unwrap();
+    again.wait();
+    assert_eq!(again.refused(), None);
+    assert_eq!(again.log().programs, game.log().programs);
+    assert_eq!(hashes(&again), with);
+    let check = |at: Epoch, expect: ProgramCheck| {
+        again.check(&Check::Program {
+            program: "lunar-ice".into(),
+            at,
+            expect,
+        })
+    };
+    // $3,300M over five years: $660M a year.
+    let spent = check(now.plus_days(365.25), ProgramCheck::Spent([659.0, 661.0]));
+    assert!(spent.is_ok(), "{spent:?}");
+    let finished = check(now.plus_days(5.0 * 365.25), ProgramCheck::Finished(true));
+    assert!(finished.is_ok(), "{finished:?}");
+    let not_yet = check(now, ProgramCheck::Finished(true)).unwrap_err();
+    assert!(not_yet.ends_with("; expected: finished"), "{not_yet}");
+    let not_started = again
+        .check(&Check::Program {
+            program: "mars-ice".into(),
+            at: now,
+            expect: ProgramCheck::Finished(false),
+        })
+        .unwrap_err();
+    assert_eq!(not_started, "mars-ice on 2045-03-04: not started");
+}
+
+/// The sandbox starts a program at any date, and undoes it.
+#[test]
+fn the_sandbox_starts_a_program_at_any_date() {
+    let mut game = Game::new(parse(SORTIE), pool(4)).unwrap();
+    game.wait();
+    let before = hashes(&game);
+    game.start_program("pgm", Epoch::from_ymd(2044, 1, 1))
+        .unwrap();
+    assert_eq!(game.state().programs.len(), 1);
+    assert_ne!(hashes(&game), before);
+    assert!(game.undo());
+    assert!(game.state().programs.is_empty());
+    assert_eq!(hashes(&game), before);
 }
